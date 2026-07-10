@@ -1,16 +1,34 @@
-/**
- * Supabase server client — NOT CONNECTED.
- *
- * Supabase packages are not installed. This client will throw if called.
- *
- * TODO: When implementing auth, install @supabase/supabase-js and @supabase/ssr.
- * Then create a real server client using createServerClient from @supabase/ssr.
- * Use NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY env vars.
- * Never expose SUPABASE_SERVICE_ROLE_KEY to the client bundle.
- */
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
 
-export function createServerClient(): never {
-  throw new Error(
-    "Supabase server client is not connected. Install @supabase/supabase-js and @supabase/ssr before calling createServerClient()."
-  );
+export async function createClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error(
+      "Supabase server client is not configured. " +
+      "Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in your environment."
+    );
+  }
+
+  const cookieStore = await cookies();
+
+  return createServerClient(supabaseUrl, supabaseAnonKey, {
+    cookies: {
+      getAll() {
+        return cookieStore.getAll();
+      },
+      setAll(cookiesToSet) {
+        try {
+          cookiesToSet.forEach(({ name, value, options }) =>
+            cookieStore.set(name, value, options),
+          );
+        } catch {
+          // Ignore cookie write failures in Server Components.
+          // Session refresh is handled by middleware when present.
+        }
+      },
+    },
+  });
 }

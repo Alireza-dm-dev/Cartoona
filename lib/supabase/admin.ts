@@ -1,16 +1,21 @@
-/**
- * Supabase admin client — NOT CONNECTED.
- *
- * Supabase packages are not installed. This client will throw if called.
- *
- * TODO: When implementing admin features, install @supabase/supabase-js.
- * Then create an admin client using createClient with the service role key.
- * This must only be used in server/admin contexts — never expose to the client bundle.
- * Use SUPABASE_SERVICE_ROLE_KEY env var.
- */
+import "server-only";
+import { createClient } from "@supabase/supabase-js";
 
-export function createAdminClient(): never {
-  throw new Error(
-    "Supabase admin client is not connected. Install @supabase/supabase-js before calling createAdminClient()."
-  );
+export function createAdminClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error(
+      "Supabase admin client is not configured. " +
+      "Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your environment."
+    );
+  }
+
+  return createClient(supabaseUrl, serviceRoleKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
 }
