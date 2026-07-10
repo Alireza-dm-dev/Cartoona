@@ -1,4 +1,4 @@
-export type UserRole = "guest" | "parent" | "admin" | "super_admin";
+export type UserRole = "parent" | "admin" | "super_admin";
 
 export type OrderType = "image" | "video" | "drawing_animation";
 

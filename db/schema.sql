@@ -10,9 +10,6 @@
 --  - Add indexes on foreign keys, status columns, and created_at for queries.
 --  - Create storage buckets: parent-uploads, generated-media.
 --  - Add triggers for updated_at timestamps.
---  - Integrate with Supabase Auth (auth.users).
---  - Link public.users.id to auth.users.id (not gen_random_uuid()).
---  - Remove 'guest' from role CHECK (guest is not a stored role).
 --  - Add candy transaction safety (check balances before spend, prevent negative).
 --  - Implement soft delete retention policy.
 -- =============================================================================
@@ -21,16 +18,35 @@
 -- USERS
 -- ============================================================
 -- Extends Supabase auth.users with application-level role.
--- TODO: Sync with auth.users via trigger or edge function.
+-- A trigger on auth.users after insert creates a matching public.users row.
 -- TODO: Add RLS — users can read/update own record; admin/super_admin can read all.
 CREATE TABLE IF NOT EXISTS public.users (
-  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  email       TEXT NOT NULL UNIQUE,
-  role        TEXT NOT NULL DEFAULT 'parent' CHECK (role IN ('guest', 'parent', 'admin', 'super_admin')),
+  id          UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  email       TEXT NOT NULL,
+  role        TEXT NOT NULL DEFAULT 'parent' CHECK (role IN ('parent', 'admin', 'super_admin')),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   deleted_at  TIMESTAMPTZ
 );
+
+-- Automatically creates a public.users row when a new auth.users row is created.
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  INSERT INTO public.users (id, email, role)
+  VALUES (NEW.id, NEW.email, 'parent');
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW
+  EXECUTE FUNCTION public.handle_new_user();
 
 -- ============================================================
 -- PARENT PROFILES

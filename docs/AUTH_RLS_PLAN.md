@@ -1,7 +1,7 @@
 # Auth + RLS Architecture Plan
 
-> **Status:** Planning document. Not implemented. Supabase packages not installed.
-> **See also:** `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, `db/schema.sql`
+> **Status:** Partially implemented. Supabase packages installed. Three Supabase clients implemented (browser, SSR, admin). Auth-linkage migration prepared (not applied). RLS, auth UI, middleware, storage not yet implemented.
+> **See also:** `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, `db/schema.sql`, `db/migrations/00001_link_auth_users.sql`
 
 ---
 
@@ -36,27 +36,7 @@ User logs in
 
 ## 2. User/Profile Table Recommendation
 
-### Current schema (`db/schema.sql`)
-
-```sql
-CREATE TABLE public.users (
-  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  email       TEXT NOT NULL UNIQUE,
-  role        TEXT NOT NULL DEFAULT 'parent',
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  deleted_at  TIMESTAMPTZ
-);
-```
-
-### Issue
-`public.users.id` uses `gen_random_uuid()` — it generates its own UUID. This creates two problems:
-1. No link to `auth.users.id`. The app user row is disconnected from the auth identity.
-2. `parent_profiles.user_id` references `public.users.id`, so the chain is `auth.users` → (broken) → `public.users` → `parent_profiles`.
-
-### Recommendation
-
-**Revise `public.users` to use `auth.users.id` as its primary key:**
+### Revised schema (`db/schema.sql`)
 
 ```sql
 CREATE TABLE public.users (
@@ -69,11 +49,13 @@ CREATE TABLE public.users (
 );
 ```
 
-Changes:
-- `id` becomes `auth.users.id` reference (no default, must match the Supabase auth ID).
-- Remove `guest` from CHECK — guest is an unauthenticated state, not a DB row.
-- `email` can be synced from `auth.users.email` via trigger.
-- A trigger on `auth.users` after insert creates the `public.users` row automatically.
+### Resolution (Migration 00001)
+
+Migration `db/migrations/00001_link_auth_users.sql` revises the schema:
+- `public.users.id` is now `UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE` (no `gen_random_uuid()` default).
+- `guest` removed from role CHECK — only `parent`, `admin`, `super_admin` are stored.
+- `UNIQUE` removed from email — `auth.users.email` enforces uniqueness.
+- Trigger `on_auth_user_created` on `auth.users` (AFTER INSERT) executes `public.handle_new_user()`, which creates a matching `public.users` row.
 
 ### Table naming
 Keep `public.users` as the app profile/roles table. Do not rename — it is clear and matches the plural convention of other tables. The `auth.users` reference is unambiguous.
@@ -170,21 +152,21 @@ Recommended: Use **three layers** of protection, not just one.
 - Created via `createBrowserClient()` from `@supabase/ssr`.
 - Used in client components for authenticated data fetching.
 - **Never imports `SUPABASE_SERVICE_ROLE_KEY`.**
-- Current stub: throws with clear error until packages are installed.
+- Status: **implemented.** Validates env vars at call time.
 
 ### `lib/supabase/server.ts` — Server-side SSR client
 - Uses cookie-based auth for server components and route handlers.
 - Created via `createServerClient()` from `@supabase/ssr`.
 - Reads session from cookies, makes authenticated requests on behalf of the user.
 - **Never uses the service role key** — operates as the logged-in user.
-- Current stub: throws with clear error until packages are installed.
+- Status: **implemented.** Provides `getAll`/`setAll` cookie adapter; `setAll` silently ignores write failures in Server Components.
 
 ### `lib/supabase/admin.ts` — Admin/service-role client
 - Uses `SUPABASE_SERVICE_ROLE_KEY` directly.
 - Created via `createClient()` from `@supabase/supabase-js`.
-- **Server-only.** Must never be imported in client components or pages.
+- **Server-only.** Begins with `import "server-only";` — must never be imported in client components or pages.
 - Used for admin operations, user management, seed scripts, and tasks that bypass RLS.
-- Current stub: throws with clear error until packages are installed.
+- Status: **implemented.** Auth persistence (`autoRefreshToken`/`persistSession`) disabled.
 
 ### Security rules
 - Service-role key goes in `.env.local` only, never in `.env` or client code.
@@ -371,8 +353,8 @@ Recommended: Use **three layers** of protection, not just one.
 
 | Risk | Impact | Recommended fix (future) |
 |---|---|---|
-| `public.users.id` uses `gen_random_uuid()` instead of `auth.users.id` | No link to Supabase Auth identity. Two disconnected user records. | Change PK to `UUID REFERENCES auth.users(id)` |
-| `guest` included in role CHECK | `guest` is not a DB-stored role; creates confusion | Remove `guest` from CHECK; role defaults to `parent` |
+| ~~`public.users.id` used `gen_random_uuid()` instead of `auth.users.id`~~ | ✅ Resolved in migration 00001 | `PK REFERENCES auth.users(id) ON DELETE CASCADE` |
+| ~~`guest` included in role CHECK~~ | ✅ Resolved in migration 00001 | Only `parent`, `admin`, `super_admin` allowed |
 | No `auth.users` reference comment on FK chain | Future implementer might not understand the two-table model | Add comment on `public.users.id` |
 | No indexes on foreign keys | Performance degrades as tables grow | Add indexes on all `_id` columns, `status`, `created_at` |
 | No RLS policies applied | All tables publicly accessible | Add all policies documented in section 6 |
@@ -394,18 +376,16 @@ Recommended: Use **three layers** of protection, not just one.
 
 ## 11. Recommended Implementation Phases
 
-### Phase A: Install Supabase packages
-- Install `@supabase/supabase-js` and `@supabase/ssr`.
-- Replace `lib/supabase/*.ts` stubs with real clients.
-- Set up `.env.local` with actual Supabase project credentials.
-- Verify clients work in dev.
+### ~~Phase A: Install Supabase packages~~ ✅ COMPLETED
+- `@supabase/supabase-js` (v2.110.2) and `@supabase/ssr` (v0.12.0) installed.
+- Browser, server, and admin clients implemented in `lib/supabase/`.
+- Requires `.env.local` with actual Supabase project credentials before use.
 
-### Phase B: Schema revision for auth.users linking
-- Revise `public.users` PK to `UUID REFERENCES auth.users(id)`.
-- Remove `guest` from role CHECK.
-- Create trigger function on `auth.users` to auto-create `public.users` row.
-- Create trigger function to sync `auth.users.email` to `public.users.email`.
-- Update `types/database.ts` to match.
+### ~~Phase B: Schema revision for auth.users linking~~ ✅ MIGRATION PREPARED (not applied)
+- `db/migrations/00001_link_auth_users.sql` revises `public.users` PK, drops `guest`, removes email UNIQUE, and adds `handle_new_user` trigger.
+- `db/schema.sql` aligns with migration intent.
+- `types/app.ts` narrowed to `parent | admin | super_admin`.
+- Apply migration to a live Supabase project before enabling auth flows.
 
 ### Phase C: RLS policies and indexes
 - Apply RLS policies from section 6 to all 12 tables.
