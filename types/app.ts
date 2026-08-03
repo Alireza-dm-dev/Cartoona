@@ -18,3 +18,5 @@ export type ModerationStatus =
   | "flagged"
   | "blocked"
   | "manual_review";
+
+export type ExampleKind = "video" | "drawing" | "story";

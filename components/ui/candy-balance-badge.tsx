@@ -10,7 +10,7 @@ export function CandyBalanceBadge({ balance }: CandyBalanceBadgeProps) {
   return (
     <Badge variant="warning">
       <span className="mr-1" aria-hidden="true">🍬</span>
-      {displayBalance} candies
+      {displayBalance} آبنبات
     </Badge>
   );
 }

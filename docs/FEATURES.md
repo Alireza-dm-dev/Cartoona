@@ -14,7 +14,10 @@
 - [x] Parent consent page placeholder
 - [x] Parent dashboard with candy balance, requests overview, quick actions
 - [x] Admin dashboard with stats overview
-- [x] Admin request queue page
+- [x] Admin request queue page (real orders, filters, pagination)
+- [x] Admin request detail page (real data, private media signed URLs)
+- [x] Admin fulfilment — controlled status transitions + activity history
+- [x] Admin fulfilment — private final-media upload / approval / supersede
 - [x] Admin media review page
 - [x] Admin user management page
 - [x] Admin character management page
@@ -28,13 +31,16 @@
 - [x] Project documentation
 
 ### MVP 1 — Manual Request Platform
-- [ ] Supabase Auth (parent signup/login/logout)
+
+**Auth approach:** Deferred signup/login — auth is requested only at the final submission step, not at the start of a creation flow. See ADR-009 in `docs/DECISIONS.md` and section 11 in `docs/AUTH_RLS_PLAN.md`.
+
+- [ ] Deferred auth — signup/login requested only at final submit step
 - [ ] Email/password authentication
 - [ ] Parent account creation with consent
 - [ ] Create order (image/video/drawing_animation)
 - [ ] Upload drawing for animation requests
-- [ ] Admin order queue with status updates
-- [ ] Admin fulfillment — upload generated content
+- [x] Admin order queue with status updates (controlled transitions + history)
+- [x] Admin fulfillment — upload generated content (private, approval-gated)
 - [ ] Parent order tracking with status
 - [ ] Private gallery — view completed orders
 - [ ] Download delivered content

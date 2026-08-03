@@ -85,7 +85,7 @@ tests/             # Test files
   - `lib/supabase/server.ts` — Server-side client for SSR.
   - `lib/supabase/admin.ts` — Admin client with service role key (server only).
 - RLS policies secure all tables. Never expose service role to client.
-- Schema is managed via migrations in `db/migrations/`.
+- Schema is managed via migrations in `supabase/migrations/`.
 
 ## Storage Strategy
 

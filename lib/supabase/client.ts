@@ -1,15 +1,8 @@
-import { createBrowserClient } from "@supabase/ssr";
+import { createBrowserClient } from '@supabase/ssr'
+import { getSupabaseEnv } from './env'
 
-export function createClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+export function createBrowserSupabaseClient() {
+  const env = getSupabaseEnv()
 
-  if (!supabaseUrl || !supabaseAnonKey) {
-    throw new Error(
-      "Supabase browser client is not configured. " +
-      "Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in your environment."
-    );
-  }
-
-  return createBrowserClient(supabaseUrl, supabaseAnonKey);
+  return createBrowserClient(env.NEXT_PUBLIC_SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 }

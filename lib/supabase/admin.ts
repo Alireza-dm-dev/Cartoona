@@ -1,21 +1,18 @@
-import "server-only";
-import { createClient } from "@supabase/supabase-js";
+import "server-only"
+import { createClient } from "@supabase/supabase-js"
 
-export function createAdminClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+export function createAdminSupabaseClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const secret = process.env.SUPABASE_SECRET_KEY
 
-  if (!supabaseUrl || !serviceRoleKey) {
-    throw new Error(
-      "Supabase admin client is not configured. " +
-      "Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your environment."
-    );
-  }
+  if (!url) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL")
+  if (!secret) throw new Error("Missing SUPABASE_SECRET_KEY")
 
-  return createClient(supabaseUrl, serviceRoleKey, {
+  return createClient(url, secret, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
+      detectSessionInUrl: false,
     },
-  });
+  })
 }

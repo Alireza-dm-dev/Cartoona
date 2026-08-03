@@ -1,27 +1,36 @@
+import Link from "next/link";
 import { PageHeader } from "@/components/ui/page-header";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Button } from "@/components/ui/button";
 import { SafetyNotice } from "@/components/ui/safety-notice";
 
 export default function GalleryPage() {
   return (
     <div>
       <PageHeader
-        title="Family Gallery"
-        description="Your private collection of cartoon creations — visible only to your family."
+        title="گالری خصوصی من"
+        description="کارتون‌ها، تصاویر و ویدیوهای آماده‌شده شما در این بخش نمایش داده می‌شوند."
       />
       <EmptyState
-        title="Your gallery is empty"
-        description="Completed images and videos will appear here. This gallery is private to your account."
+        title="هنوز اثری در گالری شما نیست"
+        description="پس از آماده‌شدن و تحویل درخواست‌ها، فایل‌های نهایی به‌صورت خصوصی در این بخش قرار می‌گیرند."
+        action={
+          <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
+            <Link href="/create-image">
+              <Button size="lg">ساخت کارتون جدید</Button>
+            </Link>
+            <Link href="/dashboard/orders">
+              <Button variant="secondary" size="lg">مشاهده درخواست‌ها</Button>
+            </Link>
+          </div>
+        }
       />
       <div className="mt-6">
-        <SafetyNotice>
-          This gallery is private by default. No public sharing, no social features.
-          You control who sees your family&apos;s creations.
+        <SafetyNotice title="گالری خصوصی شماست">
+          فقط شما می‌توانید آثار و فایل‌های تحویل‌شده حساب خود را مشاهده کنید.
+          پس از تکمیل و تحویل هر درخواست، فایل نهایی در این بخش نمایش داده می‌شود.
         </SafetyNotice>
       </div>
-      <p className="mt-4 text-xs text-text-dark/30 text-center">
-        TODO: Fetch real media from Supabase storage. Private per-parent.
-      </p>
     </div>
   );
 }
