@@ -6,7 +6,7 @@
 - **Auth:** Working parent/admin authentication with phone/password login; development demo-login; middleware-protected admin and dashboard routes
 - **Session:** 30-day non-sliding parent session lifetime enforcement (`get_current_parent_session_policy` RPC)
 - **Storage:** Private `parent-uploads` and `generated-media` buckets; public `example-media` bucket
-- **Database:** 30 migrations applied (local = remote 30/30), latest applied: `20260801110000_admin_coupon_management.sql`; +1 local-only pending: `20260801120000_request_fulfilment_workflow.sql` (31 local / 30 remote until pushed)
+- **Database:** 31 migrations applied (local = remote 31/31), latest applied: `20260801120000_request_fulfilment_workflow.sql`
 
 ## Live APIs
 - `POST /api/requests` — Multipart form submission
@@ -196,7 +196,7 @@
 
 ## Phase 12 — Request Fulfilment Workflow (Aug 1)
 - **Goal:** Secure Admin request-fulfilment workflow: controlled status transitions, append-only activity history, private final-media upload/approval/supersede, parent-safe visibility. 27-part task on the main Supabase project `oucyhmrnzahlhqjfqcge`.
-- **Migration** `20260801120000_request_fulfilment_workflow.sql` (written, **NOT yet applied to main** — 30/30 remote, 31 local):
+- **Migration** `20260801120000_request_fulfilment_workflow.sql` — **applied and live on main** (31/31 local=remote; re-verified 2026-08-20: `migration list` and `db push --dry-run` both report the remote up to date, `order_status_history` exists with 0 rows, `final-deliverables` bucket private, all 4 trusted mutation RPCs + the admin read function return `42501 permission denied` for anon; service_role reaches business logic (no permission block) on the mutation RPCs):
   - `order_status_history` — append-only (BEFORE UPDATE/DELETE/TRUNCATE trigger raises), FK `order_id` CASCADE + `changed_by_user_id` SET NULL, status + note-length CHECKs, index `(order_id, created_at DESC)`, RLS on, no anon/authenticated grants
   - `media_assets` extension: `asset_role source|final|preview|supporting`, `delivery_status uploaded|approved|superseded`, `parent_visible`, `uploaded_by_user_id`, `original_filename`, `byte_size`, `superseded_at`, `updated_at`+trigger; invariant CHECKs (final/preview ⇒ type='generated', superseded ⇒ hidden, byte_size ≥ 0, filename ≤ 255)
   - **Parent visibility tightened:** parent `media_assets` SELECT now returns only `source` assets or `final` assets that are `approved` + `parent_visible`
@@ -209,7 +209,15 @@
 - **UI:** `components/admin/requests/`: `fulfilment-timeline` (server; history with Persian labels, internal + parent-visible note styling), `status-update-form` (client; allowed next statuses only, rejection reason required, `expectedUpdatedAt`), `final-media-upload` (client; upload/approve/supersede with `ConfirmDialog`, delivery badges, inline `<img>` lint suppression). Detail page wired with `loadAdminFinalMedia` + `loadAdminFulfilmentHistory`; queue page got status-dot legend + filter badges.
 - **Tests:** `tests/unit/` request-workflow + final-media-validation + fulfilment-types + fulfilment-errors — **235/235 total unit pass**. `tests/e2e/admin-request-fulfilment-db.spec.ts` (11 guarded stateful) + `admin-request-fulfilment-ui.spec.ts` (10 guarded mocked-UI) written spec-only — blocked against main.
 - **Verified:** `npx tsc --noEmit` clean for task files (only pre-existing errors in referral-dashboard.spec.ts / pricing-calculation.test.ts); lint 0 errors (29 pre-existing warnings); security greps clean (no SECRET_KEY/internal_note/file_url leaks in admin components).
-- **Deferred/blocked:** migration push to main + stateful/mocked-UI e2e execution require approval / disposable target + dev server; parent tracking/download page is a future task reusing `get_parent_order_status_history` + `toParentFinalAssetInfo`.
+- **Deferred/blocked:** migration is live on main (see above); stateful (`admin-request-fulfilment-db.spec.ts`) and mocked-UI (`admin-request-fulfilment-ui.spec.ts`) e2e suites remain unexecuted against main — still require a disposable/local target + dev server, guarded suites were not run in this verification pass; parent tracking/download page is a future task reusing `get_parent_order_status_history` + `toParentFinalAssetInfo`.
+
+## Phase 13 — GitHub Checkpoint (Aug 20)
+- **GitHub checkpoint pushed** to `origin/opencode/request-fulfilment-complete` (`https://github.com/Alireza-dm-dev/Cartoona.git`).
+- **Version:** V 0.2.0 — "Manual Fulfilment Foundation" (MINOR bump from V0.1.0, the prior single-commit foundation checkpoint; no semver git tags exist in this repo, so none was introduced — see commit history for version lineage).
+- **Commit SHA:** this checkpoint commit — see `git log -1 --oneline` on `opencode/request-fulfilment-complete` (self-referential; embedding an exact hash here is not computable before the commit exists).
+- **Migration state:** 31/31 local=remote (unchanged from Phase 12 verification).
+- **Admin fulfilment:** complete — status transitions, append-only history, private final-media upload/approve/supersede, parent visibility boundary all live on main.
+- **Next task:** parent order tracking and private final-file downloads (reusing `get_parent_order_status_history` + `toParentFinalAssetInfo`, per Phase 12 deferred item).
 
 ## Testing
 - **Unit tests:** 235/235 pass (pricing-calculation + guard + payment-simulation-policy + request-rpc-error + payment-rules + admin-requests + coupon-rules + admin-coupons + candy-purchase-read-model + request-workflow + final-media-validation + fulfilment-types + fulfilment-errors)
@@ -220,9 +228,10 @@
 - **Repeated flake validation:** PENDING — requires safe target
 - **Coupon stateful e2e (25 cases) + Admin coupon stateful e2e (18 cases):** guarded, unexecuted — requires disposable/local target; guard verified to block against main
 - **Admin coupons mocked UI e2e (40 cases) + billing mocked UI e2e (39 cases):** written; execute only with a dev server
-- **Request-fulfilment e2e (11 stateful + 10 mocked-UI):** written spec-only; require disposable/local target + dev server
+- **Request-fulfilment e2e (11 stateful + 10 mocked-UI):** written spec-only; require disposable/local target + dev server; not run against main during migration verification
 - **Pre-launch cleanup complete:** auth.users=2 (both admin), parent_profiles=0, wallets=0, referral_relationships=0, settings=enabled=true/1500, pricing=9 (unchanged), orders=0, children=0, coupons=0, coupon_package_rules=0, coupon_redemptions=0
 - **Read-only validation confirmed:** zero database changes during validation run
+- **2026-08-20 migration verification pass (main, `oucyhmrnzahlhqjfqcge`):** project was paused, restored to `ACTIVE_HEALTHY` first. Pre/post counts identical — auth.users=2, public.users=2, parent_profiles=0, child_profiles=0, orders=0, video_requests=0, drawing_animation_requests=0, media_assets=0, candy_wallets=0 (total balance 0), candy_transactions=0, candy_purchases=0, payment_attempts=0, coupons=0, coupon_redemptions=0 (`image_requests` is not a real table — images live on `orders`/`media_assets`). `20260801120000_request_fulfilment_workflow.sql` was found **already applied** (bucket `final-deliverables` created_at 2026-08-01T18:59:38Z, predating this pass) — `migration list` showed 31/31 synced and `db push --dry-run` reported "up to date" before any push ran, so no actual `db push` was executed and no pending migration existed to gate on. No mutation test, no E2E suite, no order/media/wallet/user state was touched.
 
 ## Known Debts
 - `lib/candies/`, `lib/orders/`, `lib/payments/` (has `types.ts` + `rules.ts` only), `lib/stripe/`, `lib/validators/` — no business logic yet
