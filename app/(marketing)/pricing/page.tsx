@@ -4,40 +4,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { plans } from "@/config/plans";
-
-const persianDigits: Record<string, string> = {
-  "0": "۰",
-  "1": "۱",
-  "2": "۲",
-  "3": "۳",
-  "4": "۴",
-  "5": "۵",
-  "6": "۶",
-  "7": "۷",
-  "8": "۸",
-  "9": "۹",
-};
-
-function formatPrice(priceToman: number | null): string {
-  if (priceToman === null) return "براساس درخواست";
-  const formatted = priceToman
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, ",")
-    .split("")
-    .map((c) => persianDigits[c] || c)
-    .join("");
-  return `${formatted} تومان`;
-}
-
-function formatCandies(candies: number | null): string {
-  if (candies === null) return "براساس پروژه";
-  const formatted = candies
-    .toString()
-    .split("")
-    .map((c) => persianDigits[c] || c)
-    .join("");
-  return `${formatted} آب‌نبات`;
-}
+import { formatPriceToman, formatCandies } from "@/lib/pricing/format-price";
 
 export default function PricingPage() {
   return (
@@ -60,7 +27,7 @@ export default function PricingPage() {
             </div>
 
             <p className="text-2xl font-bold text-candy-pink">
-              {formatPrice(plan.priceToman)}
+              {formatPriceToman(plan.priceToman)}
             </p>
             <p className="mt-1 text-sm text-text-dark/60">
               {formatCandies(plan.candies)}
