@@ -72,7 +72,7 @@
 - One `candy_wallets` row per parent.
 - Immutable `candy_transactions` ledger.
 - No auto-renewal or recurring billing (reduces complexity).
-- Candy costs are configurable via `config/candy-costs.ts`.
+- Candy costs are configurable via `config/candy-costs.ts` (later superseded by `public.creation_pricing` database table — see audit `docs/AUDIT_PRICING.md`).
 
 ---
 
@@ -104,6 +104,24 @@
 - All character assets are created in-house.
 - Moderation rules flag any prompt referencing famous characters.
 - Future licensing is a separate business decision.
+
+---
+
+## ADR-009: Deferred Signup/Login for Creation Flows
+
+**Status:** Accepted
+
+**Context:** Traditional signup-first flows create friction. Parents exploring Cartoona may want to see what creation involves before committing to account creation. Forcing signup before exploring the creation wizard reduces conversion.
+
+**Decision:** Use deferred signup/login — parents can explore creation flows, select options, enter request details, and review the summary before being asked to sign up or log in. Auth is requested only at the final submission step.
+
+**Consequences:**
+- Creation routes (`/create-image`, `/request-video`, `/animate-drawing`) are accessible without authentication.
+- Draft state is held in-memory (browser) only — no persistence before auth + consent.
+- No child media or request data is stored until parent authentication, consent, and account creation are complete.
+- The `/dashboard` area remains protected for authenticated parent management.
+- Signup and login routes exist but are not required to start a creation flow.
+- Demo auth currently still protects `/dashboard` — deferred auth applies to creation flows only.
 
 ---
 

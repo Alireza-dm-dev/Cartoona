@@ -2,14 +2,14 @@ import type { OrderStatus } from "@/types/app";
 import { Badge } from "./badge";
 
 const statusConfig: Record<OrderStatus, { label: string; variant: "default" | "success" | "warning" | "danger" | "info" }> = {
-  draft: { label: "Draft", variant: "default" },
-  pending_payment: { label: "Pending Payment", variant: "warning" },
-  pending_review: { label: "Pending Review", variant: "info" },
-  in_progress: { label: "In Progress", variant: "info" },
-  ready: { label: "Ready", variant: "success" },
-  delivered: { label: "Delivered", variant: "success" },
-  rejected: { label: "Rejected", variant: "danger" },
-  cancelled: { label: "Cancelled", variant: "danger" },
+  draft: { label: "پیش‌نویس", variant: "default" },
+  pending_payment: { label: "در انتظار پرداخت", variant: "warning" },
+  pending_review: { label: "در انتظار بررسی", variant: "info" },
+  in_progress: { label: "در حال انجام", variant: "info" },
+  ready: { label: "آماده تحویل", variant: "success" },
+  delivered: { label: "تحویل داده شده", variant: "success" },
+  rejected: { label: "رد شده", variant: "danger" },
+  cancelled: { label: "لغو شده", variant: "danger" },
 };
 
 interface OrderStatusBadgeProps {

@@ -6,7 +6,7 @@ interface SafetyNoticeProps {
 }
 
 export function SafetyNotice({
-  title = "Safety & Privacy",
+  title = "ایمنی و حریم خصوصی",
   children,
 }: SafetyNoticeProps) {
   return (

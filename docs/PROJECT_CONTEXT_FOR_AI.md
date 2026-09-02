@@ -57,6 +57,17 @@ This is **MVP 0 — Design & Foundation**. The project has:
 
 See `docs/AUTH_RLS_PLAN.md` for the detailed architecture plan. Do not implement auth until explicitly directed.
 
+## Deferred Auth Decision
+
+Cartoona uses **deferred signup/login** for creation flows. Parents can explore the creation wizard, select options, and enter request details before being asked to sign up or log in. Auth is requested only at the final submission step. See ADR-009 in `docs/DECISIONS.md` and section 11 in `docs/AUTH_RLS_PLAN.md`.
+
+**What this means for implementation:**
+- Creation flow routes (/create-image, /request-video, /animate-drawing) should eventually be accessible without authentication.
+- Draft state is held in-memory (browser only) before auth — no persistence.
+- No child media or request data is stored until parent auth + consent are complete.
+- The /dashboard area remains protected for authenticated parent management.
+- Demo auth currently protects /dashboard — deferred auth applies to creation flows.
+
 ## What NOT to Build Yet
 
 Do not build any of the following until explicitly directed:
@@ -98,6 +109,17 @@ The project uses a Cartoona-specific color palette defined as CSS variables and 
 Tailwind classes use the `-candy-pink`, `-sky-blue`, `-sunshine-yellow`, `-mint-green`, `-soft-purple`, `-coral`, `-parent-navy`, `-text-dark`, `-soft-border`, `-cream` suffixes (e.g., `bg-candy-pink`, `text-parent-navy`).
 
 Typography uses Geist (already configured) as the primary sans-serif font via the `font-sans` variable.
+
+## Persian-first / RTL-first Product
+
+Cartoona MVP UI is **Persian-first and RTL-first**. This means:
+
+- The default user interface language is Persian/Farsi.
+- Layout direction defaults to `rtl` (right-to-left).
+- All user-facing labels, buttons, empty states, validation messages, and status labels must be designed in Persian first.
+- English is treated as future localization, not the base design.
+- Do not introduce English-first or LTR-only screens unless explicitly requested.
+- See `docs/DESIGN_SYSTEM.md` for the full Persian-first design specification, including typography, microcopy, and RTL layout guidance.
 
 ## Safety & Privacy Principles
 

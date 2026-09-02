@@ -25,8 +25,9 @@
 
 - [ ] Supabase Auth integration (parent signup/login)
 - [ ] Real database setup and migration
+- [x] Admin request queue + detail (read-only, real orders + type details + signed URLs)
 - [ ] Order CRUD — parents submit requests, admins manage queue
-- [ ] Admin fulfillment UI — upload generated content, update status
+- [x] Admin fulfilment — controlled status transitions, append-only history, final-media upload/approval/supersede, private `final-deliverables` bucket
 - [ ] Parent dashboard — view order status, download content
 - [ ] Private gallery — view completed creations
 - [ ] Parent consent flow

@@ -48,6 +48,10 @@ All colors and tokens: `app/globals.css` (`@theme inline` block). Docs: `docs/DE
 - API routes (`app/api/`)
 - Middleware or auth guards
 
+## Persian-first / RTL-first
+
+Cartoona is Persian-first and RTL-first. Do not create English-first or LTR-only UI unless explicitly requested. All user-facing text must be in Persian. Layout must default to right-to-left direction.
+
 ## Workflow Rules
 
 1. **One focused change per prompt.** Do not bundle unrelated work.

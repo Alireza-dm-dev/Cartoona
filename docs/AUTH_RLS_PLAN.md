@@ -1,7 +1,7 @@
 # Auth + RLS Architecture Plan
 
 > **Status:** Partially implemented. Supabase packages installed. Three Supabase clients implemented (browser, SSR, admin). Auth-linkage migration prepared (not applied). RLS, auth UI, middleware, storage not yet implemented.
-> **See also:** `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, `db/schema.sql`, `db/migrations/00001_link_auth_users.sql`
+> **See also:** `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, `db/schema.sql`, `supabase/migrations/20260712090001_link_auth_users.sql`
 
 ---
 
@@ -51,7 +51,7 @@ CREATE TABLE public.users (
 
 ### Resolution (Migration 00001)
 
-Migration `db/migrations/00001_link_auth_users.sql` revises the schema:
+Migration `supabase/migrations/20260712090001_link_auth_users.sql` revises the schema:
 - `public.users.id` is now `UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE` (no `gen_random_uuid()` default).
 - `guest` removed from role CHECK — only `parent`, `admin`, `super_admin` are stored.
 - `UNIQUE` removed from email — `auth.users.email` enforces uniqueness.
@@ -312,7 +312,7 @@ Recommended: Use **three layers** of protection, not just one.
 
 ### Starter candy grant
 - Handled by a database function, not client code.
-- `candy_wallets` initialized with a small starter balance (configurable via `config/candy-costs.ts`).
+- `candy_wallets` initialized with a small starter balance (configurable via `config/candy-costs.ts`, later superseeded — the starter balance is set in the wallet-creation database trigger).
 - Initial grant recorded as a `candy_transactions` row of type `grant`.
 
 ---
@@ -374,7 +374,43 @@ Recommended: Use **three layers** of protection, not just one.
 
 ---
 
-## 11. Recommended Implementation Phases
+## 11. Deferred Auth for Creation Flows
+
+### Decision
+Auth is deferred — parents do not need to sign up before exploring creation flows. Authentication is requested only at the final submission step.
+
+### Flow
+```
+Parent opens creation flow (/create-image, /request-video, /animate-drawing)
+  → Selects options, enters request details
+  → Reviews summary and candy cost
+  → App asks parent to sign up or log in
+  → After signup/login/consent → request is saved/submitted
+```
+
+### Affected routes
+- `/dashboard/create-image` — currently dashboard-protected; future version needs a public pre-auth entry point
+- `/dashboard/request-video` — same
+- `/dashboard/animate-drawing` — same
+
+### Privacy boundary
+- No child media or request data is permanently stored until parent authentication, consent, and account creation are complete.
+- Draft state is held in-memory (browser) only before auth.
+- Real persistence happens only after auth + consent.
+
+### What remains unimplemented
+- Public/pre-auth creation entry points (routes must be moved outside the dashboard route group or made accessible before auth).
+- Temporary in-browser draft state management.
+- Final-step auth gate that collects signup/login + consent before submitting.
+
+### Relationship to demo auth
+- Demo auth currently protects `/dashboard` routes via middleware + cookie.
+- Creation flows inside `/dashboard` inherit that protection today.
+- When deferred auth is implemented, creation flow entry points must be public (no middleware guard), while the dashboard itself remains protected.
+
+---
+
+## 12. Recommended Implementation Phases
 
 ### ~~Phase A: Install Supabase packages~~ ✅ COMPLETED
 - `@supabase/supabase-js` (v2.110.2) and `@supabase/ssr` (v0.12.0) installed.
@@ -382,7 +418,7 @@ Recommended: Use **three layers** of protection, not just one.
 - Requires `.env.local` with actual Supabase project credentials before use.
 
 ### ~~Phase B: Schema revision for auth.users linking~~ ✅ MIGRATION PREPARED (not applied)
-- `db/migrations/00001_link_auth_users.sql` revises `public.users` PK, drops `guest`, removes email UNIQUE, and adds `handle_new_user` trigger.
+- `supabase/migrations/20260712090001_link_auth_users.sql` revises `public.users` PK, drops `guest`, removes email UNIQUE, and adds `handle_new_user` trigger.
 - `db/schema.sql` aligns with migration intent.
 - `types/app.ts` narrowed to `parent | admin | super_admin`.
 - Apply migration to a live Supabase project before enabling auth flows.
@@ -393,12 +429,13 @@ Recommended: Use **three layers** of protection, not just one.
 - Add `updated_at` trigger function.
 - Test policies in Supabase SQL editor.
 
-### Phase D: Signup/login/logout
-- Build signup form (email, password, name, consent checkbox).
-- Build login form.
+### Phase D: Deferred auth — signup/login/logout
+- Build signup form (email, password, name, consent checkbox) — deferred to final submission step.
+- Build login form — deferred to final submission step.
 - Build logout button.
 - Wire up Supabase Auth calls.
-- Test full auth flow.
+- Implement final-step auth gate that pauses submission, collects auth + consent, then persists.
+- Test full auth flow including deferred entry.
 
 ### Phase E: Parent route protection
 - Create middleware that checks session for `(dashboard)` routes.

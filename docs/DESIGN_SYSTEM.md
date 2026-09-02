@@ -2,11 +2,13 @@
 
 ## Product Design Principles
 
-1. **Parent-first** — Every visual decision prioritizes clarity, trust, and calm confidence.
-2. **Child-delightful** — Colors and shapes feel playful but never childish or exclusionary to adults.
-3. **Safe and warm** — Rounded shapes, soft colors, approachable typography.
-4. **Clear over clever** — UI communicates clearly before it impresses.
-5. **Private by default** — Visual design reinforces that this is a private, safe space.
+1. **Persian-first** — The default UI language is Persian/Farsi. English is treated as future localization, not the base design.
+2. **RTL-first** — All layout, navigation, and reading flow default to right-to-left direction.
+3. **Parent-first** — Every visual decision prioritizes clarity, trust, and calm confidence for the parent user.
+4. **Child-delightful** — Colors and shapes feel playful but never childish or exclusionary to adults.
+5. **Safe and warm** — Rounded shapes, soft colors, approachable typography.
+6. **Clear over clever** — UI communicates clearly before it impresses.
+7. **Private by default** — Visual design reinforces that this is a private, safe space.
 
 ## Brand Personality
 
@@ -15,6 +17,13 @@
 - Playful but professional
 - Trustworthy and transparent
 - Colorful but not chaotic
+
+## Product Language
+
+- **Default UI language is Persian/Farsi.** All user-facing labels, buttons, empty states, validation messages, and status labels must be designed in Persian first.
+- English is not the default MVP interface language. Future English support should be implemented as a localization layer, not the base design.
+- Do not mix English labels into Persian UI unless the term is a technical/admin-only concept with no clear Persian equivalent (e.g., API, UUID).
+- Brand logo text: «کارتونا».
 
 ## Visual Modes
 
@@ -57,13 +66,33 @@
 
 ## Typography Direction
 
+### Current (Temporary)
+
 - **Primary font:** Geist (already configured via next/font)
 - **Fallback:** system-ui, sans-serif
-- **Headings:** Bold, rounded feel (Geist has a friendly character)
-- **Body:** Regular weight, readable size (16px base)
-- **TODO:** Evaluate importing a more rounded font (e.g., Fredoka, Nunito) for headings post-MVP.
+- **Status:** Geist is acceptable only as a temporary technical placeholder for the foundation phase. It does not support Persian text well and must be replaced before MVP launch.
 
-### Font Sizes
+### Persian Typography (Target)
+
+- **Body font:** Vazirmatn (free, open-source, SIL Open Font License) for body text, forms, dashboard, and admin. Use the variable-weight version for flexibility.
+- **Heading font:** Vazirmatn (bold/extra-bold weights) or Estedad for headings and display text. Both are free and open-source.
+- **Do not ship paid fonts** (Dana, IRANSans) into the repository unless licensing is handled outside the repo.
+- **Persian numerals** should be used in parent-facing UI (prices, dates, quantities). Admin/internal technical areas may optionally use Latin digits for IDs and system values.
+- **TODO:** Import Vazirmatn via next/font when transitioning from Geist. See `https://github.com/rastikerdar/vazirmatn`.
+
+### Brand/Display Persian Font (Digi Madasi Bold)
+
+- **Font name:** Digi Madasi Bold
+- **File:** `public/fonts/digi-madasi-bold.ttf`
+- **Loaded via:** `@font-face` in `app/globals.css`
+- **CSS utility class:** `.font-brand` — applies `"DigiMadasi"` with Geist and system-ui as fallbacks
+- **Usage:** logo-style text, hero heading, selected marketing accents only
+- **Not for:** body text, forms, admin tables, long paragraphs, or any high-readability-content
+- **Body font remains Geist** temporarily until a readable Persian body font such as Vazirmatn is added later
+- **TODO:** confirm font licensing before production use — Digi Madasi Bold is currently used for foundation/interim design only
+- **Font weight available:** 700 (Bold only)
+
+### Font Sizes (unchanged by language direction)
 
 | Element | Size | Weight |
 |---|---|---|
@@ -73,6 +102,113 @@
 | Body | 0.875–1rem | 400 |
 | Small | 0.75–0.8125rem | 400 |
 | Badge | 0.75rem | 500 |
+
+## RTL Layout Principles
+
+- **Default direction is `rtl`.** Page flow, navigation, breadcrumbs, wizards, tables, and forms should follow right-to-left direction.
+- Primary actions appear on the left side in Persian RTL forms (matching the prototype), while the reading flow remains right-to-left.
+- Back/continue controls: «بازگشت» (back) and «ادامه» (continue), positioned per the prototype.
+- Step indicators in the creation wizard should read right-to-left (step 1 on the right).
+- Parent-facing mobile flow is strictly RTL-first.
+- Admin area may use a fixed sidebar with RTL content; sidebar position (right or left) should be documented once decided. For now, parent-facing content is RTL; admin can follow the same direction for consistency.
+- Icons with directional meaning (arrows, chevrons, back, forward, share) must be mirrored in RTL mode unless they represent a non-directional concept.
+- Avoid LTR-only layouts. Do not hard-code `left`/`right` in styles without an RTL-aware utility.
+
+## RTL-aware Component Checklist (future)
+
+The following component behaviors require RTL attention:
+- Chevrons in accordions, breadcrumbs, and back buttons
+- Pagination direction
+- Form field label alignment
+- Card grids (order within rows)
+- Sidebar position
+- Input group addons (prefix/suffix)
+- Table column alignment for numeric vs. text columns
+
+## Persian Microcopy Rules
+
+All user-facing strings must be in Persian. Examples:
+
+| Context | Persian |
+|---|---|
+| Primary CTA | «ساخت کارتون جدید» |
+| Secondary CTA | «مشاهده نمونه‌ها» |
+| Continue | «ادامه» |
+| Back | «بازگشت» |
+| Login | «ورود» |
+| Signup | «ثبت‌نام» |
+| Safety note | «محتوای کودک فقط برای والدین قابل مشاهده است.» |
+| Upload helper | «فایل JPG یا PNG را بارگذاری کنید.» |
+| Empty gallery | «گالری خصوصی شما هنوز خالی است.» |
+| Success message | «درخواست شما با موفقیت ثبت شد.» |
+| Error message | «لطفاً فایل معتبر بارگذاری کنید.» |
+| Save | «ذخیره» |
+| Cancel | «لغو» |
+| Delete | «حذف» |
+| Edit | «ویرایش» |
+| View all | «مشاهده همه» |
+| Start now | «شروع کنید» |
+| Learn more | «بیشتر بدانید» |
+| Loading | «در حال بارگذاری» |
+| No results | «نتیجه‌ای یافت نشد» |
+
+## Prototype-based Screen Direction
+
+The following screen templates should be designed in Persian in future UI work. These are design guidance, not implementation requirements.
+
+- **Mobile welcome screen:** Persian headline, Persian CTA, RTL layout, narrow card-like frame with soft shadow.
+- **Parent dashboard:** Compact cards for candy balance, active orders, privacy reminders, recent creations. All labels in Persian.
+- **Creation type selection:** Step-based flow with numbered indicators. Visual option cards in Persian. Sticky cost/CTA area at bottom.
+- **Character selection:** RTL-scrolling horizontal list or grid. Persian labels for category and character name.
+- **Upload/consent step:** Upload dropzone with Persian helper text. Consent checkbox with Persian privacy notice. Sticky continue button.
+- **Review and success screen:** Order summary in Persian. Success banner with Persian confirmation text.
+- **Order detail page:** Persian status labels, Persian timeline, RTL detail layout.
+- **Admin request detail:** Navy sidebar/header, compact tables, clear production statuses in Persian, less playful decoration.
+
+## Component Updates for Persian/RTL
+
+The following components must support RTL layout and Persian labels. Implementation is future work:
+
+- **Button** — text in Persian, icon mirroring for directional icons
+- **Card** — RTL text alignment, Persian content
+- **Badge** — Persian status labels, RTL-aware positioning
+- **EmptyState** — Persian title, description, action label
+- **PageHeader** — RTL alignment, Persian title/description
+- **SectionShell** — RTL spacing
+- **SafetyNotice** — Persian text, RTL layout
+- **CandyBalanceBadge** — Persian numeral formatting
+- **OrderStatusBadge** — Persian status labels
+- **StepWizard** — RTL step order (right to left), Persian labels
+- **UploadDropzone** — Persian helper text, RTL layout
+- **ConsentCheckbox** — Persian label, RTL-aligned
+- **CandyCostPreview** — Persian numerals, RTL alignment
+- **AdminRequestTable** — RTL table, Persian headers
+- **OrderTimeline** — RTL timeline direction
+- **StatusTimeline** — RTL timeline, Persian labels
+
+## Status Labels in Persian
+
+| Status | English | Persian |
+|---|---|---|
+| draft | Draft | «پیش‌نویس» |
+| pending_payment | Pending Payment | «در انتظار پرداخت» |
+| pending_review | Pending Review | «در حال بررسی» |
+| in_progress | In Progress | «در حال انجام» |
+| ready | Ready | «آماده تحویل» |
+| delivered | Delivered | «تحویل داده شده» |
+| rejected | Rejected | «رد شده» |
+| cancelled | Cancelled | «لغو شده» |
+
+## Persian Accessibility Rules
+
+- Persian labels must be clear and readable at intended font sizes.
+- Font size must not be too small for Persian text (baseline 16px body, minimum 14px for supporting text).
+- Avoid low-contrast pastel text — Persian script requires sufficient stroke contrast.
+- Inputs must have visible Persian labels (placeholder-only labels are not acceptable).
+- Error messages must be in Persian and associated with the relevant input.
+- `dir="rtl"` must not break keyboard navigation or screen-reader announcements.
+- Icons cannot replace Persian text for critical actions (e.g., a trash icon must be accompanied by the Persian word «حذف»).
+- Focus indicators must be visible in RTL layout.
 
 ## Spacing / Radius / Shadow Rules
 
@@ -156,16 +292,16 @@ Each page template includes:
 
 ## Status System
 
-| Status | Visual |
-|---|---|
-| Draft | Default badge (gray) |
-| Pending Payment | Warning badge (yellow) |
-| Pending Review | Info badge (blue) |
-| In Progress | Info badge (blue) |
-| Ready | Success badge (green) |
-| Delivered | Success badge (green) |
-| Rejected | Danger badge (coral) |
-| Cancelled | Danger badge (coral) |
+| Status | Persian Label | Visual |
+|---|---|---|
+| draft | «پیش‌نویس» | Default badge (gray) |
+| pending_payment | «در انتظار پرداخت» | Warning badge (yellow) |
+| pending_review | «در حال بررسی» | Info badge (blue) |
+| in_progress | «در حال انجام» | Info badge (blue) |
+| ready | «آماده تحویل» | Success badge (green) |
+| delivered | «تحویل داده شده» | Success badge (green) |
+| rejected | «رد شده» | Danger badge (coral) |
+| cancelled | «لغو شده» | Danger badge (coral) |
 
 ## Empty / Loading / Success / Error States
 
@@ -201,3 +337,9 @@ Each page template includes:
 - No famous character brands/logos.
 - No gamification elements for children.
 - No child dashboard or child account UI.
+- No English-first UI — do not build screens in English as the default.
+- No mixed English/Persian labels — do not mix random English terms into Persian UI.
+- No LTR-only components — do not create layouts that break under `dir="rtl"`.
+- No decorative Persian fonts for forms or admin — use readable body fonts (Vazirmatn).
+- No child-facing game UI — Cartoona is a parent tool, not a children's game.
+- No famous-character names even in Persian — only original Cartoona characters.
