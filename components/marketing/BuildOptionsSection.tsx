@@ -49,7 +49,9 @@ export function BuildOptionsSection() {
         ))}
       </div>
 
-      <p className="mt-8 text-center text-xs text-text-dark/40">
+      {/* Sits directly on the shared artwork rather than a white section, so it
+          needs more weight than the /40 it carried over a flat background. */}
+      <p className="mt-8 text-center text-xs text-text-dark/70">
         می‌توانید ابتدا نوع و جزئیات ساخت را انتخاب کنید؛ ورود یا ساخت حساب فقط هنگام ثبت نهایی درخواست لازم است.
       </p>
     </div>

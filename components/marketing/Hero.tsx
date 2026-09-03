@@ -19,12 +19,9 @@ const HERO_VIDEO_SRC = "/videos/homepage/hero.mp4";
 // content rather than the (differently-shaped) frame box.
 const HERO_VIDEO_INTRINSIC = { width: 1108, height: 828 };
 
-// build-video.mp4 is a live-action city street with cartoon characters composited
-// in; build-animate.mp4 is a child's crayon drawing coming to life on pale paper.
-// The hero is a pastel hand-painted sky, and the reference shows a light, drawn
-// image on the TV - the photographic clip would read as a jarring insert, so the
-// drawing is the one that belongs on this screen.
-const TV_SCREEN_CONTENT_SRC = "/videos/homepage/build-animate.mp4";
+// The clip authored for the TV screen. Its 966x754 frame is a near-match for the
+// screen cutout's 1.32 aspect, so object-cover crops almost nothing.
+const TV_SCREEN_CONTENT_SRC = "/videos/homepage/hero-tv.mp4";
 
 // Fraction of the hero video's own (cropped) frame occupied by the TV screen
 // cutout. Measured off the black cutout baked into hero.mp4 rather than eyeballed:
