@@ -99,6 +99,22 @@
 - **Print-on-demand** — digital delivery only.
 - **Advanced prompt engineering panel** — simple predefined options only.
 
+## Homepage CMS (foundation shipped)
+
+Admin-managed marketing homepage content. Phase 1 established the model only —
+no editor UI, no upload API, and the homepage still renders from component
+literals until Phase 4.
+
+- **Editable:** hero copy, CTA labels and internal destinations, build-option
+  cards, character cards, safety points, featured pricing plan selection,
+  testimonials, FAQ teaser selection, final CTA, and media per named slot.
+- **Not editable:** scroll behaviour, horizontal-story mechanics, TV overlay
+  coordinates, breakpoints, component hierarchy, plan prices, auth rules, and
+  any HTML/CSS/JS. See `docs/HOMEPAGE_CMS_ARCHITECTURE.md`.
+- **Guarantees:** internal-only hrefs, plain-text-only fields, closed media slot
+  set, no browser writes to either CMS table, and defaults served whenever the
+  stored content is missing or fails validation.
+
 ## Feature Priority Order
 
 1. Foundation (current) — project setup, design system, routes, docs

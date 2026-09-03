@@ -242,3 +242,12 @@
 - No disposable remote Supabase project configured for repeated flake validation
 - Stateful coupon e2e (foundation + admin) unexecuted until a safe target exists; redemption `reserved → redeemed` promotion deferred to the payment-verified task
 - Zero-final-price (free) purchase completion flow does not exist yet — blocked in the UI with a deferred notice until a trusted free-confirmation flow is added
+
+## Homepage CMS — Phase 1 (foundation) complete
+- **Branch:** `opencode/homepage-cms-foundation`, cut from `opencode/homepage-hero-fidelity` (the fidelity work is **not** merged to main; branching from main would have lost it).
+- **Shipped:** `lib/homepage/{types,default-content,media-slots,validation,content-resolution,service}.ts`, `lib/auth/require-admin.ts`, migration `20260802100000_homepage_cms_foundation.sql`, `docs/HOMEPAGE_CMS_ARCHITECTURE.md`, 40 unit tests.
+- **Not shipped (deliberately):** admin editor UI, homepage runtime wiring, media upload API. Homepage visuals unchanged — the components still render their own literals.
+- **Migration NOT applied.** The linked Supabase project is `oucyhmrnzahlhqjfqcge` = **main**, and the CLI could not reach it (`LegacyDbConfigLoginRoleStatusError`, connection timeout), so `migration list` and `db push --dry-run` both failed. No push was attempted against main.
+- **Verified instead against a throwaway local Postgres 17 database** (created and dropped): migration applies cleanly, is idempotent across two runs, seeds exactly one row, RLS on both tables with SELECT-only policies, and anon/authenticated INSERT/UPDATE/DELETE all fail with `permission denied`. Every CHECK constraint verified to bite (unknown slot, URL-as-storage_path, `..` traversal, type/mime mismatch, image-with-duration, disallowed mime, revision 0, non-object content_json, duplicate slot_key).
+- **Outstanding:** run `npx supabase migration list` and `db push --dry-run` against a reachable target before applying. Expect exactly one pending migration.
+- **Known sharp edge:** `hero.background` and `sections.background` are geometry-coupled — the hero's TV overlay is measured against the exact artwork and the sections layer crops to hide that same TV. Replacing either file without preserving the TV's fractional position breaks the hero. Flagged as `geometryCoupled` in `HOMEPAGE_MEDIA_SLOT_SPECS`; Phase 3 must warn on it.

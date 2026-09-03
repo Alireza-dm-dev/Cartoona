@@ -67,6 +67,18 @@
 - [ ] Security review
 - [ ] Beta testing
 
+## Homepage CMS
+
+- [x] **Phase 1 — Foundation.** `HomepageContent` contract, default content,
+      `homepage_content` singleton + `homepage_media_assets` tables, media slot
+      registry, validation, server read service with fallback, 40 unit tests.
+- [ ] **Phase 2 — Admin editor.** `/admin/homepage` UI and a write route behind
+      `requireAdmin`, revision-checked, validating with the shared contract.
+- [ ] **Phase 3 — Media upload.** `homepage-media` bucket, upload/replace API
+      with rollback, geometry-coupling warnings for the two background slots.
+- [ ] **Phase 4 — Runtime wiring.** Homepage components read
+      `getHomepageContent()`; copy literals removed from the components.
+
 ## Future (Post-MVP)
 
 - Video generation
