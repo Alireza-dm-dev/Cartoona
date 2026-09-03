@@ -14,10 +14,11 @@ export default function HomePage() {
     <>
       <Hero />
 
-      {/* Build options scrolls vertically over the shared artwork, then the
-          sequence pans horizontally across characters -> safety -> pricing.
-          No section in this group carries its own background: the artwork
-          behind them is one continuous canvas. */}
+      {/* Every section after the hero shares one continuous artwork canvas, so
+          none of them carries its own background: build options scrolls
+          vertically, characters -> safety -> pricing pan horizontally, then
+          testimonials -> faq -> final CTA return to vertical on the same
+          canvas, which holds through to the end of the page. */}
       <HomepageArtworkStory
         intro={
           <SectionShell>
@@ -29,19 +30,20 @@ export default function HomePage() {
           <SafetySection key="safety" />,
           <PricingSection key="pricing" />,
         ]}
+        outro={
+          <>
+            <SectionShell>
+              <TestimonialsSection />
+            </SectionShell>
+            <SectionShell>
+              <FaqTeaserSection />
+            </SectionShell>
+            <SectionShell>
+              <FinalCtaSection />
+            </SectionShell>
+          </>
+        }
       />
-
-      <SectionShell className="bg-white">
-        <TestimonialsSection />
-      </SectionShell>
-
-      <SectionShell>
-        <FaqTeaserSection />
-      </SectionShell>
-
-      <SectionShell className="bg-white">
-        <FinalCtaSection />
-      </SectionShell>
     </>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import { HorizontalStory } from "@/components/marketing/HorizontalStory";
 
 interface HomepageArtworkStoryProps {
@@ -8,41 +8,69 @@ interface HomepageArtworkStoryProps {
   intro: ReactNode;
   /** Panels the horizontal sequence pans across. */
   panels: ReactNode[];
+  /** Vertical content after the sequence, which stays on the same artwork. */
+  outro: ReactNode;
 }
 
 export const SECTIONS_BG_SRC = "/images/homepage/sections-bg.png";
 
 /**
- * How much wider than the viewport the artwork layer is drawn, as a fraction.
- * The surplus is the distance the artwork pans across during the horizontal
- * sequence - the backdrop drifts rather than racing the panels, which is what
- * makes the three panels read as three places in one world instead of three
- * separate backgrounds.
+ * The artwork layer is drawn this much taller than the viewport and anchored to
+ * its bottom edge, so only the lower ~63% of the canvas is ever on screen.
+ *
+ * That crop is what keeps the television out of the sections background: the TV
+ * lives in the top-left of the artwork and its screen ends at 23.9% down, well
+ * above the 1/1.6 = 37.5% mark where this window starts. The TV belongs to the
+ * hero, and a second dead black screen drifting through the sections would read
+ * as an artifact. Cropping rather than masking keeps the rest of the artwork
+ * exactly as drawn.
  */
-const BG_OVERSCAN = 0.4;
+const BG_CROP_CLASS = "h-[160%]";
 
 /**
- * One illustrated canvas behind the vertical intro and the horizontal sequence.
+ * One illustrated canvas behind every section after the hero.
  *
  * The artwork is a single sticky layer that the whole group scrolls past, so it
- * never restarts between sections, and no child paints its own opaque
- * background over it. During the horizontal sequence the layer pans in the same
- * rAF frame as the panels via HorizontalStory's onProgress hook, which writes
- * straight to the DOM and never touches React state.
- *
- * Everything visible in the artwork - including the red area - comes from the
- * PNG itself. Nothing here draws or tints it.
+ * never restarts, resets, or detaches between sections - it stays put from the
+ * first section after the hero through the last one on the page. During the
+ * horizontal sequence it pans in the same rAF frame as the panels via
+ * HorizontalStory's onProgress hook, which writes straight to the DOM and never
+ * touches React state; once the sequence ends the layer simply holds its final
+ * position for the remaining vertical sections.
  */
-export function HomepageArtworkStory({ intro, panels }: HomepageArtworkStoryProps) {
-  const backdropRef = useRef<HTMLDivElement>(null);
+export function HomepageArtworkStory({ intro, panels, outro }: HomepageArtworkStoryProps) {
+  const backdropRef = useRef<HTMLImageElement>(null);
+
+  /** Distance the artwork can travel before exposing an edge. */
+  const panDistance = () => {
+    const backdrop = backdropRef.current;
+    const frame = backdrop?.parentElement;
+    if (!backdrop || !frame) return 0;
+    return Math.max(0, backdrop.offsetWidth - frame.clientWidth);
+  };
 
   const panBackdrop = useCallback((progress: number) => {
     const backdrop = backdropRef.current;
     if (!backdrop) return;
     // RTL: the sequence advances leftwards through the artwork, so the layer
     // starts pulled left (showing its right edge) and settles at 0.
-    const distance = backdrop.offsetWidth - (backdrop.parentElement?.clientWidth ?? 0);
-    backdrop.style.transform = `translate3d(${(progress - 1) * distance}px,0,0)`;
+    backdrop.style.transform = `translate3d(${(progress - 1) * panDistance()}px,0,0)`;
+  }, []);
+
+  // Park the layer at its start offset before any scrolling happens, and keep it
+  // there across resizes when the horizontal sequence is not running (mobile,
+  // reduced motion), where nothing else would position it.
+  useEffect(() => {
+    const backdrop = backdropRef.current;
+    if (!backdrop) return;
+    const settle = () => {
+      if (!backdrop.style.transform) {
+        backdrop.style.transform = `translate3d(${-panDistance()}px,0,0)`;
+      }
+    };
+    if (backdrop.complete) settle();
+    else backdrop.addEventListener("load", settle, { once: true });
+    return () => backdrop.removeEventListener("load", settle);
   }, []);
 
   return (
@@ -54,27 +82,22 @@ export function HomepageArtworkStory({ intro, panels }: HomepageArtworkStoryProp
         aria-hidden="true"
         className="pointer-events-none sticky top-0 h-screen w-full overflow-hidden"
       >
-        <div
+        <img
           ref={backdropRef}
-          // Anchored left and never translated past 0, so the oversized layer
-          // covers the viewport at both ends of the pan instead of exposing the
-          // page background at one edge.
-          className="absolute inset-y-0 left-0 will-change-transform"
-          style={{
-            width: `${(1 + BG_OVERSCAN) * 100}%`,
-            backgroundImage: `url(${SECTIONS_BG_SRC})`,
-            // `cover` on an oversized box keeps the artwork's aspect ratio
-            // intact - it is never stretched to fit.
-            backgroundSize: "cover",
-            backgroundPosition: "center",
-            backgroundRepeat: "no-repeat",
-          }}
+          src={SECTIONS_BG_SRC}
+          alt=""
+          // Height-driven sizing with `w-auto` keeps the artwork's aspect ratio
+          // exactly - it is never stretched. `min-w-full` is the safety net for
+          // very wide, short viewports, where object-cover crops instead of
+          // distorting; `object-bottom` keeps that crop below the television.
+          className={`absolute bottom-0 left-0 ${BG_CROP_CLASS} w-auto min-w-full max-w-none object-cover object-bottom will-change-transform`}
         />
       </div>
 
       <div className="relative -mt-[100vh]">
         {intro}
         <HorizontalStory panels={panels} onProgress={panBackdrop} />
+        {outro}
       </div>
     </div>
   );
