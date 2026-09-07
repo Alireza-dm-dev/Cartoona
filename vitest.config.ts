@@ -6,6 +6,10 @@ export default defineConfig({
     include: ["tests/unit/**/*.test.ts"],
   },
   resolve: {
-    alias: { "@": path.resolve(__dirname) },
+    alias: {
+      "@": path.resolve(__dirname),
+      // See tests/stubs/server-only.ts - build-time marker with no runtime.
+      "server-only": path.resolve(__dirname, "tests/stubs/server-only.ts"),
+    },
   },
 });

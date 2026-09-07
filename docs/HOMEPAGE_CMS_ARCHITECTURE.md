@@ -171,11 +171,112 @@ Planned bucket: **`homepage-media`**.
 | Phase | Scope | Status |
 |---|---|---|
 | **1. Foundation** | Contract, defaults, tables, slots, validation, read service, tests | ✅ complete |
-| **2. Admin editor** | `/admin/homepage` UI + `PUT /api/admin/homepage` write route behind `requireAdmin`, revision-checked | next |
-| **3. Media upload** | `homepage-media` bucket, upload/replace API, geometry-coupling warnings | later |
-| **4. Runtime wiring** | Homepage components read `getHomepageContent()`; literals deleted from components | later |
+| **2. Admin editor** | `/admin/homepage` UI + `GET`/`PUT /api/admin/homepage` behind `requireAdminHomepageAuth`, revision-checked via `public.update_homepage_content_trusted` | ✅ complete (code; migrations pending — see below) |
+| **3. Media manager** | `homepage-media` bucket, atomic replace API, hero calibration, shared/separate backgrounds, tabbed `/admin/homepage` media UI | ✅ complete (code; migrations pending — see below) |
+| **4A. Runtime wiring** | Homepage components read `getResolvedHomepage()` + CMS media/layout; all text Admin-editable; current homepage exact fallback; one resolver owns reads | ✅ complete |
+| **4B. Controlled migration** | Apply three pending migrations in timestamp order to staging; wire `getHomepageContent()` CMS values into components; remove duplicated literals; smoke validation | pending |
 | **5. FAQ + pricing CMS** | Only if the product needs editable FAQ bodies or plan copy | speculative |
 
 Phase 4 is deliberately last: until then the components still own the rendered
 copy, and `DEFAULT_HOMEPAGE_CONTENT` is the transcription of record. The two must
 be kept in step until that phase deletes the duplication.
+
+## Phase 2: admin editor (implementation notes)
+
+**Routes.** `GET /api/admin/homepage` returns `{ content, revision, isDefault,
+source }`; `PUT /api/admin/homepage` accepts `{ content, expectedRevision }`.
+Both require `admin` / `super_admin` via `requireAdminHomepageAuth`
+(`lib/admin/homepage/service.ts`, same `users.role` model as every other admin
+route — no second role system). 422 carries per-field `errors` for inline
+display; 409 carries the current server snapshot for reload-on-conflict.
+
+**Write path.** The route validates the full document with
+`validateHomepageContent` (pure parsing in
+`lib/admin/homepage/put-validation.ts`), then calls
+`public.update_homepage_content_trusted` through the service-role client
+(`20260802110000_homepage_cms_admin_write.sql`). The RPC re-verifies the admin
+role via `public.is_admin_user_id`, locks the singleton `FOR UPDATE`, rejects
+stale revisions with `homepage_admin_conflict`, bumps `revision` atomically and
+returns the new snapshot. RPC codes map to Persian HTTP errors in
+`lib/admin/homepage/errors.ts`; raw DB strings never reach the browser.
+
+**Editor.** `/admin/homepage` (server wrapper +
+`components/admin/homepage/homepage-editor.tsx`) edits every safe text/content
+field: all eight sections, bounded-enum selects (`badgeVariant`, card `media`),
+`featuredPlanIds` checkboxes from `config/plans.ts` (prices stay in code), plus
+add/remove for testimonial items and FAQ questions only. No image/video
+upload, no media manager, no geometry controls (`HERO_ZOOM`, `HERO_TV_FOCUS`,
+`TV_SCREEN_RECT`, crops, story mechanics stay code-controlled), no
+draft/publish, no history UI, no reordering, no public-homepage wiring. Live
+validation via `validateHomepageContent`, unsaved-changes tracking with a
+`beforeunload` guard, save/reset/reload-on-conflict UX. Pure state decisions
+live in `lib/admin/homepage/editor-state.ts`.
+
+**Degraded mode.** When the CMS tables are absent, the editor opens on bundled
+defaults with `revision: null`: every input and save is disabled and a banner
+explains that applying the migrations is a separate deployment step. No
+browser-side database fallback was added — production security is unchanged.
+
+**Migration state.** `20260802100000_homepage_cms_foundation.sql` exists
+locally and is NOT applied to main; `20260802110000_homepage_cms_admin_write.sql`
+is new in this phase. Both are pending: validated locally/disposable only,
+never pushed to `oucyhmrnzahlhqjfqcge`. Production application is a separate,
+explicitly approved deployment step.
+
+## Phase 3: media manager (implementation notes)
+
+**Storage.** `homepage-media` bucket (`20260802120000_homepage_cms_media.sql`):
+public read, `file_size_limit` 50 MiB, MIME array png/jpeg/webp/mp4/webm — and
+deliberately **zero** INSERT/UPDATE/DELETE storage policies, so no browser
+(even an admin's) can upload directly. All uploads/removals go through the
+service-role client inside the admin routes. Object keys are server-generated
+(`homepage/<slot-slug>/<timestamp>-<uuid>.<ext>`, extension from validated
+MIME only); original filenames never affect the path.
+
+**Validation (no new dependencies).** `lib/admin/homepage/media-validation.ts`
+(pure): slot allowlist → MIME allowlist → magic-byte sniff (PNG/JPEG/WebP/
+MP4/WebM) → per-slot caps (hero/sections images 12 MB, card/safety images
+6 MB, videos 50 MB) → server-side dimension probing via hand-rolled
+PNG/JPEG/WebP header parsers (images must yield dimensions). Video
+width/height/duration stay nullable — no parser exists in the tree and browser
+values are never persisted as authoritative metadata.
+
+**Atomic commit (Correction 1).**
+`public.record_homepage_media_replacement_trusted(...)` commits primary media
+upsert + optional shared `sections.background` upsert + optional hero layout
+update in ONE transaction (layout locked first, fixed lock order). API flow:
+validate → upload → ONE RPC → RPC failure deletes the new object
+best-effort (DB untouched) → success deletes superseded objects best-effort.
+No multi-RPC hero path, no compensating DB rollback. Rollback matrix is the
+pure `decideMediaRollback` (old objects never deleted before DB success).
+
+**Trusted delete (Correction 2).** `public.delete_homepage_media_trusted`
+locks, deletes, and returns the previous storage metadata for best-effort
+cleanup — the API never mutates the table directly and never deletes the
+object before metadata removal succeeds. Reverting is always safe: the public
+homepage renders committed local assets until Phase 4.
+
+**Geometry.** `public.homepage_hero_layout` singleton holds the normalized TV
+rect (fractions only; seeded from `TV_SCREEN_RECT`), revision-guarded via
+`update_homepage_hero_layout_trusted`. `hero.background` replacement REQUIRES
+a valid rect — new art never silently inherits old placement. `HERO_ZOOM`,
+`HERO_TV_FOCUS`, crop/story mechanics stay code-only with no DB
+representation. **Phase 3 does not wire the public Hero to the layout table.**
+
+**UI.** `/admin/homepage` is tabbed (هیرو، پس‌زمینه بخش‌ها، گزینه‌های ساخت،
+ایمنی، متن‌ها): per-slot preview/metadata/source badge (پیش‌فرض پروژه /
+رسانه CMS), pending summary + cancel, success/safe-Persian-error states,
+two-step revert («بازگشت به فایل پیش‌فرض»). Hero tab adds sharing-mode radio
+(one image for both slots vs separate), calibration dialog (drag + resize +
+mandatory numeric % controls, aspect-deviation warning, explicit confirm
+checkbox), and standalone recalibration via `PUT hero-layout`. Sections
+replacement requires preview confirmation with the ~63 % crop guidance; crop
+mechanics are not editable. No `storage_path`, service keys, or raw DB errors
+reach the browser.
+
+**Migration state.** All three CMS migrations remain pending and unapplied to
+main (`oucyhmrnzahlhqjfqcge`): `20260802100000` (foundation),
+`20260802110000` (content write), `20260802120000` (media, new this phase).
+Validated on ephemeral local Postgres only (atomicity proven: stale-layout
+conflict left both media rows and layout untouched). Production application
+is a separate, explicitly approved deployment step.

@@ -43,6 +43,7 @@ export default async function AdminLayout({
           <Link href="/admin/requests" className="rounded-lg px-3 py-2 hover:bg-cream transition-colors">درخواست‌ها</Link>
           <Link href="/admin/media" className="rounded-lg px-3 py-2 hover:bg-cream transition-colors">رسانه‌ها</Link>
           <Link href="/admin/examples" className="rounded-lg px-3 py-2 hover:bg-cream transition-colors">نمونه‌ها</Link>
+          <Link href="/admin/homepage" className="rounded-lg px-3 py-2 hover:bg-cream transition-colors">صفحه اصلی</Link>
           <Link href="/admin/users" className="rounded-lg px-3 py-2 hover:bg-cream transition-colors">کاربران</Link>
           <Link href="/admin/characters" className="rounded-lg px-3 py-2 hover:bg-cream transition-colors">شخصیت‌ها</Link>
           <Link href="/admin/referrals" className="rounded-lg px-3 py-2 hover:bg-cream transition-colors">مدیریت معرفی</Link>
@@ -61,6 +62,7 @@ export default async function AdminLayout({
           <Link href="/admin/requests" className="shrink-0 rounded-lg px-3 py-2 hover:bg-cream transition-colors">درخواست‌ها</Link>
           <Link href="/admin/media" className="shrink-0 rounded-lg px-3 py-2 hover:bg-cream transition-colors">رسانه‌ها</Link>
           <Link href="/admin/examples" className="shrink-0 rounded-lg px-3 py-2 hover:bg-cream transition-colors">نمونه‌ها</Link>
+          <Link href="/admin/homepage" className="shrink-0 rounded-lg px-3 py-2 hover:bg-cream transition-colors">صفحه اصلی</Link>
           <Link href="/admin/users" className="shrink-0 rounded-lg px-3 py-2 hover:bg-cream transition-colors">کاربران</Link>
           <Link href="/admin/characters" className="shrink-0 rounded-lg px-3 py-2 hover:bg-cream transition-colors">شخصیت‌ها</Link>
           <Link href="/admin/referrals" className="shrink-0 rounded-lg px-3 py-2 hover:bg-cream transition-colors">مدیریت معرفی</Link>

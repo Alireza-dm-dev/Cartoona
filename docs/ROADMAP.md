@@ -72,12 +72,16 @@
 - [x] **Phase 1 — Foundation.** `HomepageContent` contract, default content,
       `homepage_content` singleton + `homepage_media_assets` tables, media slot
       registry, validation, server read service with fallback, 40 unit tests.
-- [ ] **Phase 2 — Admin editor.** `/admin/homepage` UI and a write route behind
-      `requireAdmin`, revision-checked, validating with the shared contract.
-- [ ] **Phase 3 — Media upload.** `homepage-media` bucket, upload/replace API
-      with rollback, geometry-coupling warnings for the two background slots.
-- [ ] **Phase 4 — Runtime wiring.** Homepage components read
-      `getHomepageContent()`; copy literals removed from the components.
+- [x] **Phase 2 — Admin editor.** `/admin/homepage` copy UI and write route
+      behind `requireAdminHomepageAuth`, revision-checked, validating with the
+      shared contract. (Code complete; migration pending.)
+- [x] **Phase 3 — Media manager.** `homepage-media` bucket (no browser writes),
+      atomic single-RPC upload/replace with storage rollback, hero TV-rect
+      calibration (normalized, revision-checked), shared/separate hero +
+      sections backgrounds, tabbed admin media UI, revert-to-local-fallback.
+      (Code complete; migration pending.)
+- [x] **Phase 4A — Runtime wiring.** Homepage components read `getResolvedHomepage()` + CMS media/layout; all text Admin-editable; current homepage exact fallback; one resolver owns reads. Types/lint/build/tests pass.
+- [ ] **Phase 4B — Controlled migration.** Apply three pending migrations in timestamp order to staging project; wire `getHomepageContent()` CMS values into components; remove duplicated literals; run smoke validation tests.
 
 ## Future (Post-MVP)
 

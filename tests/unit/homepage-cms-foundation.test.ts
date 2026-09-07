@@ -49,6 +49,7 @@ describe("default homepage content", () => {
       "faqTeaser",
       "finalCta",
       "hero",
+      "navigation",
       "pricing",
       "safety",
       "testimonials",

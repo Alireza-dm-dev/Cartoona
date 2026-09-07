@@ -3,27 +3,40 @@
 import { useState } from "react";
 import Link from "next/link";
 import { faqs } from "@/config/faqs";
+import type { HomepageContent } from "@/lib/homepage/types";
 import { GlassPanel } from "@/components/marketing/GlassPanel";
 
-const TEASER_QUESTIONS = [
-  "آیا کودک من حساب جداگانه دارد؟",
-  "آیا عکس یا نقاشی کودک من عمومی می‌شود؟",
-  "چگونه یک کارتون سفارش بدهم؟",
-  "چه زمانی خروجی آماده می‌شود؟",
-];
+export interface FaqTeaserSectionProps {
+  content: HomepageContent["faqTeaser"];
+}
 
-export function FaqTeaserSection() {
+/**
+ * Resolves the CMS question selection against the canonical FAQ list.
+ *
+ * The homepage CMS stores only *which* questions to surface; the answer bodies
+ * stay in `config/faqs.ts`, shared with /faq, so the teaser and the full page
+ * can never drift apart. A selected question that no longer exists in the
+ * canonical list is dropped rather than rendered without an answer. Selection
+ * order is the editor's, not the config's.
+ */
+export function resolveTeaserFaqs(questions: readonly string[]) {
+  return questions
+    .map((question) => faqs.find((faq) => faq.q === question))
+    .filter((faq): faq is (typeof faqs)[number] => faq !== undefined);
+}
+
+export function FaqTeaserSection({ content }: FaqTeaserSectionProps) {
   const [openIndex, setOpenIndex] = useState<number | null>(null);
-  const teaserFaqs = faqs.filter((faq) => TEASER_QUESTIONS.includes(faq.q));
+  const teaserFaqs = resolveTeaserFaqs(content.questions);
 
   return (
     <div className="mx-auto max-w-[860px] px-6">
       <GlassPanel className="mx-auto flex max-w-[700px] flex-col items-center gap-2.5 px-6 py-7 text-center sm:px-10">
         <span className="rounded-full bg-candy-pink/10 px-4 py-1.5 text-xs font-bold text-candy-pink">
-          سوالات متداول
+          {content.eyebrow}
         </span>
         <h2 className="font-brand text-2xl font-bold text-parent-navy sm:text-[30px]">
-          هر چیزی که والدین معمولاً می‌پرسند
+          {content.title}
         </h2>
       </GlassPanel>
 
@@ -62,8 +75,8 @@ export function FaqTeaserSection() {
       </div>
 
       <div className="mt-7 flex justify-center">
-        <Link href="/faq" className="text-sm font-bold text-parent-navy transition-colors hover:text-candy-pink">
-          مشاهده همه‌ی سوالات متداول
+        <Link href={content.linkHref} className="text-sm font-bold text-parent-navy transition-colors hover:text-candy-pink">
+          {content.linkLabel}
         </Link>
       </div>
     </div>

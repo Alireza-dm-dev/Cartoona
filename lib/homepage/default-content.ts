@@ -187,4 +187,13 @@ export const DEFAULT_HOMEPAGE_CONTENT: HomepageContent = {
     primaryCta: { label: "شروع ساخت کارتون", href: "#creation-types" },
     secondaryCta: { label: "مشاهده نمونه‌ها", href: "/examples" },
   },
+  navigation: {
+    charactersLabel: "شخصیت‌ها",
+    examplesLabel: "نمونه‌ها",
+    pricingLabel: "قیمت‌گذاری",
+    safetyLabel: "ایمنی و حریم خصوصی",
+    faqLabel: "سوالات متداول",
+    loginLabel: "ورود",
+    signupLabel: "شروع کنید",
+  },
 };

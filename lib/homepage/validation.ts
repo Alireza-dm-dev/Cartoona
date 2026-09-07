@@ -12,6 +12,7 @@ import {
   type HomepageCharacterCard,
   type HomepageContent,
   type HomepageCta,
+  type NavigationContent,
   type PricingContent,
   type SafetyContent,
   type SafetyPoint,
@@ -50,6 +51,8 @@ export const LIMITS = {
   imageAlt: 200,
   question: 300,
   planId: 40,
+  /** Nav labels sit in a fixed-width pill; long text breaks the bar. */
+  navigationLabel: 80,
   href: 300,
   id: 48,
 } as const;
@@ -369,8 +372,21 @@ function validateFinalCta(raw: unknown, c: Collector): FinalCtaContent {
   };
 }
 
-/**
- * Validates an untrusted homepage content payload - whether it came from the
+/** Validates navigation labels - admin-editable text only; routes are fixed. */
+function validateNavigation(raw: unknown, c: Collector): NavigationContent {
+  const o = c.section(raw, "navigation");
+  return {
+    charactersLabel: c.text(o.charactersLabel, "navigation.charactersLabel", LIMITS.navigationLabel),
+    examplesLabel: c.text(o.examplesLabel, "navigation.examplesLabel", LIMITS.navigationLabel),
+    pricingLabel: c.text(o.pricingLabel, "navigation.pricingLabel", LIMITS.navigationLabel),
+    safetyLabel: c.text(o.safetyLabel, "navigation.safetyLabel", LIMITS.navigationLabel),
+    faqLabel: c.text(o.faqLabel, "navigation.faqLabel", LIMITS.navigationLabel),
+    loginLabel: c.text(o.loginLabel, "navigation.loginLabel", LIMITS.navigationLabel),
+    signupLabel: c.text(o.signupLabel, "navigation.signupLabel", LIMITS.navigationLabel),
+  };
+}
+
+/** Validates an untrusted homepage content payload - whether it came from the
  * database or from a future admin form - into the typed contract.
  *
  * Collects every problem rather than throwing on the first, so the admin editor
@@ -397,6 +413,7 @@ export function validateHomepageContent(raw: unknown): HomepageValidationResult 
     testimonials: validateTestimonials(raw.testimonials, c),
     faqTeaser: validateFaqTeaser(raw.faqTeaser, c),
     finalCta: validateFinalCta(raw.finalCta, c),
+    navigation: validateNavigation(raw.navigation, c),
   };
 
   if (c.errors.length > 0) {

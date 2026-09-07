@@ -3,31 +3,36 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import type { HeroTvRect } from "@/lib/homepage/hero-layout";
+import type { HeroContent, NavigationContent } from "@/lib/homepage/types";
 
-const NAV_LINKS = [
-  { href: "/characters", label: "شخصیت‌ها" },
-  { href: "/examples", label: "نمونه‌ها" },
-  { href: "/pricing", label: "قیمت‌گذاری" },
-  { href: "/safety", label: "ایمنی و حریم خصوصی" },
-  { href: "/faq", label: "سوالات متداول" },
-];
+/**
+ * Navigation routes are structural product routing and stay fixed in code. Only
+ * the label of each is admin-editable, so an editor can rename a destination but
+ * never repoint it.
+ */
+const NAV_ROUTES = [
+  { key: "characters", href: "/characters", label: "charactersLabel" },
+  { key: "examples", href: "/examples", label: "examplesLabel" },
+  { key: "pricing", href: "/pricing", label: "pricingLabel" },
+  { key: "safety", href: "/safety", label: "safetyLabel" },
+  { key: "faq", href: "/faq", label: "faqLabel" },
+] as const satisfies readonly {
+  key: string;
+  href: string;
+  label: keyof NavigationContent;
+}[];
 
 /**
  * The hero backdrop is the homepage artwork itself, which already contains the
  * television. There is no hero background video any more: the only moving image
- * in the hero is the clip playing on the TV screen.
+ * in the hero is the clip playing on the TV screen. Both files arrive as
+ * resolved media props - the committed local fallbacks live in the resolver.
+ *
+ * The intrinsic size stays here because the crop maths is code-owned: the TV
+ * cutout is a solid dark rect at x 215..400, y 218..364 of 2048x1529.
  */
-const HERO_IMAGE_SRC = "/images/homepage/sections-bg.png";
 const HERO_IMAGE_INTRINSIC = { width: 2048, height: 1529 };
-
-const TV_SCREEN_CONTENT_SRC = "/videos/homepage/hero-tv.mp4";
-
-/**
- * The television's black screen cutout, as a fraction of the artwork. Measured
- * off the PNG rather than eyeballed - the cutout is a solid dark rect at
- * x 215..400, y 218..364 of 2048x1529.
- */
-const TV_SCREEN_RECT = { left: 0.1050, top: 0.1426, width: 0.0908, height: 0.0961 };
 
 /**
  * The artwork draws the TV small and up in the top-left corner, so the hero
@@ -56,7 +61,8 @@ interface HeroFrameGeometry {
 function computeGeometry(
   frameWidth: number,
   frameHeight: number,
-  isMobile: boolean
+  isMobile: boolean,
+  tvRect: HeroTvRect
 ): HeroFrameGeometry {
   const zoom = isMobile ? HERO_ZOOM.mobile : HERO_ZOOM.desktop;
   const focus = isMobile ? HERO_TV_FOCUS.mobile : HERO_TV_FOCUS.desktop;
@@ -65,8 +71,8 @@ function computeGeometry(
   const imageHeight =
     imageWidth * (HERO_IMAGE_INTRINSIC.height / HERO_IMAGE_INTRINSIC.width);
 
-  const tvCentreX = TV_SCREEN_RECT.left + TV_SCREEN_RECT.width / 2;
-  const tvCentreY = TV_SCREEN_RECT.top + TV_SCREEN_RECT.height / 2;
+  const tvCentreX = tvRect.x + tvRect.width / 2;
+  const tvCentreY = tvRect.y + tvRect.height / 2;
 
   // Slide the artwork so the TV lands on the focal point, then clamp so the
   // frame is never left showing past an edge of the image.
@@ -81,16 +87,16 @@ function computeGeometry(
     imageWidth,
     imageHeight,
     tv: {
-      left: imageLeft + TV_SCREEN_RECT.left * imageWidth,
-      top: imageTop + TV_SCREEN_RECT.top * imageHeight,
-      width: TV_SCREEN_RECT.width * imageWidth,
-      height: TV_SCREEN_RECT.height * imageHeight,
+      left: imageLeft + tvRect.x * imageWidth,
+      top: imageTop + tvRect.y * imageHeight,
+      width: tvRect.width * imageWidth,
+      height: tvRect.height * imageHeight,
     },
   };
 }
 
 /** Measures the hero frame and recomputes the artwork/TV geometry on resize. */
-function useHeroGeometry(frameRef: RefObject<HTMLDivElement | null>) {
+function useHeroGeometry(frameRef: RefObject<HTMLDivElement | null>, tvRect: HeroTvRect) {
   const [geometry, setGeometry] = useState<HeroFrameGeometry | null>(null);
 
   useEffect(() => {
@@ -102,7 +108,7 @@ function useHeroGeometry(frameRef: RefObject<HTMLDivElement | null>) {
     function measure() {
       const { width, height } = el!.getBoundingClientRect();
       if (!width || !height) return;
-      setGeometry(computeGeometry(width, height, mobileQuery.matches));
+      setGeometry(computeGeometry(width, height, mobileQuery.matches, tvRect));
     }
 
     measure();
@@ -113,15 +119,36 @@ function useHeroGeometry(frameRef: RefObject<HTMLDivElement | null>) {
       observer.disconnect();
       mobileQuery.removeEventListener("change", measure);
     };
-  }, [frameRef]);
+  }, [frameRef, tvRect]);
 
   return geometry;
 }
 
-export function Hero() {
+interface HeroMedia {
+  background: string;
+  tv_video: string;
+}
+
+interface HeroLayout {
+  rect: HeroTvRect;
+}
+
+export interface HeroProps {
+  content: HeroContent;
+  navigation: NavigationContent;
+  media: HeroMedia;
+  layout: HeroLayout;
+}
+
+/**
+ * The hero renders entirely from resolved props. Choosing between a stored rect
+ * and the default already happened in the resolver, so there is exactly one
+ * place that decision lives and the component simply uses what it is handed.
+ */
+export function Hero({ content, navigation, media, layout }: HeroProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const frameRef = useRef<HTMLDivElement>(null);
-  const geometry = useHeroGeometry(frameRef);
+  const geometry = useHeroGeometry(frameRef, layout.rect);
 
   return (
     <section className="font-ui relative">
@@ -146,7 +173,7 @@ export function Hero() {
             {geometry && (
               <>
                 <img
-                  src={HERO_IMAGE_SRC}
+                  src={media.background}
                   alt=""
                   className="absolute max-w-none"
                   style={{
@@ -168,7 +195,7 @@ export function Hero() {
                   }}
                 >
                   <video
-                    src={TV_SCREEN_CONTENT_SRC}
+                    src={media.tv_video}
                     autoPlay
                     muted
                     loop
@@ -191,9 +218,9 @@ export function Hero() {
           </Link>
 
           <div className="hidden items-center gap-6 whitespace-nowrap text-[15px] leading-normal font-bold text-parent-navy md:flex">
-            {NAV_LINKS.map((link) => (
-              <Link key={link.href} href={link.href} className="hover:text-candy-pink transition-colors">
-                {link.label}
+            {NAV_ROUTES.map((route) => (
+              <Link key={route.href} href={route.href} className="hover:text-candy-pink transition-colors">
+                {navigation[route.label]}
               </Link>
             ))}
           </div>
@@ -203,14 +230,14 @@ export function Hero() {
               href="/login"
               className="text-[15px] leading-normal font-bold text-parent-navy hover:text-candy-pink transition-colors"
             >
-              ورود
+              {navigation.loginLabel}
             </Link>
             <Link href="/signup">
               <Button
                 size="sm"
                 className="rounded-full px-5 py-2 text-[15px] font-bold shadow-[0_6px_16px_rgba(242,100,154,0.35)]"
               >
-                شروع کنید
+                {navigation.signupLabel}
               </Button>
             </Link>
           </div>
@@ -221,7 +248,7 @@ export function Hero() {
                 size="sm"
                 className="rounded-full px-4 py-2 text-sm font-bold shadow-[0_6px_16px_rgba(242,100,154,0.35)]"
               >
-                شروع کنید
+                {navigation.signupLabel}
               </Button>
             </Link>
             <button
@@ -240,54 +267,53 @@ export function Hero() {
 
         {menuOpen && (
           <div className="absolute top-[calc(clamp(12px,2.6vh,30px)+74px)] left-1/2 z-20 flex w-[min(560px,92vw)] -translate-x-1/2 flex-col gap-1 rounded-[22px] bg-white/96 p-3.5 shadow-[0_14px_34px_rgba(80,120,150,0.2)] backdrop-blur-md md:hidden">
-            {NAV_LINKS.map((link) => (
+            {NAV_ROUTES.map((route) => (
               <Link
-                key={link.href}
-                href={link.href}
+                key={route.href}
+                href={route.href}
                 onClick={() => setMenuOpen(false)}
                 className="rounded-2xl px-4 py-3.5 text-base font-semibold text-parent-navy hover:bg-candy-pink/10 hover:text-candy-pink transition-colors"
               >
-                {link.label}
+                {navigation[route.label]}
               </Link>
             ))}
             <Link
               href="/login"
               onClick={() => setMenuOpen(false)}
-              className="rounded-2xl px-4 py-3.5 text-base font-semibold text-candy-pink hover:bg-candy-pink/10 transition-colors"
+              className="rounded-2xl px-4 py-3.5 text-base font-semibold text-parent-navy hover:bg-candy-pink/10 hover:text-candy-pink transition-colors"
             >
-              ورود
+              {navigation.loginLabel}
             </Link>
           </div>
         )}
 
-        <div className="order-1 z-10 flex w-[92vw] flex-col items-center gap-2 text-center md:absolute md:top-[clamp(88px,14vh,170px)] md:left-1/2 md:w-[min(900px,90vw)] md:-translate-x-1/2 md:gap-[clamp(6px,1.1vh,14px)]">
+        <div className="order-1 z-10 flex w-[92vw] flex-col items-center gap-2 text-center md:absolute md:top-[clamp(88px,14vh,170px)] md:left-1/2 md:w-[min(900px,92vw)] md:-translate-x-1/2 md:gap-[clamp(6px,1.1vh,14px)]">
           <span className="text-sm font-bold text-candy-pink sm:text-base">
-            استودیوی خصوصی ساخت کارتون برای خانواده‌ها
+            {content.eyebrow}
           </span>
           <h1 className="text-[28px] font-bold leading-snug tracking-tight text-parent-navy text-balance sm:text-[43px] sm:leading-[1.35]">
-            خاطره‌های کارتونی جادویی بسازید
+            {content.title}
           </h1>
           <p className="max-w-[380px] text-[15px] font-medium leading-[1.9] text-[#3f4859] text-pretty sm:max-w-[680px] sm:text-[17px] sm:leading-[1.95]">
-            با کارتونا، والدین می‌توانند برای کودک خود تصویر، ویدئو یا انیمیشن
-            کارتونی اختصاصی سفارش دهند؛ امن، خصوصی و کاملاً تحت کنترل والدین.
+            {content.description}
           </p>
         </div>
 
         <div className="order-3 z-10 mt-7 flex w-[92vw] flex-wrap items-center justify-center gap-3 md:absolute md:bottom-[clamp(52px,8vh,96px)] md:left-1/2 md:mt-0 md:w-[min(760px,92vw)] md:-translate-x-1/2">
           <Link href="#creation-types">
             <Button size="lg" className="shadow-[0_10px_24px_rgba(242,100,154,0.35)]">
-              شروع ساخت کارتون
+              {content.primaryCta.label}
             </Button>
           </Link>
           <Link href="/examples">
             <Button variant="secondary" size="lg" className="shadow-[0_10px_24px_rgba(80,120,150,0.18)]">
-              مشاهده نمونه‌ها
+              {content.secondaryCta.label}
             </Button>
           </Link>
         </div>
 
         <p className="order-4 z-10 mt-4 w-[92vw] text-center text-[13px] font-semibold text-[#4a5266] sm:text-sm md:absolute md:bottom-[clamp(20px,3.4vh,40px)] md:left-1/2 md:mt-0 md:w-[min(760px,92vw)] md:-translate-x-1/2">
-          تحت کنترل والدین · خصوصی برای خانواده · بدون اشتراک‌گذاری عمومی
+          {content.trustLine}
         </p>
       </div>
     </section>

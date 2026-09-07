@@ -10,9 +10,13 @@ interface HomepageArtworkStoryProps {
   panels: ReactNode[];
   /** Vertical content after the sequence, which stays on the same artwork. */
   outro: ReactNode;
+  /**
+   * Resolved `sections.background` slot. Always supplied by the page module -
+   * the committed local fallback is resolver-owned, so this component has no
+   * opinion about which file it draws.
+   */
+  backgroundSrc: string;
 }
-
-export const SECTIONS_BG_SRC = "/images/homepage/sections-bg.png";
 
 /**
  * The artwork layer is drawn this much taller than the viewport and anchored to
@@ -38,7 +42,7 @@ const BG_CROP_CLASS = "h-[160%]";
  * touches React state; once the sequence ends the layer simply holds its final
  * position for the remaining vertical sections.
  */
-export function HomepageArtworkStory({ intro, panels, outro }: HomepageArtworkStoryProps) {
+export function HomepageArtworkStory({ intro, panels, outro, backgroundSrc }: HomepageArtworkStoryProps) {
   const backdropRef = useRef<HTMLImageElement>(null);
 
   /** Distance the artwork can travel before exposing an edge. */
@@ -84,7 +88,7 @@ export function HomepageArtworkStory({ intro, panels, outro }: HomepageArtworkSt
       >
         <img
           ref={backdropRef}
-          src={SECTIONS_BG_SRC}
+          src={backgroundSrc}
           alt=""
           // Height-driven sizing with `w-auto` keeps the artwork's aspect ratio
           // exactly - it is never stretched. `min-w-full` is the safety net for

@@ -8,11 +8,32 @@ import { PricingSection } from "@/components/marketing/PricingSection";
 import { TestimonialsSection } from "@/components/marketing/TestimonialsSection";
 import { FaqTeaserSection } from "@/components/marketing/FaqTeaserSection";
 import { FinalCtaSection } from "@/components/marketing/FinalCtaSection";
+import { HOMEPAGE_MEDIA_SLOTS } from "@/lib/homepage/media-slots";
+import { getResolvedHomepage } from "@/lib/homepage/resolver";
 
-export default function HomePage() {
+/**
+ * The homepage reads the CMS on every request so an admin edit is visible on
+ * the next page load. There is no cache layer in front of it: the read is three
+ * bounded queries against a singleton row and two small tables, and the whole
+ * point of the CMS is that changes take effect without a deploy.
+ */
+export const dynamic = "force-dynamic";
+
+export default async function HomePage() {
+  const resolved = await getResolvedHomepage();
+  const { content, media } = resolved;
+
   return (
     <>
-      <Hero />
+      <Hero
+        content={content.hero}
+        navigation={content.navigation}
+        media={{
+          background: media[HOMEPAGE_MEDIA_SLOTS.HERO_BACKGROUND],
+          tv_video: media[HOMEPAGE_MEDIA_SLOTS.HERO_TV_VIDEO],
+        }}
+        layout={{ rect: resolved.heroLayout }}
+      />
 
       {/* Every section after the hero shares one continuous artwork canvas, so
           none of them carries its own background: build options scrolls
@@ -20,26 +41,31 @@ export default function HomePage() {
           testimonials -> faq -> final CTA return to vertical on the same
           canvas, which holds through to the end of the page. */}
       <HomepageArtworkStory
+        backgroundSrc={media[HOMEPAGE_MEDIA_SLOTS.SECTIONS_BACKGROUND]}
         intro={
           <SectionShell>
-            <BuildOptionsSection />
+            <BuildOptionsSection content={content.buildOptions} media={media} />
           </SectionShell>
         }
         panels={[
-          <CharactersSection key="characters" />,
-          <SafetySection key="safety" />,
-          <PricingSection key="pricing" />,
+          <CharactersSection key="characters" content={content.characters} />,
+          <SafetySection
+            key="safety"
+            content={content.safety}
+            imageSrc={media[HOMEPAGE_MEDIA_SLOTS.SAFETY_IMAGE]}
+          />,
+          <PricingSection key="pricing" content={content.pricing} />,
         ]}
         outro={
           <>
             <SectionShell>
-              <TestimonialsSection />
+              <TestimonialsSection content={content.testimonials} />
             </SectionShell>
             <SectionShell>
-              <FaqTeaserSection />
+              <FaqTeaserSection content={content.faqTeaser} />
             </SectionShell>
             <SectionShell>
-              <FinalCtaSection />
+              <FinalCtaSection content={content.finalCta} />
             </SectionShell>
           </>
         }

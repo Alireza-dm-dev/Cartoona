@@ -127,7 +127,7 @@ export function mediaTypeMatchesSlot(
   return HOMEPAGE_MEDIA_SLOT_SPECS[slot].mediaType === mediaType;
 }
 
-/** MIME allowlists for the future upload API. Not enforced at this phase. */
+/** MIME allowlists enforced by the admin upload API (Phase 3). */
 export const HOMEPAGE_MEDIA_MIME_ALLOWLIST: Record<HomepageMediaType, readonly string[]> = {
   image: ["image/png", "image/jpeg", "image/webp"],
   video: ["video/mp4", "video/webm"],

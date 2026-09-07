@@ -21,6 +21,34 @@ export interface HomepageContentRow {
   revision: unknown;
 }
 
+/** Controlled normalizer: fills newly-added optional/versioned presentation fields
+ * from defaults for backward compatibility. Only fields explicitly introduced by
+ * newer CMS versions receive defaults; structural corruption is NOT silently repaired.
+ *
+ * Pure: the input object is never mutated. Callers pass raw database JSON and
+ * `DEFAULT_HOMEPAGE_CONTENT` through here, and neither may be written to -
+ * `DEFAULT_HOMEPAGE_CONTENT` is a shared module singleton, and a mutated row
+ * would make the function non-idempotent.
+ */
+export function normalizeHomepageContent(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+
+  const obj = raw as Record<string, unknown>;
+
+  // Navigation: introduced in Phase 4A. Old rows predate it, so supply the
+  // default labels rather than failing validation on a field they never had.
+  if (!obj.navigation) {
+    return {
+      ...obj,
+      navigation: { ...DEFAULT_HOMEPAGE_CONTENT.navigation },
+    };
+  }
+
+  // Nothing to backfill. Returned as-is: this function is intentionally narrow
+  // and performs no structural repair of existing sections.
+  return obj;
+}
+
 export interface ResolveInput {
   row: HomepageContentRow | null;
   /** True when the read itself failed, as opposed to simply returning no row. */
@@ -66,7 +94,11 @@ export function resolveHomepageContent({ row, readFailed = false }: ResolveInput
     };
   }
 
-  const result = validateHomepageContent(row.content_json);
+  // Normalize first: fill newly-added optional fields from defaults
+  // so old rows without navigation etc. still validate successfully.
+  const normalized = normalizeHomepageContent(row.content_json);
+
+  const result = validateHomepageContent(normalized);
   if (!result.ok) {
     return {
       ...withDefaults("default-invalid-content"),

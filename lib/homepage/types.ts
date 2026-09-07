@@ -8,7 +8,7 @@
  * version control.
  *
  * Deliberately NOT modelled here (see docs/HOMEPAGE_CMS_ARCHITECTURE.md):
- *   - site header / nav labels and destinations (real app routes)
+ *   - nav route destinations (real app routes - labels only are editable)
  *   - the TV overlay rect, hero zoom/focus, horizontal-story mechanics
  *   - card tint gradients (raw CSS)
  *   - pricing plan names, prices and candy amounts (billing config)
@@ -138,6 +138,23 @@ export interface FinalCtaContent {
   secondaryCta: HomepageCta;
 }
 
+/**
+ * Homepage navigation DISPLAY LABELS only. Route destinations are structural
+ * product routing and stay fixed in code - the admin may relabel "شخصیت‌ها"
+ * but can never change "/characters". Brand, auth routing and aria labels
+ * are intentionally not modelled here.
+ */
+export interface NavigationContent {
+  charactersLabel: string;
+  examplesLabel: string;
+  pricingLabel: string;
+  safetyLabel: string;
+  faqLabel: string;
+  loginLabel: string;
+  /** Internal name only: default copy matches the current "شروع کنید" button. */
+  signupLabel: string;
+}
+
 export interface HomepageContent {
   hero: HeroContent;
   buildOptions: BuildOptionsContent;
@@ -147,6 +164,7 @@ export interface HomepageContent {
   testimonials: TestimonialsContent;
   faqTeaser: FaqTeaserContent;
   finalCta: FinalCtaContent;
+  navigation: NavigationContent;
 }
 
 /** The one row in public.homepage_content is addressed by this key. */
