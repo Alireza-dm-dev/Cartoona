@@ -7,6 +7,7 @@ import { isAdminRole } from "@/lib/auth/admin-role";
 import { HOMEPAGE_SINGLETON_KEY, type HomepageContent } from "@/lib/homepage/types";
 import { DEFAULT_HOMEPAGE_CONTENT } from "@/lib/homepage/default-content";
 import { validateHomepageContent } from "@/lib/homepage/validation";
+import { normalizeHomepageContent } from "@/lib/homepage/content-resolution";
 import { mapAdminHomepageRpcError } from "@/lib/admin/homepage/errors";
 import type { ParsedHomepagePutBody } from "@/lib/admin/homepage/put-validation";
 import type {
@@ -83,8 +84,20 @@ export async function queryAdminHomepageContent(
       return { content: DEFAULT_HOMEPAGE_CONTENT, revision: null, isDefault: true, source: "default" };
     }
 
-    const validated = validateHomepageContent(data.content_json);
+    // Normalize before validating, exactly as the public read path does.
+    // A row seeded before a newer CMS version exists is valid content that
+    // simply predates a section (the Phase-1 seed predates `navigation`);
+    // rejecting it here would strand the editor in degraded mode with no way
+    // out, since only a save can add the missing section.
+    const validated = validateHomepageContent(normalizeHomepageContent(data.content_json));
     if (!validated.ok) {
+      // Stored content is genuinely malformed, not merely older. Distinguish it
+      // from "tables/row absent" in the server log — field paths only, never
+      // stored values.
+      console.warn(
+        "[admin/homepage] stored content failed validation after normalization; serving defaults",
+        { fields: validated.errors.slice(0, 20).map((e) => e.field) },
+      );
       return { content: DEFAULT_HOMEPAGE_CONTENT, revision: null, isDefault: true, source: "default" };
     }
 
@@ -156,7 +169,11 @@ export async function updateHomepageViaTrustedRpc(
   }
   const revision: number = row.revision;
 
-  const validated = validateHomepageContent(row.content_json ?? content);
+  // Same normalization contract as the read path: the row echoed back by the
+  // RPC is stored content and is read through the identical lens.
+  const validated = validateHomepageContent(
+    normalizeHomepageContent(row.content_json ?? content),
+  );
   const savedContent = validated.ok ? validated.content : content;
 
   return {
