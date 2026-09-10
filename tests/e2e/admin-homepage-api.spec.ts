@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test"
 import * as fs from "fs"
 import * as path from "path"
-import { assertSafeDatabaseTarget } from "../helpers/assert-safe-database-target"
+import { assertSafeDatabaseTarget, guardedProjectRef, guardedSupabaseUrl } from "../helpers/assert-safe-database-target"
 
 // ⚠️ Stateful admin homepage tests. These exercise GET /api/admin/homepage
 // and PUT /api/admin/homepage against a disposable/local target ONLY.
@@ -14,9 +14,10 @@ import { assertSafeDatabaseTarget } from "../helpers/assert-safe-database-target
 // tables, GET serves bundled defaults (revision null) and the write path is
 // unavailable — the spec asserts that degraded contract instead of writing.
 
-const PROJECT_REF = "oucyhmrnzahlhqjfqcge"
-const SUPABASE_URL = `https://${PROJECT_REF}.supabase.co`
-const BASE = "http://localhost:3000"
+// Base URL of the app under test. Overridable so a run can target an app
+// instance started against the guarded project, rather than whatever
+// happens to be listening on the default port.
+const BASE = process.env.CARTOONA_TEST_BASE_URL || "http://localhost:3000"
 
 function loadEnv(): void {
   try {
@@ -35,6 +36,11 @@ loadEnv()
 
 const _guard = assertSafeDatabaseTarget()
 if (!_guard.ok) throw new Error(`Guard blocked: ${_guard.reason}`)
+
+// Target is derived from the same environment the guard inspected, so the
+// guard's verdict and these requests can never describe different projects.
+const PROJECT_REF = guardedProjectRef()
+const SUPABASE_URL = guardedSupabaseUrl()
 
 const KEY = process.env.SUPABASE_SECRET_KEY || ""
 const HDR = { "Content-Type": "application/json", apikey: KEY, Authorization: `Bearer ${KEY}` }

@@ -87,6 +87,44 @@ export function assertSafeDatabaseTarget(): SafeTargetResult {
   }
 }
 
+/**
+ * The Supabase URL the guard actually inspected.
+ *
+ * Stateful specs MUST build every request from this, never from a hardcoded
+ * project ref. When a spec hardcodes its target, the guard's verdict and the
+ * spec's writes describe two different projects: pointing the environment at a
+ * disposable project makes the guard return `ok`, while the spec still writes
+ * to whatever it hardcoded. Deriving both from one source is what makes the
+ * guard's answer binding on the traffic.
+ *
+ * Throws when no target is configured, so a misconfigured run fails loudly
+ * instead of silently falling back to a default project.
+ */
+export function guardedSupabaseUrl(): string {
+  const raw = (process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "").trim()
+  if (!raw) {
+    throw new Error(
+      "No Supabase URL configured. Set NEXT_PUBLIC_SUPABASE_URL (or SUPABASE_URL) to the disposable target before running stateful tests.",
+    )
+  }
+  const parsed = parseSupabaseUrl(raw)
+  if (!parsed) {
+    throw new Error(`Supabase URL failed validation and cannot be used as a test target: ${raw}`)
+  }
+  return raw.replace(/\/+$/, "")
+}
+
+/**
+ * Project ref of the guarded target, used to name the `sb-<ref>-auth-token`
+ * cookie that `@supabase/ssr` reads. Local stacks have no project ref, so the
+ * hostname stands in, matching how the client derives its storage key.
+ */
+export function guardedProjectRef(): string {
+  const parsed = parseSupabaseUrl(guardedSupabaseUrl())
+  if (!parsed) throw new Error("Guarded Supabase URL could not be parsed.")
+  return parsed.isLocal ? parsed.hostname : (parsed.projectRef as string)
+}
+
 function collectIdentifiers(): CollectedIdentifiers {
   const allowDestructive = process.env.CARTOONA_ALLOW_DESTRUCTIVE_TESTS?.trim() === "true"
   const testRef = process.env.CARTOONA_TEST_SUPABASE_PROJECT_REF?.trim() || null

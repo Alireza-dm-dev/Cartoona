@@ -99,11 +99,12 @@
 - **Print-on-demand** — digital delivery only.
 - **Advanced prompt engineering panel** — simple predefined options only.
 
-## Homepage CMS (Phases 1–3 shipped; runtime wiring pending)
+## Homepage CMS (shipped)
 
-Admin-managed marketing homepage content. Phases 1–3 delivered the model, the
-copy editor, and the media manager — but the homepage still renders from
-component literals until Phase 4.
+Admin-managed marketing homepage content. The model, copy editor, media manager
+and runtime wiring are all live: the public homepage renders from
+`getResolvedHomepage()` on every request, and no marketing section carries
+literal copy any more.
 
 - **Editable:** hero copy, CTA labels and internal destinations, build-option
   cards, character cards, safety points, featured pricing plan selection,

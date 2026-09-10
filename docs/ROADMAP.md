@@ -74,14 +74,20 @@
       registry, validation, server read service with fallback, 40 unit tests.
 - [x] **Phase 2 — Admin editor.** `/admin/homepage` copy UI and write route
       behind `requireAdminHomepageAuth`, revision-checked, validating with the
-      shared contract. (Code complete; migration pending.)
+      shared contract.
 - [x] **Phase 3 — Media manager.** `homepage-media` bucket (no browser writes),
       atomic single-RPC upload/replace with storage rollback, hero TV-rect
       calibration (normalized, revision-checked), shared/separate hero +
       sections backgrounds, tabbed admin media UI, revert-to-local-fallback.
-      (Code complete; migration pending.)
 - [x] **Phase 4A — Runtime wiring.** Homepage components read `getResolvedHomepage()` + CMS media/layout; all text Admin-editable; current homepage exact fallback; one resolver owns reads. Types/lint/build/tests pass.
-- [ ] **Phase 4B — Controlled migration.** Apply three pending migrations in timestamp order to staging project; wire `getHomepageContent()` CMS values into components; remove duplicated literals; run smoke validation tests.
+- [x] **Phase 4B — Controlled migration.** All three migrations applied in
+      timestamp order: the `homepage_content`, `homepage_media_assets` and
+      `homepage_hero_layout` tables, the four `*_trusted` RPCs and the public
+      `homepage-media` bucket are live. CMS values are wired into the
+      components and no marketing section holds literal copy. Smoke
+      validation passed: 409 unit tests, lint clean, production build, and
+      the homepage verified at 1440/1280/1024/390/375 with no horizontal
+      overflow.
 
 ## Future (Post-MVP)
 

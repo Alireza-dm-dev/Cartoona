@@ -171,15 +171,16 @@ Planned bucket: **`homepage-media`**.
 | Phase | Scope | Status |
 |---|---|---|
 | **1. Foundation** | Contract, defaults, tables, slots, validation, read service, tests | ✅ complete |
-| **2. Admin editor** | `/admin/homepage` UI + `GET`/`PUT /api/admin/homepage` behind `requireAdminHomepageAuth`, revision-checked via `public.update_homepage_content_trusted` | ✅ complete (code; migrations pending — see below) |
-| **3. Media manager** | `homepage-media` bucket, atomic replace API, hero calibration, shared/separate backgrounds, tabbed `/admin/homepage` media UI | ✅ complete (code; migrations pending — see below) |
+| **2. Admin editor** | `/admin/homepage` UI + `GET`/`PUT /api/admin/homepage` behind `requireAdminHomepageAuth`, revision-checked via `public.update_homepage_content_trusted` | ✅ complete |
+| **3. Media manager** | `homepage-media` bucket, atomic replace API, hero calibration, shared/separate backgrounds, tabbed `/admin/homepage` media UI | ✅ complete |
 | **4A. Runtime wiring** | Homepage components read `getResolvedHomepage()` + CMS media/layout; all text Admin-editable; current homepage exact fallback; one resolver owns reads | ✅ complete |
-| **4B. Controlled migration** | Apply three pending migrations in timestamp order to staging; wire `getHomepageContent()` CMS values into components; remove duplicated literals; smoke validation | pending |
+| **4B. Controlled migration** | Three migrations applied in timestamp order; CMS values wired into components; duplicated literals removed; smoke validation | ✅ complete |
 | **5. FAQ + pricing CMS** | Only if the product needs editable FAQ bodies or plan copy | speculative |
 
-Phase 4 is deliberately last: until then the components still own the rendered
-copy, and `DEFAULT_HOMEPAGE_CONTENT` is the transcription of record. The two must
-be kept in step until that phase deletes the duplication.
+Phase 4 was deliberately last. Now that it has landed, the resolver owns the
+rendered copy and the marketing components hold none of their own. Instead of
+being a transcription that must be kept in step, `DEFAULT_HOMEPAGE_CONTENT` is
+now purely the fallback served when a stored row is missing or fails validation.
 
 ## Phase 2: admin editor (implementation notes)
 
