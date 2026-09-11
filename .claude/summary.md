@@ -242,3 +242,40 @@
 - No disposable remote Supabase project configured for repeated flake validation
 - Stateful coupon e2e (foundation + admin) unexecuted until a safe target exists; redemption `reserved → redeemed` promotion deferred to the payment-verified task
 - Zero-final-price (free) purchase completion flow does not exist yet — blocked in the UI with a deferred notice until a trusted free-confirmation flow is added
+
+## Homepage CMS — Phase 1 (foundation) complete
+- **Branch:** `opencode/homepage-cms-foundation`, cut from `opencode/homepage-hero-fidelity` (the fidelity work is **not** merged to main; branching from main would have lost it).
+- **Shipped:** `lib/homepage/{types,default-content,media-slots,validation,content-resolution,service}.ts`, `lib/auth/require-admin.ts`, migration `20260802100000_homepage_cms_foundation.sql`, `docs/HOMEPAGE_CMS_ARCHITECTURE.md`, 40 unit tests.
+- **Not shipped (deliberately):** admin editor UI, homepage runtime wiring, media upload API. Homepage visuals unchanged — the components still render their own literals.
+- **Migration NOT applied.** The linked Supabase project is `oucyhmrnzahlhqjfqcge` = **main**, and the CLI could not reach it (`LegacyDbConfigLoginRoleStatusError`, connection timeout), so `migration list` and `db push --dry-run` both failed. No push was attempted against main.
+- **Verified instead against a throwaway local Postgres 17 database** (created and dropped): migration applies cleanly, is idempotent across two runs, seeds exactly one row, RLS on both tables with SELECT-only policies, and anon/authenticated INSERT/UPDATE/DELETE all fail with `permission denied`. Every CHECK constraint verified to bite (unknown slot, URL-as-storage_path, `..` traversal, type/mime mismatch, image-with-duration, disallowed mime, revision 0, non-object content_json, duplicate slot_key).
+- **Outstanding:** run `npx supabase migration list` and `db push --dry-run` against a reachable target before applying. Expect exactly one pending migration.
+- **Known sharp edge:** `hero.background` and `sections.background` are geometry-coupled — the hero's TV overlay is measured against the exact artwork and the sections layer crops to hide that same TV. Replacing either file without preserving the TV's fractional position breaks the hero. Flagged as `geometryCoupled` in `HOMEPAGE_MEDIA_SLOT_SPECS`; Phase 3 must warn on it.
+
+## Homepage CMS — Phase 2 (admin copy editor) complete
+- **Shipped:** `lib/admin/homepage/{types,errors,service,put-validation,editor-state}.ts`, `GET`/`PUT /api/admin/homepage` (optimistic concurrency via revision, 422 per-field errors, 409 with server snapshot), `app/admin/homepage/page.tsx` + `components/admin/homepage/homepage-editor.tsx` (all eight sections, inline validation, unsaved-changes + beforeunload, save/reset/reload-on-conflict, degraded defaults mode when tables absent), 28 pure + mocked-UI unit tests, guarded `tests/e2e/admin-homepage-api.spec.ts` (unexecuted — no disposable target).
+- **Migration NOT applied:** `20260802110000_homepage_cms_admin_write.sql` pending alongside Phase 1; validated on ephemeral local Postgres only (RPC success/conflict/forbidden paths, anon/authenticated denial, idempotent re-runs). No push/repair/reset/relink against `oucyhmrnzahlhqjfqcge`.
+- **Deliberately not shipped:** media upload, geometry controls, draft/publish, history UI, public-homepage wiring.
+
+## Homepage CMS — Phase 3 (media manager) complete
+- **Shipped (backend, approved design + 2 corrections):** `supabase/migrations/20260802120000_homepage_cms_media.sql` — `homepage-media` bucket (public read, ZERO write policies), `public.homepage_hero_layout` singleton (normalized TV rect seeded from `TV_SCREEN_RECT`, revision-guarded), ONE atomic `record_homepage_media_replacement_trusted` RPC (primary upsert + optional shared sections upsert + optional layout update in a single transaction; hero.background requires valid geometry), standalone `update_homepage_hero_layout_trusted`, trusted `delete_homepage_media_trusted`. No multi-RPC hero path, no compensating DB rollback.
+- **Shipped (validation, zero new deps):** `lib/homepage/hero-layout.ts` + `lib/admin/homepage/media-validation.ts` — slot allowlist, MIME allowlists, magic-byte sniffing, per-slot caps (12/6/50 MB), hand-rolled PNG/JPEG/WebP dimension probing (video dims nullable by design), server-generated paths, safe serializer (no `storage_path` to browser), pure rollback matrix.
+- **Shipped (APIs):** `GET /api/admin/homepage/media`, `POST`/`DELETE /api/admin/homepage/media/[slot]` (unknown slot rejected before reading the file; sections requires preview confirmation), `PUT /api/admin/homepage/hero-layout`. All admin/super-admin only; upload→ONE RPC→cleanup ordering.
+- **Shipped (UI):** tabbed `/admin/homepage` (هیرو، پس‌زمینه بخش‌ها، گزینه‌های ساخت، ایمنی، متن‌ها) — per-slot preview/metadata/source badge/pending+cancel/success/safe-error/two-step revert; hero tab with sharing-mode radio, calibration dialog (drag + resize + mandatory numeric % controls, aspect-deviation warning, explicit confirm checkbox), standalone recalibration; mobile numeric-first, no horizontal overflow.
+- **Tests:** 29 pure unit (`homepage-cms-media.test.ts`, all 20 required cases) + 26 mocked UI flows (`homepage-media-manager-flow.test.ts`); guarded `tests/e2e/admin-homepage-media.spec.ts` written, UNEXECUTED — no disposable Supabase target in this environment (only main + forbidden migration-test project; Docker absent so no local `supabase start`).
+- **Security search:** none found — no browser storage upload, no direct table mutation, no service-role in client components, no `storage_path`/raw DB errors in UI, no SVG/data-URL/remote-URL acceptance, pixels never persisted, no public-homepage CMS wiring.
+- **Migration NOT applied:** all three CMS migrations (`...10000`, `...110000`, `...120000`) remain pending; validated on ephemeral local Postgres only (atomicity proven: stale-layout conflict left both media rows and layout untouched; grants verified; idempotent re-runs). No push/repair/reset/relink against `oucyhmrnzahlhqjfqcge`. Public homepage rendering unchanged.
+
+## Homepage CMS — Phase 4A (runtime wiring) complete
+
+- **All user-visible text is now Admin-editable** via `getResolvedHomepage()` resolver, including navigation labels (characters, examples, pricing, safety, faq, login, signup) with fixed internal routes
+- **Homepage sections wired to CMS**: Hero (text, background, TV video, TV rect), Build Options, Characters, Safety, Pricing, Testimonials, FAQ teaser, Final CTA
+- **One resolver owns all reads**: `getResolvedHomepage()` returns content, media per slot, hero layout, and server-side diagnostics; no component individually queries Supabase
+- **Media fallback map**: explicit local asset paths per slot; CMS rows with safe public URLs override fallbacks; malformed paths fall back locally
+- **Backward compatibility**: `normalizeHomepageContent()` fills newly-added optional fields from defaults for old stored rows; no breaking changes
+- **Missing/malformed CMS never breaks page**: falls back to `DEFAULT_HOMEPAGE_CONTENT` with safe diagnostics; no blank homepage, no broken images, no broken TV
+- **Billing/pricing authority remains outside Homepage CMS**: `config/plans.ts` prices/candy stay code-controlled
+- **Navigation labels editable, routes fixed**: admin may change display labels (e.g. "شخصیت‌ها") but never change `/characters` destination
+- **Typecheck/lint/build: 358/358 tests pass, 0 ESLint errors (1 parser limitation), `npx next` typechecks**
+- **Migration state unchanged**: all three pending migrations (`20260802100000`, `20260802110000`, `20260802120000`) remain unapplied to `oucyhmrnzahlhqjfqcge`; validated on ephemeral local Postgres only
+- **No production migration applied**

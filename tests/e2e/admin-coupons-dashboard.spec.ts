@@ -1,10 +1,8 @@
 import { test, expect, type Page } from "@playwright/test"
 import * as fs from "fs"
 import * as path from "path"
-import { assertSafeDatabaseTarget } from "../helpers/assert-safe-database-target"
+import { assertSafeDatabaseTarget, guardedProjectRef, guardedSupabaseUrl } from "../helpers/assert-safe-database-target"
 
-const PROJECT_REF = "oucyhmrnzahlhqjfqcge"
-const SUPABASE_URL = `https://${PROJECT_REF}.supabase.co`
 const BASE = "http://localhost:3000"
 
 function loadEnv(): void {
@@ -24,6 +22,11 @@ loadEnv()
 
 const _guard = assertSafeDatabaseTarget()
 if (!_guard.ok) throw new Error(`Guard blocked: ${_guard.reason}`)
+
+// Target is derived from the same environment the guard inspected, so the
+// guard's verdict and these requests can never describe different projects.
+const PROJECT_REF = guardedProjectRef()
+const SUPABASE_URL = guardedSupabaseUrl()
 
 const KEY = process.env.SUPABASE_SECRET_KEY || ""
 const HDR = { "Content-Type": "application/json", apikey: KEY, Authorization: `Bearer ${KEY}` }

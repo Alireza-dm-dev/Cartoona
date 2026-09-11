@@ -99,6 +99,28 @@
 - **Print-on-demand** — digital delivery only.
 - **Advanced prompt engineering panel** — simple predefined options only.
 
+## Homepage CMS (shipped)
+
+Admin-managed marketing homepage content. The model, copy editor, media manager
+and runtime wiring are all live: the public homepage renders from
+`getResolvedHomepage()` on every request, and no marketing section carries
+literal copy any more.
+
+- **Editable:** hero copy, CTA labels and internal destinations, build-option
+  cards, character cards, safety points, featured pricing plan selection,
+  testimonials, FAQ teaser selection, final CTA, and media per named slot
+  (tabbed `/admin/homepage`: hero background + TV video + TV-rect calibration,
+  sections background with preview confirmation, build-option media, safety
+  image, revert-to-local-fallback per slot).
+- **Not editable:** scroll behaviour, horizontal-story mechanics, hero
+  zoom/focus, sections-crop mechanics, breakpoints, component hierarchy, plan
+  prices, auth rules, and any HTML/CSS/JS. See `docs/HOMEPAGE_CMS_ARCHITECTURE.md`.
+- **Guarantees:** internal-only hrefs, plain-text-only fields, closed media slot
+  set, magic-byte + dimension validation, normalized-only TV geometry, atomic
+  single-RPC media commits with storage rollback, no browser writes to CMS
+  tables or the `homepage-media` bucket, and defaults served whenever stored
+  content is missing or fails validation.
+
 ## Feature Priority Order
 
 1. Foundation (current) — project setup, design system, routes, docs

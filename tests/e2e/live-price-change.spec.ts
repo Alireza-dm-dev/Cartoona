@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import * as fs from "fs";
 import * as path from "path";
-import { assertSafeDatabaseTarget } from "../helpers/assert-safe-database-target";
+import { assertSafeDatabaseTarget, guardedSupabaseUrl } from "../helpers/assert-safe-database-target";
 
 // Load env from .env.local into process.env for guard compatibility
 try {
@@ -18,7 +18,10 @@ try {
 } catch { /* fallback */ }
 
 const BASE = "http://localhost:3000";
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://oucyhmrnzahlhqjfqcge.supabase.co";
+// Derived from the guarded environment. There is deliberately no default:
+// falling back to a hardcoded project would send writes somewhere the guard
+// never inspected.
+const SUPABASE_URL = guardedSupabaseUrl();
 const SECRET_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 if (!SECRET_KEY) {
   throw new Error(

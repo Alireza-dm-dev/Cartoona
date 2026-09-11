@@ -1,7 +1,12 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import type { HomepageContent } from "@/lib/homepage/types";
 
-export function FinalCtaSection() {
+export interface FinalCtaSectionProps {
+  content: HomepageContent["finalCta"];
+}
+
+export function FinalCtaSection({ content }: FinalCtaSectionProps) {
   return (
     <div className="mx-auto max-w-[1200px] px-6">
       <div
@@ -12,20 +17,20 @@ export function FinalCtaSection() {
         }}
       >
         <h2 className="font-brand text-3xl font-extrabold tracking-tight text-parent-navy sm:text-[40px]">
-          امشب اولین کارتون کودکتان را بسازید
+          {content.title}
         </h2>
         <p className="max-w-lg text-base leading-loose text-[#4b5468]">
-          چند دقیقه وقت می‌گیرد؛ نتیجه‌اش خاطره‌ای است که سال‌ها می‌ماند.
+          {content.description}
         </p>
         <div className="mt-2 flex flex-wrap items-center justify-center gap-3.5">
-          <Link href="#creation-types">
+          <Link href={content.primaryCta.href}>
             <Button size="lg" className="shadow-[0_10px_24px_rgba(242,100,154,0.4)]">
-              شروع ساخت کارتون
+              {content.primaryCta.label}
             </Button>
           </Link>
-          <Link href="/examples">
+          <Link href={content.secondaryCta.href}>
             <Button variant="secondary" size="lg">
-              مشاهده نمونه‌ها
+              {content.secondaryCta.label}
             </Button>
           </Link>
         </div>
