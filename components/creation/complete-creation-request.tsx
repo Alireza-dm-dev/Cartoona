@@ -10,7 +10,7 @@ import type { CreationDraft, ImageCreationDraft, VideoCreationDraft, DrawingCrea
 import { CreationDraftSummaryCard } from "@/components/creation/pending-creation-draft-card";
 import { useCreationPricing } from "@/lib/pricing/use-creation-pricing";
 import { calculateCreationCost } from "@/lib/pricing/calculate-creation-cost";
-import { FORM_TO_INTERNAL } from "@/lib/pricing/pricing-keys";
+import { FORM_TO_INTERNAL, VIDEO_DURATION_TO_INTERNAL, isVideoDurationChoice } from "@/lib/pricing/pricing-keys";
 import type { InternalDuration } from "@/lib/pricing/pricing-keys";
 
 const imageAcceptedTypes = "image/png,image/jpeg,image/webp";
@@ -46,7 +46,7 @@ export default function CompleteCreationRequest() {
     }
     if (draft.type === "video") {
       const d = (draft as VideoCreationDraft).duration
-      const dur: InternalDuration | null = d ? FORM_TO_INTERNAL[d] : null
+      const dur: InternalDuration | null = isVideoDurationChoice(d) ? VIDEO_DURATION_TO_INTERNAL[d] : null
       if (!dur) return null
       return calculateCreationCost(catalog, "video", dur, Boolean((draft as VideoCreationDraft).referenceFileName))
     }

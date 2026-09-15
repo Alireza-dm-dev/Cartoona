@@ -29,7 +29,6 @@ test.describe("Image creation flow pricing", () => {
     await page.locator('label:has(input[name="character"])').first().click();
     await page.getByRole("button", { name: "ادامه به جزئیات" }).click();
 
-    await page.fill("#title", "Test Image");
     await page.fill("#sceneDescription", "Test scene");
     await page.fill("#style", "Test style");
 
@@ -58,7 +57,6 @@ test.describe("Image creation flow pricing", () => {
       buffer: Buffer.from("fake-png"),
     });
 
-    await page.fill("#title", "Test Image");
     await page.fill("#sceneDescription", "Test scene");
     await page.fill("#style", "Test style");
 
@@ -90,7 +88,6 @@ test.describe("Image creation flow pricing", () => {
     // Remove file by clicking the delete button
     await page.locator('button:has-text("حذف")').click();
 
-    await page.fill("#title", "Test Image");
     await page.fill("#sceneDescription", "Test scene");
     await page.fill("#style", "Test style");
 
@@ -110,7 +107,9 @@ test.describe("Image creation flow pricing", () => {
 
 test.describe("Video creation flow pricing", () => {
   const durations = ["short", "medium", "long"] as const;
-  const durLabels: Record<string, string> = { short: "کوتاه", medium: "متوسط", long: "بلند" };
+  // The three parent-facing choices map one-to-one onto the unchanged
+  // short/medium/long pricing tiers.
+  const durValues: Record<string, string> = { short: "5_10", medium: "10_20", long: "30_plus" };
 
   for (const dur of durations) {
     test(`${dur} without file`, async ({ page }) => {
@@ -120,10 +119,9 @@ test.describe("Video creation flow pricing", () => {
       await page.locator('label:has(input[name="character"])').first().click();
       await page.getByRole("button", { name: "ادامه به جزئیات" }).click();
 
-      await page.fill("#title", "Test Video");
       await page.fill("#storyDescription", "Test story");
-      await page.fill("#style", "Test style");
-      await page.locator(`input[name="duration"][value="${durLabels[dur]}"]`).check({ force: true });
+      await page.locator(`input[name="duration"][value="${durValues[dur]}"]`).check({ force: true });
+      await page.locator('input[name="charactersSpeak"][value="yes"]').check({ force: true });
 
       await page.getByRole("button", { name: "بررسی درخواست" }).click();
       await page.waitForTimeout(500);
@@ -150,10 +148,9 @@ test.describe("Video creation flow pricing", () => {
         buffer: Buffer.from("fake-png"),
       });
 
-      await page.fill("#title", "Test Video");
       await page.fill("#storyDescription", "Test story");
-      await page.fill("#style", "Test style");
-      await page.locator(`input[name="duration"][value="${durLabels[dur]}"]`).check({ force: true });
+      await page.locator(`input[name="duration"][value="${durValues[dur]}"]`).check({ force: true });
+      await page.locator('input[name="charactersSpeak"][value="yes"]').check({ force: true });
 
       await page.getByRole("button", { name: "بررسی درخواست" }).click();
       await page.waitForTimeout(500);

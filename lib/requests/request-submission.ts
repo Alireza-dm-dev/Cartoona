@@ -1,17 +1,27 @@
 import type { CreationDraft, ImageCreationDraft, VideoCreationDraft, DrawingCreationDraft } from "@/lib/creation/creation-draft"
 import type { OrderType } from "@/types/app"
-import { FORM_TO_INTERNAL } from "@/lib/pricing/pricing-keys"
-import type { InternalDuration } from "@/lib/pricing/pricing-keys"
+import { FORM_TO_INTERNAL, VIDEO_DURATION_TO_INTERNAL, isVideoDurationChoice } from "@/lib/pricing/pricing-keys"
+import type { InternalDuration, VideoDurationChoice } from "@/lib/pricing/pricing-keys"
 
 export interface NormalizedRequest {
   type: OrderType
-  title: string
+  /**
+   * Null for image and video requests, which no longer collect a title.
+   * Never a placeholder: the column is nullable and the read models fall
+   * back at display time.
+   */
+  title: string | null
   description: string
   characterId: string | null
+  /** Internal pricing tier. Unchanged mapping, unchanged candy costs. */
   durationKey: InternalDuration | null
+  /** Parent-facing duration choice, persisted verbatim for video requests. */
+  durationChoice: VideoDurationChoice | null
   videoScript: string | null
   videoStyle: string | null
   animationStyle: string | null
+  /** Required for new video requests. Null for every other type. */
+  charactersSpeak: boolean | null
   fileName: string | null
 }
 
@@ -51,27 +61,30 @@ export function parseAndValidateDraft(raw: string): ParseResult {
   ])
   if (versionErrors.length > 0) return { ok: false, errors: versionErrors }
 
-  const titleRaw = trimToNull(draft.title)
-  const titleErrors = collectErrors([
-    { field: "title", valid: titleRaw !== null, message: "عنوان درخواست الزامی است" },
-  ])
-  if (titleErrors.length > 0) return { ok: false, errors: titleErrors }
-
-  const title = titleRaw!.slice(0, 160)
+  // Image and video no longer collect a title, so it is optional here and
+  // stays null rather than being filled with generated text. Drawing
+  // animation still has a title field and still requires one.
+  const titleRaw = trimToNull((draft as { title?: string }).title)
+  const title = titleRaw === null ? null : titleRaw.slice(0, 160)
 
   switch (draft.type) {
     case "image":
-      return validateImageDraft(draft as ImageCreationDraft, title)
+      return validateImageDraft(draft as ImageCreationDraft)
     case "video":
-      return validateVideoDraft(draft as VideoCreationDraft, title)
-    case "drawing":
-      return validateDrawingDraft(draft as DrawingCreationDraft, title)
+      return validateVideoDraft(draft as VideoCreationDraft)
+    case "drawing": {
+      const drawingTitleErrors = collectErrors([
+        { field: "title", valid: title !== null, message: "عنوان درخواست الزامی است" },
+      ])
+      if (drawingTitleErrors.length > 0) return { ok: false, errors: drawingTitleErrors }
+      return validateDrawingDraft(draft as DrawingCreationDraft, title!)
+    }
     default:
       return { ok: false, errors: [{ field: "type", message: `نوع "${(draft as { type: string }).type}" پشتیبانی نمی‌شود` }] }
   }
 }
 
-function validateImageDraft(draft: ImageCreationDraft, title: string): ParseResult {
+function validateImageDraft(draft: ImageCreationDraft): ParseResult {
   const parts: string[] = []
   if (draft.sceneDescription) parts.push(`صحنه: ${draft.sceneDescription}`)
   if (draft.style) parts.push(`سبک: ${draft.style}`)
@@ -91,21 +104,22 @@ function validateImageDraft(draft: ImageCreationDraft, title: string): ParseResu
     ok: true,
     data: {
       type: "image",
-      title,
+      title: null,
       description,
       characterId,
       durationKey: null,
+      durationChoice: null,
       videoScript: null,
       videoStyle: null,
       animationStyle: null,
+      charactersSpeak: null,
       fileName,
     },
   }
 }
 
-function validateVideoDraft(draft: VideoCreationDraft, title: string): ParseResult {
+function validateVideoDraft(draft: VideoCreationDraft): ParseResult {
   const storyTrimmed = trimToNull(draft.storyDescription)
-  const styleTrimmed = trimToNull(draft.style)
   const characterId = trimToNull(draft.selectedCharacterId)
   const fileName = trimToNull(draft.referenceFileName)
 
@@ -114,16 +128,24 @@ function validateVideoDraft(draft: VideoCreationDraft, title: string): ParseResu
   if (draft.parentNote) occasionNote.push(`یادداشت: ${draft.parentNote}`)
   const description = occasionNote.join("\n\n")
 
-  let durationKey: InternalDuration | null = null
-  if (draft.duration) {
-    durationKey = FORM_TO_INTERNAL[draft.duration] ?? null
-  }
+  // An unrecognised duration stays null and is rejected below rather than
+  // being coerced onto a tier, which would change what the parent pays.
+  const durationChoice: VideoDurationChoice | null = isVideoDurationChoice(draft.duration)
+    ? draft.duration
+    : null
+  const durationKey: InternalDuration | null = durationChoice
+    ? VIDEO_DURATION_TO_INTERNAL[durationChoice]
+    : null
+
+  // Only a real boolean counts. "true", 1 and null are all malformed, and
+  // none of them is guessed into a value.
+  const charactersSpeak = typeof draft.charactersSpeak === "boolean" ? draft.charactersSpeak : null
 
   const errors = collectErrors([
     { field: "selectedCharacterId", valid: characterId !== null, message: "انتخاب شخصیت برای درخواست ویدیو الزامی است" },
     { field: "storyDescription", valid: storyTrimmed !== null, message: "توضیح داستان برای ویدیو الزامی است" },
-    { field: "style", valid: styleTrimmed !== null, message: "سبک ویدیو الزامی است" },
     { field: "duration", valid: durationKey !== null, message: "مدت زمان ویدیو مشخص نشده است" },
+    { field: "charactersSpeak", valid: charactersSpeak !== null, message: "لطفاً مشخص کنید کاراکترها صحبت کنند یا خیر" },
   ])
   if (errors.length > 0) return { ok: false, errors }
 
@@ -131,13 +153,15 @@ function validateVideoDraft(draft: VideoCreationDraft, title: string): ParseResu
     ok: true,
     data: {
       type: "video",
-      title,
+      title: null,
       description,
       characterId,
       durationKey,
+      durationChoice,
       videoScript: storyTrimmed,
-      videoStyle: styleTrimmed,
+      videoStyle: null,
       animationStyle: null,
+      charactersSpeak,
       fileName,
     },
   }
@@ -173,9 +197,11 @@ function validateDrawingDraft(draft: DrawingCreationDraft, title: string): Parse
       description,
       characterId: null,
       durationKey,
+      durationChoice: null,
       videoScript: null,
       videoStyle: null,
       animationStyle: movementTrimmed,
+      charactersSpeak: null,
       fileName,
     },
   }

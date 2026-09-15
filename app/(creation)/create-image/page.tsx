@@ -29,7 +29,6 @@ export default function CreateImagePage() {
   const router = useRouter();
   const [step, setStep] = useState(1);
   const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(null);
-  const [title, setTitle] = useState("");
   const [sceneDescription, setSceneDescription] = useState("");
   const [style, setStyle] = useState("");
   const [occasion, setOccasion] = useState("");
@@ -56,9 +55,6 @@ export default function CreateImagePage() {
 
   function validateStep2(): boolean {
     const newErrors: Record<string, string> = {};
-    if (!title.trim()) {
-      newErrors.title = "لطفاً عنوان تصویر را وارد کنید.";
-    }
     if (!sceneDescription.trim()) {
       newErrors.sceneDescription = "لطفاً توضیح صحنه را وارد کنید.";
     }
@@ -110,7 +106,6 @@ export default function CreateImagePage() {
       estimatedCandyCost: currentCost,
       type: "image",
       selectedCharacterId: selectedCharacterId!,
-      title,
       sceneDescription,
       style,
       occasion: occasion || "",
@@ -236,21 +231,6 @@ export default function CreateImagePage() {
         <Card className="mb-6">
           <div className="space-y-6">
             <div className="space-y-2">
-              <label className="block text-sm font-medium text-text-dark" htmlFor="title">
-                عنوان تصویر <span className="text-coral">*</span>
-              </label>
-              <input
-                id="title"
-                type="text"
-                placeholder="مثلا: پرهای مهتابی"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className={inputClass}
-              />
-              {errors.title && <p className="mt-1 text-sm text-coral" role="alert">{errors.title}</p>}
-            </div>
-
-            <div className="space-y-2">
               <label className="block text-sm font-medium text-text-dark" htmlFor="sceneDescription">
                 توضیح صحنه <span className="text-coral">*</span>
               </label>
@@ -356,10 +336,6 @@ export default function CreateImagePage() {
                 <span className="text-text-dark font-medium">
                   {selectedCharacter?.emoji} {selectedCharacter?.name}
                 </span>
-              </div>
-              <div className="flex justify-between gap-4">
-                <span className="text-text-dark/50">عنوان تصویر</span>
-                <span className="text-text-dark">{title}</span>
               </div>
               <div className="flex justify-between gap-4">
                 <span className="text-text-dark/50">توضیح صحنه</span>

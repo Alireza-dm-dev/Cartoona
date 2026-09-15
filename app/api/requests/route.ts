@@ -144,6 +144,8 @@ export async function POST(request: Request) {
       p_video_style: normalized.videoStyle,
       p_animation_style: normalized.animationStyle,
       p_file_path: storagePath,
+      p_duration_choice: normalized.durationChoice,
+      p_characters_speak: normalized.charactersSpeak,
     })
 
   if (rpcError) {

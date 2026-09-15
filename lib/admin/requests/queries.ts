@@ -8,7 +8,7 @@ import type {
   AdminQueueResult,
   AdminTypeDetailRow,
 } from "@/lib/admin/requests/types"
-import { mapMediaAsset, mapOrderDetail, mapQueueRow } from "@/lib/admin/requests/mappers"
+import { mapMediaAsset, mapOrderDetail, mapQueueRow, mapVideoTypeRows } from "@/lib/admin/requests/mappers"
 import { clampPage } from "@/lib/admin/requests/validation"
 import { createPrivateSignedUrl } from "@/lib/storage/private-signed-url"
 
@@ -16,7 +16,7 @@ interface OrderParentJoin {
   id: string
   type: string
   status: string
-  title: string
+  title: string | null
   description: string | null
   candy_cost: number
   moderation_status: string
@@ -141,19 +141,18 @@ export async function queryAdminRequestDetail(
   if (detailRow.type === "video") {
     const { data: video } = await supabase
       .from("video_requests")
-      .select("script, style, duration_seconds")
+      .select("script, style, duration_seconds, duration_choice, characters_speak")
       .eq("order_id", detailRow.id)
       .maybeSingle()
     const referenceFile = detailRow.media_assets.some((m) => m.type === "upload")
-    typeRows = [
-      { label: "سناریو", value: video?.script?.trim() || "ثبت نشده", multiline: true },
-      { label: "سبک ویدیو", value: video?.style?.trim() || "ثبت نشده" },
-      {
-        label: "مدت زمان",
-        value: video?.duration_seconds ? `${video.duration_seconds} ثانیه` : "ثبت نشده",
-      },
-      { label: "فایل مرجع", value: referenceFile ? "بارگذاری شده" : "بارگذاری نشده" },
-    ]
+    typeRows = mapVideoTypeRows({
+      script: video?.script?.trim() || null,
+      style: video?.style?.trim() || null,
+      durationChoice: video?.duration_choice ?? null,
+      durationSeconds: typeof video?.duration_seconds === "number" ? video.duration_seconds : null,
+      charactersSpeak: typeof video?.characters_speak === "boolean" ? video.characters_speak : null,
+      referenceFile,
+    })
   } else if (detailRow.type === "drawing_animation") {
     const { data: drawing } = await supabase
       .from("drawing_animation_requests")

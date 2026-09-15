@@ -12,6 +12,7 @@ import { toParentOrderStatus } from "./status-mapping";
 import { toParentClosure, toParentTimeline, type RawHistoryRow } from "./timeline-mapping";
 import { isKnownOrderType } from "./type-mapping";
 import { createPrivateSignedUrl } from "@/lib/storage/private-signed-url";
+import { mapVideoDurationLabel } from "@/lib/pricing/pricing-keys";
 
 /**
  * Columns read for the detail page. Listed explicitly for the same reason as
@@ -22,6 +23,11 @@ const DETAIL_COLUMNS =
   "id, type, status, title, description, candy_cost, created_at, updated_at, characters(name)";
 
 const NOT_RECORDED = "ثبت نشده";
+/**
+ * Used where a request predates the field entirely. Distinct from
+ * NOT_RECORDED: nothing is inferred for a historical row.
+ */
+const NOT_SPECIFIED = "مشخص نشده";
 
 /**
  * Order ids are UUIDs. A malformed id is rejected here rather than sent to
@@ -70,7 +76,13 @@ function characterName(row: RawDetailRow): string | null {
 export function buildDetailRows(input: {
   type: OrderType;
   characterName: string | null;
-  video: { script?: unknown; style?: unknown; duration_seconds?: unknown } | null;
+  video: {
+    script?: unknown;
+    style?: unknown;
+    duration_seconds?: unknown;
+    duration_choice?: unknown;
+    characters_speak?: unknown;
+  } | null;
   drawing: { animation_style?: unknown } | null;
   hasSourceMedia: boolean;
 }): ParentDetailRow[] {
@@ -82,16 +94,39 @@ export function buildDetailRows(input: {
 
   if (input.type === "video") {
     rows.push({ label: "شخصیت", value: input.characterName ?? NOT_RECORDED });
-    rows.push({ label: "سبک ویدیو", value: text(input.video?.style) ?? NOT_RECORDED });
-    const seconds = typeof input.video?.duration_seconds === "number" ? input.video.duration_seconds : null;
+
+    // Style is no longer collected. The row appears only for the historical
+    // requests that already carry one, so new requests show no empty row.
+    const style = text(input.video?.style);
+    if (style !== null) {
+      rows.push({ label: "سبک ویدیو", value: style });
+    }
+
+    // The parent-facing choice when there is one, otherwise the raw seconds a
+    // historical row may carry. Neither is invented from the other.
+    const choiceLabel = mapVideoDurationLabel(input.video?.duration_choice);
+    const seconds =
+      typeof input.video?.duration_seconds === "number" ? input.video.duration_seconds : null;
     rows.push({
-      label: "مدت زمان",
-      // Persian digits, matching every other number on the page.
+      label: "مدت تقریبی",
       value:
-        seconds && seconds > 0
+        choiceLabel ??
+        // Persian digits, matching every other number on the page.
+        (seconds && seconds > 0
           ? `${new Intl.NumberFormat("fa-IR").format(seconds)} ثانیه`
-          : NOT_RECORDED,
+          : NOT_SPECIFIED),
     });
+
+    rows.push({
+      label: "صحبت کردن کاراکترها",
+      value:
+        typeof input.video?.characters_speak === "boolean"
+          ? input.video.characters_speak
+            ? "بله"
+            : "خیر"
+          : NOT_SPECIFIED,
+    });
+
     rows.push({
       label: "سناریو",
       value: text(input.video?.script) ?? NOT_RECORDED,
@@ -174,13 +209,19 @@ export async function getParentOrderDetail(
 
   // Type-specific extension row. Both tables are scoped to the parent's own
   // orders by row level security.
-  let video: { script?: unknown; style?: unknown; duration_seconds?: unknown } | null = null;
+  let video: {
+    script?: unknown;
+    style?: unknown;
+    duration_seconds?: unknown;
+    duration_choice?: unknown;
+    characters_speak?: unknown;
+  } | null = null;
   let drawing: { animation_style?: unknown } | null = null;
 
   if (requestType === "video") {
     const { data: v } = await supabase
       .from("video_requests")
-      .select("script, style, duration_seconds")
+      .select("script, style, duration_seconds, duration_choice, characters_speak")
       .eq("order_id", row.id)
       .maybeSingle();
     video = v ?? null;

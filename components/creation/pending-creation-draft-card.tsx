@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { readCreationDraft } from "@/lib/creation/creation-draft";
 import type { CreationDraft } from "@/lib/creation/creation-draft";
 import { characters } from "@/config/characters";
+import { mapVideoDurationLabel } from "@/lib/pricing/pricing-keys";
 
 export type PendingCreationDraftStage = "signup" | "consent" | "completion";
 
@@ -73,8 +74,6 @@ export function CreationDraftSummaryCard({
       </p>
 
       <div className="mt-4 space-y-2">
-        {renderRow("عنوان درخواست", draft.title)}
-
         {draft.type === "image" &&
           (() => {
             const c = characters.find(
@@ -104,7 +103,18 @@ export function CreationDraftSummaryCard({
                   "شخصیت",
                   c ? `${c.emoji} ${c.name}` : "شخصیت انتخاب‌شده",
                 )}
-                {renderRow("مدت", draft.duration)}
+                {renderRow(
+                  "مدت تقریبی",
+                  mapVideoDurationLabel(draft.duration) ?? "مشخص نشده",
+                )}
+                {renderRow(
+                  "صحبت کردن کاراکترها",
+                  typeof draft.charactersSpeak === "boolean"
+                    ? draft.charactersSpeak
+                      ? "بله، کاراکترها صحبت کنند"
+                      : "خیر، بدون صحبت"
+                    : "مشخص نشده",
+                )}
                 {draft.referenceFileName &&
                   renderRow("فایل مرجع", draft.referenceFileName)}
               </>
@@ -113,6 +123,7 @@ export function CreationDraftSummaryCard({
 
         {draft.type === "drawing" && (
           <>
+            {renderRow("عنوان درخواست", draft.title)}
             {renderRow("نقاشی", draft.drawingFileName)}
             {renderRow("نوع حرکت", draft.movementType)}
             {renderRow("مدت", draft.duration)}

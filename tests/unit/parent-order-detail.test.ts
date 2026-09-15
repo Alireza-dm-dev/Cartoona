@@ -140,18 +140,91 @@ describe("type-aware detail rows", () => {
     expect(rows[0].value).toBe("داینو دودو");
   });
 
-  it("uses only video columns that exist in the schema", () => {
+  it("shows duration and speech for a new video request, and no style row", () => {
     const rows = buildDetailRows({
       ...base,
       type: "video",
-      video: { script: "یک ماجرای جنگلی", style: "سه‌بعدی", duration_seconds: 30 },
+      video: {
+        script: "یک ماجرای جنگلی",
+        style: null,
+        duration_seconds: null,
+        duration_choice: "10_20",
+        characters_speak: true,
+      },
     });
-    expect(rows.map((r) => r.label)).toEqual(["شخصیت", "سبک ویدیو", "مدت زمان", "سناریو"]);
-    expect(rows.find((r) => r.label === "مدت زمان")?.value).toBe(
+    expect(rows.map((r) => r.label)).toEqual([
+      "شخصیت",
+      "مدت تقریبی",
+      "صحبت کردن کاراکترها",
+      "سناریو",
+    ]);
+    expect(rows.find((r) => r.label === "مدت تقریبی")?.value).toBe("۱۰ تا ۲۰ ثانیه");
+    expect(rows.find((r) => r.label === "صحبت کردن کاراکترها")?.value).toBe("بله");
+    // Removed fields must not reappear as empty rows.
+    expect(rows.map((r) => r.label)).not.toContain("سبک ویدیو");
+    expect(rows.map((r) => r.label)).not.toContain("عنوان ویدیو");
+  });
+
+  it("renders each duration choice with its Persian label", () => {
+    const labelFor = (choice: string) =>
+      buildDetailRows({
+        ...base,
+        type: "video",
+        video: { duration_choice: choice, characters_speak: false },
+      }).find((r) => r.label === "مدت تقریبی")?.value;
+
+    expect(labelFor("5_10")).toBe("۵ تا ۱۰ ثانیه");
+    expect(labelFor("10_20")).toBe("۱۰ تا ۲۰ ثانیه");
+    expect(labelFor("30_plus")).toBe("بیش از ۳۰ ثانیه");
+  });
+
+  it("shows خیر when the parent chose no speech", () => {
+    const rows = buildDetailRows({
+      ...base,
+      type: "video",
+      video: { duration_choice: "5_10", characters_speak: false },
+    });
+    expect(rows.find((r) => r.label === "صحبت کردن کاراکترها")?.value).toBe("خیر");
+  });
+
+  it("keeps a historical request readable: style shown, missing fields neutral", () => {
+    const rows = buildDetailRows({
+      ...base,
+      type: "video",
+      video: {
+        script: "یک ماجرای جنگلی",
+        style: "سه‌بعدی",
+        duration_seconds: 30,
+        duration_choice: null,
+        characters_speak: null,
+      },
+    });
+    expect(rows.map((r) => r.label)).toEqual([
+      "شخصیت",
+      "سبک ویدیو",
+      "مدت تقریبی",
+      "صحبت کردن کاراکترها",
+      "سناریو",
+    ]);
+    expect(rows.find((r) => r.label === "سبک ویدیو")?.value).toBe("سه‌بعدی");
+    expect(rows.find((r) => r.label === "مدت تقریبی")?.value).toBe(
       `${new Intl.NumberFormat("fa-IR").format(30)} ثانیه`,
     );
+    // A null speech flag is never inferred either way.
+    expect(rows.find((r) => r.label === "صحبت کردن کاراکترها")?.value).toBe("مشخص نشده");
     // There is no genre column in the schema, so no such row may appear.
     expect(rows.map((r) => r.label)).not.toContain("ژانر");
+  });
+
+  it("rejects an unknown duration value rather than displaying it", () => {
+    const rows = buildDetailRows({
+      ...base,
+      type: "video",
+      video: { duration_choice: "20_30", characters_speak: true },
+    });
+    const duration = rows.find((r) => r.label === "مدت تقریبی")?.value;
+    expect(duration).toBe("مشخص نشده");
+    expect(duration).not.toContain("20_30");
   });
 
   it("reports drawing source presence without exposing a path", () => {
@@ -173,6 +246,8 @@ describe("type-aware detail rows", () => {
       characterName: null,
       video: { script: null, style: null, duration_seconds: 0 },
     });
-    for (const row of rows) expect(row.value).toBe("ثبت نشده");
+    for (const row of rows) {
+      expect(["ثبت نشده", "مشخص نشده"]).toContain(row.value);
+    }
   });
 });

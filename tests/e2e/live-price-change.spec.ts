@@ -97,7 +97,6 @@ test("database price change updates image UI without source changes", async ({ p
     // Navigate to step 3
     await page.locator('label:has(input[name="character"])').first().click();
     await page.getByRole("button", { name: "ادامه به جزئیات" }).click();
-    await page.fill("#title", "Price Test");
     await page.fill("#sceneDescription", "Test scene");
     await page.fill("#style", "Test style");
     await page.getByRole("button", { name: "بررسی درخواست" }).click();
@@ -147,7 +146,6 @@ test("database price change updates image UI without source changes", async ({ p
   await page.waitForLoadState("networkidle");
   await page.locator('label:has(input[name="character"])').first().click();
   await page.getByRole("button", { name: "ادامه به جزئیات" }).click();
-  await page.fill("#title", "Restore Test");
   await page.fill("#sceneDescription", "Test scene");
   await page.fill("#style", "Test style");
   await page.getByRole("button", { name: "بررسی درخواست" }).click();

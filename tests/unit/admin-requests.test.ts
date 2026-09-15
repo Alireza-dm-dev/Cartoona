@@ -121,31 +121,76 @@ describe("image detail mapping", () => {
 });
 
 describe("video detail mapping", () => {
-  test("maps video type rows", () => {
+  test("a new request shows duration and speech, and no style row", () => {
     const rows = mapVideoTypeRows({
-      description: "یادداشت والد",
-      characterName: "پرنسس لوما",
       script: "داستان شب",
-      style: "کارتونی",
+      style: null,
+      durationChoice: "5_10",
+      durationSeconds: null,
+      charactersSpeak: true,
       referenceFile: true,
-      consentGranted: true,
     });
     expect(rows).toContainEqual({ label: "سناریو", value: "داستان شب", multiline: true });
-    expect(rows).toContainEqual({ label: "سبک ویدیو", value: "کارتونی" });
+    expect(rows).toContainEqual({ label: "مدت تقریبی", value: "۵ تا ۱۰ ثانیه" });
+    expect(rows).toContainEqual({ label: "صحبت کردن کاراکترها", value: "بله" });
     expect(rows).toContainEqual({ label: "فایل مرجع", value: "بارگذاری شده" });
+    // Removed fields must not render as empty rows on a new request.
+    expect(rows.map((r) => r.label)).not.toContain("سبک ویدیو");
+    expect(rows.map((r) => r.label)).not.toContain("عنوان ویدیو");
+  });
+
+  test("charactersSpeak false renders خیر", () => {
+    const rows = mapVideoTypeRows({
+      script: null,
+      style: null,
+      durationChoice: "30_plus",
+      durationSeconds: null,
+      charactersSpeak: false,
+      referenceFile: false,
+    });
+    expect(rows).toContainEqual({ label: "صحبت کردن کاراکترها", value: "خیر" });
+    expect(rows).toContainEqual({ label: "مدت تقریبی", value: "بیش از ۳۰ ثانیه" });
+  });
+
+  test("a historical request keeps its style and shows neutral fallbacks", () => {
+    const rows = mapVideoTypeRows({
+      script: "داستان شب",
+      style: "کارتونی",
+      durationChoice: null,
+      durationSeconds: 30,
+      charactersSpeak: null,
+      referenceFile: false,
+    });
+    expect(rows).toContainEqual({ label: "سبک ویدیو", value: "کارتونی" });
+    expect(rows).toContainEqual({ label: "مدت تقریبی", value: "30 ثانیه" });
+    // Never inferred for a row created before the field existed.
+    expect(rows).toContainEqual({ label: "صحبت کردن کاراکترها", value: "مشخص نشده" });
   });
 
   test("video absent values show ثبت نشده", () => {
     const rows = mapVideoTypeRows({
-      description: null,
-      characterName: null,
       script: null,
       style: null,
+      durationChoice: null,
+      durationSeconds: null,
+      charactersSpeak: null,
       referenceFile: false,
-      consentGranted: false,
     });
     expect(rows).toContainEqual({ label: "سناریو", value: "ثبت نشده", multiline: true });
-    expect(rows).toContainEqual({ label: "سبک ویدیو", value: "ثبت نشده" });
+    expect(rows).toContainEqual({ label: "مدت تقریبی", value: "مشخص نشده" });
+  });
+
+  test("an unrecognised duration is not displayed", () => {
+    const rows = mapVideoTypeRows({
+      script: null,
+      style: null,
+      durationChoice: "20_30",
+      durationSeconds: null,
+      charactersSpeak: true,
+      referenceFile: false,
+    });
+    expect(rows).toContainEqual({ label: "مدت تقریبی", value: "مشخص نشده" });
+    expect(JSON.stringify(rows)).not.toContain("20_30");
   });
 });
 

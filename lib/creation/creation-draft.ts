@@ -1,4 +1,4 @@
-import type { FormDuration } from "@/lib/pricing/pricing-keys";
+import type { FormDuration, VideoDurationChoice } from "@/lib/pricing/pricing-keys";
 
 type CreationDraftBase = {
   version: 1;
@@ -9,7 +9,6 @@ type CreationDraftBase = {
 export type ImageCreationDraft = CreationDraftBase & {
   type: "image";
   selectedCharacterId: string;
-  title: string;
   sceneDescription: string;
   style: string;
   occasion: string;
@@ -20,10 +19,10 @@ export type ImageCreationDraft = CreationDraftBase & {
 export type VideoCreationDraft = CreationDraftBase & {
   type: "video";
   selectedCharacterId: string;
-  title: string;
   storyDescription: string;
-  style: string;
-  duration: FormDuration;
+  duration: VideoDurationChoice;
+  /** Required for every new video request; never inferred for old drafts. */
+  charactersSpeak: boolean;
   occasion: string;
   parentNote: string;
   referenceFileName: string;

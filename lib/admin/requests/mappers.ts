@@ -1,5 +1,6 @@
 import type { OrderStatus, OrderType } from "@/types/app";
 import { adminRequestTypeLabels, UNKNOWN_REQUEST_TYPE_LABEL } from "@/config/admin";
+import { mapVideoDurationLabel } from "@/lib/pricing/pricing-keys";
 import {
   ALL_ORDER_STATUSES,
   isKnownOrderStatus,
@@ -31,6 +32,12 @@ const MODERATION_LABELS: Record<string, string> = {
 };
 
 const UNKNOWN_MODERATION_LABEL = "نامشخص";
+
+/** Shown where a historical request predates a field. Never inferred. */
+const NOT_SPECIFIED = "مشخص نشده";
+
+/** Shown in the queue for a request that carries no title. */
+export const UNTITLED_REQUEST_LABEL = "درخواست بدون عنوان";
 
 const CHILD_PROFILE_MISSING_LABEL = "بدون پروفایل کودک";
 const PARENT_DELETED_LABEL = "حساب والد حذف شده است";
@@ -120,25 +127,49 @@ export function mapImageTypeRows(input: {
   return rows;
 }
 
+/**
+ * Rows for the video section of the admin request detail.
+ *
+ * Title and style are no longer collected by the parent form. Style still
+ * appears for the historical requests that carry one, and is simply absent
+ * for new requests rather than rendering an empty row.
+ */
 export function mapVideoTypeRows(input: {
-  description: string | null;
-  characterName: string | null;
   script: string | null;
   style: string | null;
+  durationChoice: unknown;
+  durationSeconds: number | null;
+  charactersSpeak: boolean | null;
   referenceFile: boolean;
-  consentGranted: boolean;
 }): AdminTypeDetailRow[] {
   const rows: AdminTypeDetailRow[] = [];
-  rows.push({ label: "شخصیت", value: input.characterName || "ثبت نشده" });
   rows.push({ label: "سناریو", value: input.script || "ثبت نشده", multiline: true });
-  rows.push({ label: "سبک ویدیو", value: input.style || "ثبت نشده" });
+
+  if (input.style && input.style.trim()) {
+    rows.push({ label: "سبک ویدیو", value: input.style.trim() });
+  }
+
+  const durationLabel = mapVideoDurationLabel(input.durationChoice);
   rows.push({
-    label: "توضیح والد",
-    value: joinMultiline([input.description]) || "ثبت نشده",
-    multiline: true,
+    label: "مدت تقریبی",
+    value:
+      durationLabel ??
+      (input.durationSeconds && input.durationSeconds > 0
+        ? `${input.durationSeconds} ثانیه`
+        : NOT_SPECIFIED),
   });
+
+  rows.push({
+    label: "صحبت کردن کاراکترها",
+    value:
+      input.charactersSpeak === null
+        ? NOT_SPECIFIED
+        : input.charactersSpeak
+          ? "بله"
+          : "خیر",
+  });
+
   rows.push({ label: "فایل مرجع", value: input.referenceFile ? "بارگذاری شده" : "بارگذاری نشده" });
-  rows.push({ label: "رضایت والد", value: input.consentGranted ? "ثبت شده" : "ثبت نشده" });
   return rows;
 }
 
@@ -164,7 +195,7 @@ export interface OrderDetailInput {
   id: string;
   type: string | null;
   status: string | null;
-  title: string;
+  title: string | null;
   description: string | null;
   candy_cost: number | null;
   moderation_status: string | null;
@@ -187,7 +218,7 @@ export function mapOrderDetail(input: OrderDetailInput): AdminOrderDetail {
     typeLabel: mapRequestTypeLabel(input.type),
     status: isKnownOrderStatus(input.status) ? input.status : null,
     statusLabel: mapOrderStatusLabel(input.status),
-    title: input.title,
+    title: mapRequestTitle(input.title),
     description: input.description,
     candyCost: input.candy_cost ?? 0,
     moderationStatus: input.moderation_status ?? "",
@@ -203,6 +234,15 @@ export function mapOrderDetail(input: OrderDetailInput): AdminOrderDetail {
   };
 }
 
+/**
+ * A request that carries no title is labelled, never blanked. Image and video
+ * requests stopped collecting a title; historical rows keep theirs.
+ */
+export function mapRequestTitle(title: string | null | undefined): string {
+  const trimmed = typeof title === "string" ? title.trim() : "";
+  return trimmed.length > 0 ? trimmed : UNTITLED_REQUEST_LABEL;
+}
+
 export function parentDeletedLabel(parent: AdminParentInfo): string {
   return parent.deleted ? PARENT_DELETED_LABEL : (parent.name || "نام ثبت نشده");
 }
@@ -211,7 +251,7 @@ export function mapQueueRow(input: {
   id: string;
   type: string | null;
   status: string | null;
-  title: string;
+  title: string | null;
   candy_cost: number | null;
   created_at: string;
   updated_at: string;
@@ -226,7 +266,7 @@ export function mapQueueRow(input: {
     typeLabel: mapRequestTypeLabel(input.type),
     status: isKnownOrderStatus(input.status) ? input.status : null,
     statusLabel: mapOrderStatusLabel(input.status),
-    title: input.title,
+    title: mapRequestTitle(input.title),
     parentName: parent.name,
     parentDeleted: parent.deleted,
     childLabel: mapChildProfileLabel(input.childProfileId),

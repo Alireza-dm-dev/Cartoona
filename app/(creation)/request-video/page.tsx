@@ -11,7 +11,12 @@ import { SafetyNotice } from "@/components/ui/safety-notice";
 import { CreationTypeSwitcher } from "@/components/creation/creation-type-switcher";
 import { useCreationPricing } from "@/lib/pricing/use-creation-pricing";
 import { calculateCreationCost } from "@/lib/pricing/calculate-creation-cost";
-import { FORM_TO_INTERNAL } from "@/lib/pricing/pricing-keys";
+import {
+  VIDEO_DURATION_CHOICES,
+  VIDEO_DURATION_LABELS,
+  VIDEO_DURATION_TO_INTERNAL,
+} from "@/lib/pricing/pricing-keys";
+import type { VideoDurationChoice } from "@/lib/pricing/pricing-keys";
 import { saveCreationDraft } from "@/lib/creation/creation-draft";
 import type { VideoCreationDraft } from "@/lib/creation/creation-draft";
 import { characters } from "@/config/characters";
@@ -26,20 +31,23 @@ const categoryLabels: Record<string, string> = {
 
 const stepLabels = ["انتخاب شخصیت", "جزئیات ویدیو", "بررسی نهایی"];
 
-const durationOptions = [
-  { value: "کوتاه", label: "کوتاه" },
-  { value: "متوسط", label: "متوسط" },
-  { value: "بلند", label: "بلند" },
-];
+const durationOptions = VIDEO_DURATION_CHOICES.map((value) => ({
+  value,
+  label: VIDEO_DURATION_LABELS[value],
+}));
+
+const speechOptions = [
+  { value: "yes", label: "بله، کاراکترها صحبت کنند" },
+  { value: "no", label: "خیر، بدون صحبت" },
+] as const;
 
 export default function RequestVideoPage() {
   const router = useRouter();
   const [step, setStep] = useState(1);
   const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(null);
-  const [title, setTitle] = useState("");
   const [storyDescription, setStoryDescription] = useState("");
-  const [style, setStyle] = useState("");
-  const [duration, setDuration] = useState("");
+  const [duration, setDuration] = useState<VideoDurationChoice | "">("");
+  const [charactersSpeak, setCharactersSpeak] = useState<boolean | null>(null);
   const [occasion, setOccasion] = useState("");
   const [parentNote, setParentNote] = useState("");
   const [referenceFileName, setReferenceFileName] = useState<string | null>(null);
@@ -49,7 +57,7 @@ export default function RequestVideoPage() {
 
   const selectedCharacter = characters.find((c) => c.name === selectedCharacterId);
 
-  const vidDuration = duration ? FORM_TO_INTERNAL[duration as "کوتاه" | "متوسط" | "بلند"] : null
+  const vidDuration = duration ? VIDEO_DURATION_TO_INTERNAL[duration] : null
   const costResult = catalog && vidDuration
     ? calculateCreationCost(catalog, "video", vidDuration, Boolean(referenceFileName))
     : null;
@@ -65,17 +73,14 @@ export default function RequestVideoPage() {
 
   function validateStep2(): boolean {
     const newErrors: Record<string, string> = {};
-    if (!title.trim()) {
-      newErrors.title = "لطفاً عنوان ویدیو را وارد کنید.";
-    }
     if (!storyDescription.trim()) {
       newErrors.storyDescription = "لطفاً توضیح داستان یا صحنه را وارد کنید.";
     }
-    if (!style.trim()) {
-      newErrors.style = "لطفاً سبک ویدیو را انتخاب کنید.";
-    }
     if (!duration) {
       newErrors.duration = "لطفاً مدت تقریبی ویدیو را انتخاب کنید.";
+    }
+    if (charactersSpeak === null) {
+      newErrors.charactersSpeak = "لطفاً مشخص کنید کاراکترها صحبت کنند یا خیر.";
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -122,10 +127,9 @@ export default function RequestVideoPage() {
       estimatedCandyCost: currentCost,
       type: "video",
       selectedCharacterId: selectedCharacterId!,
-      title,
       storyDescription,
-      style,
-      duration: duration as "کوتاه" | "متوسط" | "بلند",
+      duration: duration as VideoDurationChoice,
+      charactersSpeak: charactersSpeak!,
       occasion: occasion || "",
       parentNote: parentNote || "",
       referenceFileName: referenceFileName || "",
@@ -249,21 +253,6 @@ export default function RequestVideoPage() {
         <Card className="mb-6">
           <div className="space-y-6">
             <div className="space-y-2">
-              <label className="block text-sm font-medium text-text-dark" htmlFor="title">
-                عنوان ویدیو <span className="text-coral">*</span>
-              </label>
-              <input
-                id="title"
-                type="text"
-                placeholder="مثلا: ماجرای شب مهتابی"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className={inputClass}
-              />
-              {errors.title && <p className="mt-1 text-sm text-coral" role="alert">{errors.title}</p>}
-            </div>
-
-            <div className="space-y-2">
               <label className="block text-sm font-medium text-text-dark" htmlFor="storyDescription">
                 توضیح داستان یا صحنه <span className="text-coral">*</span>
               </label>
@@ -279,51 +268,69 @@ export default function RequestVideoPage() {
               )}
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-text-dark" htmlFor="style">
-                  سبک ویدیو <span className="text-coral">*</span>
-                </label>
-                <input
-                  id="style"
-                  type="text"
-                  placeholder="مثلا: انیمیشن دو بعدی، کارتونی نرم"
-                  value={style}
-                  onChange={(e) => setStyle(e.target.value)}
-                  className={inputClass}
-                />
-                {errors.style && <p className="mt-1 text-sm text-coral" role="alert">{errors.style}</p>}
-              </div>
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-text-dark">
-                  مدت تقریبی ویدیو <span className="text-coral">*</span>
-                </label>
-                <fieldset className="flex gap-2">
-                  {durationOptions.map((opt) => (
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-text-dark" id="duration-label">
+                مدت تقریبی ویدیو <span className="text-coral">*</span>
+              </label>
+              <fieldset className="grid gap-2 sm:grid-cols-3" aria-labelledby="duration-label">
+                {durationOptions.map((opt) => (
+                  <label
+                    key={opt.value}
+                    className={`cursor-pointer rounded-lg border p-3 text-center text-sm transition-colors ${
+                      duration === opt.value
+                        ? "border-candy-pink bg-candy-pink/5 text-parent-navy font-medium"
+                        : "border-soft-border bg-soft-border/5 text-text-dark/60 hover:border-text-dark/30"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="duration"
+                      value={opt.value}
+                      checked={duration === opt.value}
+                      onChange={() => setDuration(opt.value)}
+                      className="sr-only"
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </fieldset>
+              {errors.duration && (
+                <p className="mt-1 text-sm text-coral" role="alert">{errors.duration}</p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-text-dark" id="charactersSpeak-label">
+                آیا کاراکترها صحبت کنند؟ <span className="text-coral">*</span>
+              </label>
+              <fieldset className="grid gap-2 sm:grid-cols-2" aria-labelledby="charactersSpeak-label">
+                {speechOptions.map((opt) => {
+                  const isSelected = charactersSpeak === (opt.value === "yes");
+                  return (
                     <label
                       key={opt.value}
-                      className={`flex-1 cursor-pointer rounded-lg border p-3 text-center text-sm transition-colors ${
-                        duration === opt.value
+                      className={`cursor-pointer rounded-lg border p-3 text-center text-sm transition-colors ${
+                        isSelected
                           ? "border-candy-pink bg-candy-pink/5 text-parent-navy font-medium"
                           : "border-soft-border bg-soft-border/5 text-text-dark/60 hover:border-text-dark/30"
                       }`}
                     >
                       <input
                         type="radio"
-                        name="duration"
+                        name="charactersSpeak"
                         value={opt.value}
-                        checked={duration === opt.value}
-                        onChange={() => setDuration(opt.value)}
+                        checked={isSelected}
+                        onChange={() => setCharactersSpeak(opt.value === "yes")}
                         className="sr-only"
                       />
                       {opt.label}
                     </label>
-                  ))}
-                </fieldset>
-                {errors.duration && (
-                  <p className="mt-1 text-sm text-coral" role="alert">{errors.duration}</p>
-                )}
-              </div>
+                  );
+                })}
+              </fieldset>
+              {errors.charactersSpeak && (
+                <p className="mt-1 text-sm text-coral" role="alert">{errors.charactersSpeak}</p>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -402,20 +409,24 @@ export default function RequestVideoPage() {
                 </span>
               </div>
               <div className="flex justify-between gap-4">
-                <span className="text-text-dark/50">عنوان ویدیو</span>
-                <span className="text-text-dark">{title}</span>
-              </div>
-              <div className="flex justify-between gap-4">
                 <span className="text-text-dark/50">توضیح داستان یا صحنه</span>
                 <span className="text-text-dark">{storyDescription}</span>
               </div>
               <div className="flex justify-between gap-4">
-                <span className="text-text-dark/50">سبک ویدیو</span>
-                <span className="text-text-dark">{style}</span>
+                <span className="text-text-dark/50">مدت تقریبی</span>
+                <span className="text-text-dark">
+                  {duration ? VIDEO_DURATION_LABELS[duration] : "مشخص نشده"}
+                </span>
               </div>
               <div className="flex justify-between gap-4">
-                <span className="text-text-dark/50">مدت تقریبی</span>
-                <span className="text-text-dark">{duration}</span>
+                <span className="text-text-dark/50">صحبت کردن کاراکترها</span>
+                <span className="text-text-dark">
+                  {charactersSpeak === null
+                    ? "مشخص نشده"
+                    : charactersSpeak
+                      ? "بله، کاراکترها صحبت کنند"
+                      : "خیر، بدون صحبت"}
+                </span>
               </div>
               {occasion && (
                 <div className="flex justify-between gap-4">
