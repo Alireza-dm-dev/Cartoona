@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { assertSafeDatabaseTarget } from "../helpers/assert-safe-database-target";
 
-const BASE = "http://localhost:3000";
+const BASE = process.env.CARTOONA_TEST_BASE_URL || "http://localhost:3000";
 const PASSWORD = "TestPass999!";
 
 function loadEnv(): Record<string, string> {
@@ -91,7 +91,12 @@ async function signupDevUser(phone: string): Promise<void> {
   const r1 = await fetch(`${BASE}/api/dev/parent-auth`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "signup_request_code", phone, fullName: FULL_NAME }),
+    body: JSON.stringify({
+      action: "signup_request_code",
+      phone,
+      fullName: FULL_NAME,
+      password: PASSWORD,
+    }),
   });
   const d1 = await r1.json();
   const r2 = await fetch(`${BASE}/api/dev/parent-auth`, {
@@ -101,6 +106,7 @@ async function signupDevUser(phone: string): Promise<void> {
       action: "signup_verify_code",
       phone,
       fullName: FULL_NAME,
+      password: PASSWORD,
       code: d1.developmentCode,
       challengeToken: d1.challengeToken,
     }),
@@ -132,6 +138,8 @@ function readPersianCode(text: string): string {
 }
 
 async function doDevSmsLogin(page: import("@playwright/test").Page, phone: string): Promise<void> {
+  await page.getByRole("button", { name: "ورود با کد پیامکی", exact: true }).click();
+  await page.waitForTimeout(300);
   await page.fill('input[placeholder="مثال: 09123456789"]', phone);
   await page.getByRole("button", { name: "دریافت کد ورود", exact: true }).click();
   await page.waitForSelector("text=کد آزمایشی شما", { timeout: 10000 });
@@ -259,8 +267,8 @@ for (const [label, fromValue] of unsafeAfterLogin) {
     await doDevSmsLogin(page, PARENT_B_PHONE);
     await page.waitForURL(/\/dashboard($|\?)/, { timeout: 15000 });
 
-    // Must be on localhost
-    expect(page.url()).toContain("localhost:3000");
+    // Must stay on the app's own origin
+    expect(page.url()).toContain(new URL(BASE).host);
     // Must not be on admin route
     expect(page.url()).not.toContain("/admin");
     // No redirect loop
@@ -303,6 +311,8 @@ test("Part 7a — Wrong OTP preserves session-expired notice", async ({ page }) 
   await expect(notice).toBeVisible();
 
   // Trigger dev OTP request
+  await page.getByRole("button", { name: "ورود با کد پیامکی", exact: true }).click();
+  await page.waitForTimeout(300);
   await page.fill('input[placeholder="مثال: 09123456789"]', PARENT_A_PHONE);
   await page.getByRole("button", { name: "دریافت کد ورود", exact: true }).click();
   await page.waitForSelector('input[placeholder="کد ۶ رقمی"]', { timeout: 10000 });
@@ -313,7 +323,7 @@ test("Part 7a — Wrong OTP preserves session-expired notice", async ({ page }) 
   await page.waitForTimeout(2000);
 
   // Persian OTP error must appear
-  await expect(page.getByText("شماره موبایل یا کد ورود صحیح نیست")).toBeVisible();
+  await expect(page.getByText("کد تأیید نادرست است. لطفاً دوباره تلاش کنید.")).toBeVisible();
   // Session-expired notice must still be visible
   await expect(notice).toBeVisible();
 });
@@ -377,12 +387,17 @@ test("Part 2e — Notice is informational (bg-cream)", async ({ page }) => {
   expect(classAttr).toContain("bg-cream");
 });
 
-test("Part 2d — SMS tab active by default", async ({ page }) => {
+test("Part 2d — password tab active by default, SMS offered as secondary", async ({ page }) => {
   await page.goto(`${BASE}/login`);
   await page.waitForLoadState("networkidle");
+
+  const passwordTab = page.getByText("ورود با رمز عبور", { exact: true });
+  await expect(passwordTab).toBeVisible();
+  await expect(passwordTab).toHaveClass(/border-candy-pink/);
+
   const smsTab = page.getByText("ورود با کد پیامکی", { exact: true });
   await expect(smsTab).toBeVisible();
-  await expect(smsTab).toHaveClass(/border-candy-pink/);
+  await expect(smsTab).not.toHaveClass(/border-candy-pink/);
 });
 
 // ══════════════════════════════════════════════════════════════════════

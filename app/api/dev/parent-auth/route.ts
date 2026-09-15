@@ -3,15 +3,15 @@ import { createServerClient } from "@supabase/ssr"
 import { getSupabaseEnv } from "@/lib/supabase/env"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
 import {
-  normalizeIranPhone,
-  isValidIranPhone,
+  toCanonicalIranPhone,
   deriveDevEmail,
   isDevAuthEnabled,
   isLocalhost,
   isValidFullName,
+  isValidParentPassword,
   generateOtpChallenge,
-  verifyOtpChallenge,
-  generateRandomPassword,
+  consumeOtpChallenge,
+  type OtpFailureReason,
 } from "@/lib/auth/dev-parent-auth"
 import {
   listUsers as apiListUsers,
@@ -29,8 +29,8 @@ const ALLOWED_ACTIONS = new Set([
 ])
 
 const ACTION_FIELDS: Record<string, Set<string>> = {
-  signup_request_code: new Set(["action", "phone", "fullName"]),
-  signup_verify_code: new Set(["action", "phone", "fullName", "code", "challengeToken"]),
+  signup_request_code: new Set(["action", "phone", "fullName", "password"]),
+  signup_verify_code: new Set(["action", "phone", "fullName", "password", "code", "challengeToken"]),
   login_request_code: new Set(["action", "phone"]),
   login_verify_code: new Set(["action", "phone", "code", "challengeToken"]),
   password_login: new Set(["action", "phone", "password"]),
@@ -55,10 +55,35 @@ function validateBody(body: Record<string, unknown>, allowedFields: Set<string>)
 }
 
 function normalizeAndValidatePhone(raw: string): string {
-  if (!raw || !raw.trim()) throw new Error("invalid_phone")
-  const normalized = normalizeIranPhone(raw)
-  if (!isValidIranPhone(normalized)) throw new Error("invalid_phone")
-  return normalized
+  const canonical = toCanonicalIranPhone(raw)
+  if (!canonical) throw new Error("invalid_phone")
+  return canonical
+}
+
+const INVALID_PHONE_MESSAGE =
+  "شماره موبایل وارد شده معتبر نیست. لطفاً یک شماره موبایل ایران (مثلاً 09123456789) وارد کنید."
+
+const PASSWORD_RULE_MESSAGE = "رمز عبور باید حداقل ۸ کاراکتر باشد."
+
+/**
+ * Maps an OTP failure to a message that is honest about the code itself.
+ *
+ * The previous handler answered every failure — including "no account for this
+ * phone" — with the same "wrong phone or code" string, which is why a correct
+ * displayed code looked rejected. Code-specific failures now say so, and
+ * account-state failures are reported separately by the caller.
+ */
+function otpErrorMessage(reason: OtpFailureReason): string {
+  switch (reason) {
+    case "expired":
+      return "کد تأیید منقضی شده است. لطفاً کد جدید درخواست کنید."
+    case "already_used":
+      return "این کد قبلاً استفاده شده است. لطفاً کد جدید درخواست کنید."
+    case "too_many_attempts":
+      return "تعداد تلاش‌های نادرست بیش از حد مجاز بود. لطفاً کد جدید درخواست کنید."
+    default:
+      return "کد تأیید نادرست است. لطفاً دوباره تلاش کنید."
+  }
 }
 
 async function findUserByPhone(
@@ -203,12 +228,23 @@ async function createSessionViaPassword(
   return response
 }
 
+function readPassword(body: Record<string, unknown>): string {
+  return typeof body.password === "string" ? body.password : ""
+}
+
 async function handleSignupRequestCode(body: Record<string, unknown>) {
   const phone = normalizeAndValidatePhone(body.phone as string)
 
   const fullName = (body.fullName as string || "").trim()
   if (!fullName || !isValidFullName(fullName)) {
     return jsonError("نام والد باید بین ۲ تا ۱۰۰ کاراکتر باشد.", 400)
+  }
+
+  // The password is validated here as well as at verify time so an unusable
+  // password is reported before the parent spends a verification code on it.
+  const password = readPassword(body)
+  if (!isValidParentPassword(password)) {
+    return jsonError(PASSWORD_RULE_MESSAGE, 400)
   }
 
   const devEmail = deriveDevEmail(phone)
@@ -241,9 +277,14 @@ async function handleSignupVerifyCode(
     return jsonError("نام والد باید بین ۲ تا ۱۰۰ کاراکتر باشد.", 400)
   }
 
+  const password = readPassword(body)
+  if (!isValidParentPassword(password)) {
+    return jsonError(PASSWORD_RULE_MESSAGE, 400)
+  }
+
   const code = typeof body.code === "string" ? body.code.trim() : ""
   if (!/^\d{6}$/.test(code)) {
-    return jsonError("کد تأیید نامعتبر است.", 400)
+    return jsonError("کد تأیید نادرست است. لطفاً دوباره تلاش کنید.", 400)
   }
 
   const challengeToken = typeof body.challengeToken === "string" ? body.challengeToken : ""
@@ -251,29 +292,32 @@ async function handleSignupVerifyCode(
     return jsonError("درخواست نامعتبر است.", 400)
   }
 
-  if (!verifyOtpChallenge(challengeToken, "signup", phone, code, fullName)) {
-    return jsonError("کد تأیید نامعتبر یا منقضی شده است.", 401)
+  const verification = consumeOtpChallenge(challengeToken, "signup", phone, code, fullName)
+  if (!verification.ok) {
+    return jsonError(otpErrorMessage(verification.reason), 401)
   }
 
   const devEmail = deriveDevEmail(phone)
   const existing = await findUserByPhone(phone, devEmail)
   if (existing) {
+    // Retrying a consumed signup must not produce a second identity or a second
+    // profile row; the parent is sent to login instead.
     return jsonError("برای این شماره حسابی وجود دارد. از صفحه ورود استفاده کنید.", 409)
   }
-
-  const internalPassword = generateRandomPassword()
 
   let createdUser
   try {
     createdUser = await apiCreateUser({
       email: devEmail,
       email_confirm: true,
-      password: internalPassword,
+      // The parent's own password is the account password, so the later
+      // phone + password login signs in against this exact credential.
+      password,
       user_metadata: {
         full_name: fullName,
         normalized_phone: phone,
         dev_parent: true,
-        password_enabled: false,
+        password_enabled: true,
       },
     })
   } catch {
@@ -295,7 +339,9 @@ async function handleSignupVerifyCode(
     return jsonError("ثبت‌نام انجام نشد. لطفاً دوباره تلاش کنید.", 500)
   }
 
-  const sessionResponse = await createSessionViaMagicLink(devEmail, env)
+  // Signing in with the submitted password rather than a magic link proves the
+  // stored credential actually works before the parent ever reaches /login.
+  const sessionResponse = await createSessionViaPassword(devEmail, password, env)
   if (!sessionResponse) {
     await apiDeleteUser(userId).catch(() => {})
     return jsonError("ورود به حساب انجام نشد. لطفاً دوباره تلاش کنید.", 500)
@@ -306,6 +352,15 @@ async function handleSignupVerifyCode(
 
 async function handleLoginRequestCode(body: Record<string, unknown>) {
   const phone = normalizeAndValidatePhone(body.phone as string)
+
+  // A code is only issued for a phone that can actually complete the login.
+  // Issuing one for an unknown phone is what made a correct displayed code look
+  // rejected at the verify step.
+  const devEmail = deriveDevEmail(phone)
+  const user = await findUserByPhone(phone, devEmail)
+  if (!user) {
+    return jsonError("برای این شماره حسابی ثبت نشده است. لطفاً ابتدا ثبت‌نام کنید.", 404)
+  }
 
   const challenge = generateOtpChallenge("login", phone)
 
@@ -328,7 +383,7 @@ async function handleLoginVerifyCode(
 
   const code = typeof body.code === "string" ? body.code.trim() : ""
   if (!/^\d{6}$/.test(code)) {
-    return jsonError("شماره موبایل یا کد ورود صحیح نیست.", 401)
+    return jsonError("کد تأیید نادرست است. لطفاً دوباره تلاش کنید.", 401)
   }
 
   const challengeToken = typeof body.challengeToken === "string" ? body.challengeToken : ""
@@ -336,14 +391,15 @@ async function handleLoginVerifyCode(
     return jsonError("درخواست نامعتبر است.", 400)
   }
 
-  if (!verifyOtpChallenge(challengeToken, "login", phone, code)) {
-    return jsonError("شماره موبایل یا کد ورود صحیح نیست.", 401)
+  const verification = consumeOtpChallenge(challengeToken, "login", phone, code)
+  if (!verification.ok) {
+    return jsonError(otpErrorMessage(verification.reason), 401)
   }
 
   const devEmail = deriveDevEmail(phone)
   const user = await findUserByPhone(phone, devEmail)
   if (!user) {
-    return jsonError("شماره موبایل یا کد ورود صحیح نیست.", 401)
+    return jsonError("برای این شماره حسابی ثبت نشده است. لطفاً ابتدا ثبت‌نام کنید.", 404)
   }
 
   const admin = createAdminSupabaseClient()
@@ -353,17 +409,17 @@ async function handleLoginVerifyCode(
     .eq("id", user.id)
     .maybeSingle()
   if (!roleRow || roleRow.role !== "parent") {
-    return jsonError("شماره موبایل یا کد ورود صحیح نیست.", 401)
+    return jsonError("این حساب دسترسی والدین ندارد.", 403)
   }
 
   const actualEmail = user.email
   if (!actualEmail || !user.email_confirmed_at) {
-    return jsonError("شماره موبایل یا کد ورود صحیح نیست.", 401)
+    return jsonError("این حساب هنوز فعال نشده است.", 403)
   }
 
   const sessionResponse = await createSessionViaMagicLink(actualEmail, env)
   if (!sessionResponse) {
-    return jsonError("شماره موبایل یا کد ورود صحیح نیست.", 401)
+    return jsonError("ورود به حساب انجام نشد. لطفاً دوباره تلاش کنید.", 500)
   }
 
   return sessionResponse
@@ -375,11 +431,13 @@ async function handlePasswordLogin(
 ) {
   const phone = normalizeAndValidatePhone(body.phone as string)
 
-  const password = typeof body.password === "string" ? body.password : ""
+  const password = readPassword(body)
   if (!password) {
     return jsonError("شماره موبایل یا رمز عبور صحیح نیست.", 401)
   }
 
+  // Credential failures stay deliberately uniform here: unlike the SMS flow,
+  // password login must not disclose whether the phone is registered.
   const devEmail = deriveDevEmail(phone)
   const user = await findUserByPhone(phone, devEmail)
   if (!user) {
@@ -460,7 +518,10 @@ export async function POST(request: Request) {
       default:
         return jsonError("درخواست نامعتبر است.", 400)
     }
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.message === "invalid_phone") {
+      return jsonError(INVALID_PHONE_MESSAGE, 400)
+    }
     return jsonError("خطایی رخ داد. لطفاً دوباره تلاش کنید.", 500)
   }
 }
