@@ -4,50 +4,15 @@ import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { createBrowserSupabaseClient } from "@/lib/supabase/client";
-
-const PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹";
-const ARABIC_DIGITS = "٠١٢٣٤٥٦٧٨٩";
-const ENGLISH_DIGITS = "0123456789";
-
-function toEnglishDigits(raw: string): string {
-  let result = "";
-  for (const ch of raw) {
-    const pi = PERSIAN_DIGITS.indexOf(ch);
-    if (pi !== -1) { result += ENGLISH_DIGITS[pi]; continue; }
-    const ai = ARABIC_DIGITS.indexOf(ch);
-    if (ai !== -1) { result += ENGLISH_DIGITS[ai]; continue; }
-    result += ch;
-  }
-  return result;
-}
-
-function normalizeIranPhone(raw: string): string {
-  const cleaned = toEnglishDigits(raw).replace(/[\s\-()]/g, "");
-  const digits = cleaned.replace(/\D/g, "");
-  let national: string;
-  if (digits.startsWith("0098")) {
-    national = digits.slice(4);
-  } else if (digits.startsWith("98") && digits.length >= 11) {
-    national = digits.slice(2);
-  } else if (digits.startsWith("0")) {
-    national = digits.slice(1);
-  } else {
-    national = digits;
-  }
-  return "+98" + national;
-}
-
-function isValidIranPhone(normalized: string): boolean {
-  return /^\+989\d{9}$/.test(normalized);
-}
-
-function toPersianDigits(num: string): string {
-  const digits: Record<string, string> = {
-    "0": "۰", "1": "۱", "2": "۲", "3": "۳", "4": "۴",
-    "5": "۵", "6": "۶", "7": "۷", "8": "۸", "9": "۹",
-  };
-  return num.replace(/\d/g, (ch) => digits[ch] || ch);
-}
+import {
+  normalizeIranPhone,
+  isValidIranPhone,
+  toPersianDigits,
+} from "@/lib/auth/phone";
+import {
+  getSafeParentDestination,
+  resolveSuccessfulLoginDestination,
+} from "@/lib/auth/parent-destinations";
 
 function mapLoginError(message: string): string {
   const m = message.toLowerCase();
@@ -72,48 +37,23 @@ function isDevEnvironment(): boolean {
   return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
 }
 
-const ALLOWED_PARENT_PATHS = new Set([
-  "/dashboard",
-  "/parent-consent",
-  "/complete-request",
-]);
-
-function getSafeParentDestination(value: string | null): string | null {
-  if (!value) return null;
-  if (value.length > 200) return null;
-  if (value.includes("\\")) return null;
-  if (value.includes("..")) return null;
-  if (value.includes("%00")) return null;
-  if (value.includes("\0")) return null;
-  if (value.startsWith("//")) return null;
-  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return null;
-  if (!value.startsWith("/")) return null;
-
-  const path = value.split("?")[0].split("#")[0];
-
-  if (ALLOWED_PARENT_PATHS.has(path)) return path;
-  if (path.startsWith("/dashboard/")) return path;
-
-  return null;
+/**
+ * The dev route answers with `next`, which encodes only whether consent has
+ * been granted. Combining that with `?from=` keeps the redirect the parent
+ * actually asked for while still diverting un-consented parents to consent.
+ */
+function resolveDevDestination(next: unknown): string {
+  const consentGranted = next === "/dashboard";
+  const safeFrom = getSafeParentDestination(
+    new URLSearchParams(window.location.search).get("from")
+  );
+  return resolveSuccessfulLoginDestination(safeFrom, consentGranted);
 }
 
-function resolveSuccessfulLoginDestination(
-  safeFrom: string | null,
-  consentGranted: boolean
-): string {
-  if (safeFrom) {
-    if (safeFrom === "/parent-consent") return safeFrom;
-    if (!consentGranted && (safeFrom === "/dashboard" || safeFrom.startsWith("/dashboard/"))) {
-      return "/parent-consent";
-    }
-    return safeFrom;
-  }
-  return consentGranted ? "/dashboard" : "/parent-consent";
-}
 type LoginMode = "sms" | "password";
 
 export default function LoginPage() {
-  const [mode, setMode] = useState<LoginMode>("sms");
+  const [mode, setMode] = useState<LoginMode>("password");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -228,9 +168,7 @@ export default function LoginPage() {
           return;
         }
 
-        const devFrom = getSafeParentDestination(data.next);
-        const destination = resolveSuccessfulLoginDestination(devFrom, true);
-        window.location.assign(destination);
+        window.location.assign(resolveDevDestination(data.next));
       } catch {
         setError("ورود انجام نشد. لطفاً دوباره تلاش کنید.");
       } finally {
@@ -319,9 +257,7 @@ export default function LoginPage() {
           return;
         }
 
-        const devFrom = getSafeParentDestination(data.next);
-        const destination = resolveSuccessfulLoginDestination(devFrom, true);
-        window.location.assign(destination);
+        window.location.assign(resolveDevDestination(data.next));
       } catch {
         setError("ورود انجام نشد. لطفاً دوباره تلاش کنید.");
       } finally {
@@ -373,7 +309,7 @@ export default function LoginPage() {
     <Card>
       <h1 className="text-2xl font-brand text-parent-navy">ورود والدین</h1>
       <p className="mt-1 text-sm text-text-dark/60">
-        برای ورود به پنل والدین، شماره موبایل خود را وارد کنید.
+        برای ورود به پنل والدین، شماره موبایل و رمز عبور خود را وارد کنید.
       </p>
 
       {expiredNotice === "session_expired" && (
@@ -388,17 +324,6 @@ export default function LoginPage() {
         <button
           type="button"
           className={`pb-2 px-4 text-sm font-medium transition-colors border-b-2 ${
-            mode === "sms"
-              ? "border-candy-pink text-candy-pink"
-              : "border-transparent text-text-dark/50 hover:text-text-dark/70"
-          }`}
-          onClick={() => { setMode("sms"); setError(""); setSmsStep(1); setCode(""); }}
-        >
-          ورود با کد پیامکی
-        </button>
-        <button
-          type="button"
-          className={`pb-2 px-4 text-sm font-medium transition-colors border-b-2 ${
             mode === "password"
               ? "border-candy-pink text-candy-pink"
               : "border-transparent text-text-dark/50 hover:text-text-dark/70"
@@ -406,6 +331,17 @@ export default function LoginPage() {
           onClick={() => { setMode("password"); setError(""); }}
         >
           ورود با رمز عبور
+        </button>
+        <button
+          type="button"
+          className={`pb-2 px-4 text-sm font-medium transition-colors border-b-2 ${
+            mode === "sms"
+              ? "border-candy-pink text-candy-pink"
+              : "border-transparent text-text-dark/50 hover:text-text-dark/70"
+          }`}
+          onClick={() => { setMode("sms"); setError(""); setSmsStep(1); setCode(""); }}
+        >
+          ورود با کد پیامکی
         </button>
       </div>
 

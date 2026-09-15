@@ -34,14 +34,32 @@ export interface GoTrueUser {
   user_metadata?: Record<string, unknown>
 }
 
+const USERS_PER_PAGE = 200
+const MAX_USER_PAGES = 50
+
+/**
+ * Lists every auth user, following GoTrue's pagination.
+ *
+ * The admin endpoint returns only the first page (50 users by default), so an
+ * unpaginated call silently stops finding accounts once a project grows past
+ * that — which surfaces as a parent being told their credentials are wrong.
+ */
 export async function listUsers(): Promise<GoTrueUser[]> {
-  const resp = await adminFetch("/admin/users")
-  if (!resp.ok) {
-    const body = await resp.text()
-    throw new Error(`listUsers failed: ${resp.status} ${body}`)
+  const all: GoTrueUser[] = []
+
+  for (let page = 1; page <= MAX_USER_PAGES; page++) {
+    const resp = await adminFetch(`/admin/users?page=${page}&per_page=${USERS_PER_PAGE}`)
+    if (!resp.ok) {
+      const body = await resp.text()
+      throw new Error(`listUsers failed: ${resp.status} ${body}`)
+    }
+    const data = await resp.json()
+    const users: GoTrueUser[] = data.users || []
+    all.push(...users)
+    if (users.length < USERS_PER_PAGE) break
   }
-  const data = await resp.json()
-  return data.users || []
+
+  return all
 }
 
 export async function createUser(params: {
