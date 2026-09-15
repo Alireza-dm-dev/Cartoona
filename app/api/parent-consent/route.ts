@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
 import { createExpiredParentSessionResponse } from "@/lib/auth/expired-parent-session-response"
+import { ensureParentProfile } from "@/lib/parent/ensure-parent-profile"
 
 const SUPPORTED_FIELDS = new Set(["consentGranted"])
 
@@ -51,41 +52,16 @@ export async function POST(request: Request) {
 
   const consentGrantedAt = new Date().toISOString()
 
-  const { data: existing } = await supabase
-    .from("parent_profiles")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
+  // Shared with signup completion so both paths create at most one profile
+  // and apply the same rules to it.
+  const result = await ensureParentProfile(supabase, {
+    userId: user.id,
+    fullName: fullName.trim(),
+    consent: "grant",
+  })
 
-  if (existing) {
-    const { error: updateError } = await supabase
-      .from("parent_profiles")
-      .update({
-        consent_granted: true,
-        consent_granted_at: consentGrantedAt,
-      })
-      .eq("user_id", user.id)
-      .select()
-      .maybeSingle()
-
-    if (updateError) {
-      return NextResponse.json({ error: "Failed to record consent" }, { status: 500 })
-    }
-  } else {
-    const { error: insertError } = await supabase
-      .from("parent_profiles")
-      .insert({
-        user_id: user.id,
-        full_name: fullName.trim(),
-        consent_granted: true,
-        consent_granted_at: consentGrantedAt,
-      })
-      .select()
-      .maybeSingle()
-
-    if (insertError) {
-      return NextResponse.json({ error: "Failed to record consent" }, { status: 500 })
-    }
+  if (!result.ok) {
+    return NextResponse.json({ error: "Failed to record consent" }, { status: 500 })
   }
 
   return NextResponse.json({

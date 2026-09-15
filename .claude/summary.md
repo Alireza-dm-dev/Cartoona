@@ -3,7 +3,7 @@
 ## Project State
 - **Phase:** MVP 0 (Foundation) — 43 routes (30 pages + 13 API endpoints), all functional at the foundation level
 - **Supabase project:** `oucyhmrnzahlhqjfqcge` — live PostgreSQL + Storage connected
-- **Auth:** Working parent/admin authentication with phone/password login; development demo-login; middleware-protected admin and dashboard routes
+- **Auth:** Working parent/admin authentication with phone/password login; guarded development parent-auth route; middleware-protected admin and dashboard routes
 - **Session:** 30-day non-sliding parent session lifetime enforcement (`get_current_parent_session_policy` RPC)
 - **Storage:** Private `parent-uploads` and `generated-media` buckets; public `example-media` bucket
 - **Database:** 31 migrations applied (local = remote 31/31), latest applied: `20260801120000_request_fulfilment_workflow.sql`
@@ -11,7 +11,7 @@
 ## Live APIs
 - `POST /api/requests` — Multipart form submission
 - `GET /api/creation-pricing` — Active pricing catalog
-- `POST /api/demo-login`, `POST /api/logout`, `POST /api/parent-consent`, `POST /api/parent/password`
+- `POST /api/logout`, `POST /api/parent-consent`, `POST /api/parent/complete-signup`, `POST /api/parent/password`
 - `GET /api/referrals`, `POST /api/referrals/bind`
 - `GET /api/admin/referrals`, `PATCH /api/admin/referrals/settings`
 - `GET /api/dev/parent-auth`, `GET /api/dev/supabase-check`
