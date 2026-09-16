@@ -50,8 +50,12 @@ describe("safe parent redirect targets", () => {
 
 describe("post-login destination", () => {
   it("defaults by consent state when there is no from=", () => {
-    expect(resolveSuccessfulLoginDestination(null, true)).toBe("/dashboard")
+    expect(resolveSuccessfulLoginDestination(null, true)).toBe("/dashboard/orders")
     expect(resolveSuccessfulLoginDestination(null, false)).toBe("/parent-consent")
+  })
+
+  it("sends a consented parent who asked for /dashboard straight to orders", () => {
+    expect(resolveSuccessfulLoginDestination("/dashboard", true)).toBe("/dashboard/orders")
   })
 
   it("honours a safe from= for a consented parent", () => {

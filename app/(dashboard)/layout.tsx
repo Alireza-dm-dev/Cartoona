@@ -1,4 +1,22 @@
 import Link from "next/link";
+import { ParentPortalNav } from "@/components/dashboard/parent-portal-nav";
+import {
+  PARENT_PORTAL_BRAND_HREF,
+  PARENT_PORTAL_BRAND_LABEL,
+} from "@/lib/parent/navigation/parent-nav";
+
+function LogoutButton({ className }: { className?: string }) {
+  return (
+    <form action="/api/logout" method="post" className={className}>
+      <button
+        type="submit"
+        className="min-h-[44px] w-full rounded-lg bg-soft-border/30 px-4 text-sm font-medium text-text-dark hover:bg-soft-border/50"
+      >
+        خروج
+      </button>
+    </form>
+  );
+}
 
 export default function DashboardLayout({
   children,
@@ -7,29 +25,23 @@ export default function DashboardLayout({
 }) {
   return (
     <div className="flex flex-col min-h-full bg-cream">
-      <header className="border-b border-soft-border bg-white">
-        <div className="mx-auto flex max-w-[1280px] items-center justify-between px-6 py-3">
-          <Link href="/dashboard" className="text-lg font-bold text-candy-pink">
-            پنل والدین کارتونا
+      {/* `relative` anchors the mobile navigation panel to the header. */}
+      <header className="relative border-b border-soft-border bg-white">
+        <div className="mx-auto flex max-w-[1280px] items-center gap-4 px-6 py-3">
+          {/* Leaving the portal must not end the session: this is an ordinary
+              link to the public site, not a logout. */}
+          <Link
+            href={PARENT_PORTAL_BRAND_HREF}
+            className="text-lg font-bold text-candy-pink"
+          >
+            {PARENT_PORTAL_BRAND_LABEL}
           </Link>
-          <nav className="hidden items-center gap-5 text-sm font-medium text-text-dark/70 sm:flex">
-            <Link href="/dashboard">داشبورد</Link>
-            <Link href="/dashboard/create-image">ساخت تصویر کارتونی</Link>
-            <Link href="/dashboard/orders">درخواست‌ها</Link>
-            <Link href="/dashboard/gallery">گالری خصوصی</Link>
-            <Link href="/dashboard/billing">آبنبات‌ها و پرداخت</Link>
-            <Link href="/dashboard/referrals">معرفی دوستان</Link>
-            <Link href="/dashboard/settings">تنظیمات</Link>
-          </nav>
-          <div className="ml-auto hidden sm:block">
-            <form action="/api/logout" method="post">
-              <button
-                type="submit"
-                className="rounded-lg bg-soft-border/30 px-4 py-2 text-sm font-medium text-text-dark hover:bg-soft-border/50"
-              >
-                خروج
-              </button>
-            </form>
+
+          <div className="ms-auto flex items-center gap-4">
+            <ParentPortalNav>
+              <LogoutButton className="py-3" />
+            </ParentPortalNav>
+            <LogoutButton className="hidden sm:block" />
           </div>
         </div>
       </header>

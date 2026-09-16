@@ -5,6 +5,8 @@
  * tests rather than only exercised through a browser.
  */
 
+import { PARENT_PORTAL_HOME } from "@/lib/parent/navigation/parent-nav"
+
 const ALLOWED_PARENT_PATHS = new Set([
   "/dashboard",
   "/parent-consent",
@@ -50,7 +52,10 @@ export function resolveSuccessfulLoginDestination(
     if (!consentGranted && (safeFrom === "/dashboard" || safeFrom.startsWith("/dashboard/"))) {
       return "/parent-consent"
     }
+    // /dashboard only redirects onward now, so a parent who asked for it is
+    // sent straight to the portal home instead of through an extra hop.
+    if (safeFrom === "/dashboard") return PARENT_PORTAL_HOME
     return safeFrom
   }
-  return consentGranted ? "/dashboard" : "/parent-consent"
+  return consentGranted ? PARENT_PORTAL_HOME : "/parent-consent"
 }

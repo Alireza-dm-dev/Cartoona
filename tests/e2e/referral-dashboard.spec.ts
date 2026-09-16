@@ -162,9 +162,9 @@ function loginAs(page: Page, cookie: string) {
 //  Part A — Navigation, layout, code display
 // ══════════════════════════════════════════════════════════════════════════
 
-test("dashboard navigation contains معرفی دوستان", async ({ page }) => {
+test("dashboard navigation contains گرفتن تخفیف", async ({ page }) => {
   await navigateWithAuth(page, `${BASE}/dashboard`, ownerCookie);
-  const navLink = page.locator("nav a", { hasText: "معرفی دوستان" });
+  const navLink = page.locator("nav a", { hasText: "گرفتن تخفیف" });
   await expect(navLink).toBeVisible();
   await expect(navLink).toHaveAttribute("href", "/dashboard/referrals");
 });

@@ -9,6 +9,7 @@ import {
   OrdersLoadingState,
   OrdersNoProfileState,
 } from "@/components/dashboard/orders/orders-states";
+import { NewRequestActions } from "@/components/dashboard/new-request-actions";
 import { getParentOrders } from "@/lib/parent/orders/queries";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
@@ -40,9 +41,11 @@ export default async function OrdersPage() {
   return (
     <div className="mx-auto max-w-[880px]">
       <PageHeader
-        title="سفارش‌های من"
+        title="درخواست‌های من"
         description="وضعیت درخواست‌های تصویر، ویدیو و جان‌بخشی به نقاشی را به‌صورت خصوصی دنبال کنید."
       />
+
+      <NewRequestActions />
 
       <Card className="mb-6 border-soft-purple/20 bg-soft-purple/5">
         <h3 className="mb-2 font-semibold text-parent-navy">سفارش‌ها خصوصی هستند</h3>

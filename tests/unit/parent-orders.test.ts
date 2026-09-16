@@ -90,12 +90,15 @@ describe("request-type mapping", () => {
     }
   });
 
-  it("points every type at an existing creation route", () => {
+  it("points every type at the public creation route, never a dashboard one", () => {
     expect(Object.values(PARENT_TYPE_ROUTES)).toEqual([
-      "/dashboard/create-image",
-      "/dashboard/request-video",
-      "/dashboard/animate-drawing",
+      "/create-image",
+      "/request-video",
+      "/animate-drawing",
     ]);
+    for (const route of Object.values(PARENT_TYPE_ROUTES)) {
+      expect(route.startsWith("/dashboard")).toBe(false);
+    }
     expect(Object.keys(PARENT_TYPE_ROUTES).sort()).toEqual(
       Object.keys(PARENT_TYPE_LABELS).sort(),
     );

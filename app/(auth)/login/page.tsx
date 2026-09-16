@@ -13,6 +13,7 @@ import {
   getSafeParentDestination,
   resolveSuccessfulLoginDestination,
 } from "@/lib/auth/parent-destinations";
+import { PARENT_PORTAL_HOME } from "@/lib/parent/navigation/parent-nav";
 
 function mapLoginError(message: string): string {
   const m = message.toLowerCase();
@@ -293,7 +294,7 @@ export default function LoginPage() {
         const consentGranted = profileRow?.consent_granted ?? false;
         destination = resolveSuccessfulLoginDestination(safeFrom, consentGranted);
       } else {
-        destination = "/dashboard";
+        destination = PARENT_PORTAL_HOME;
       }
 
       window.location.assign(destination);

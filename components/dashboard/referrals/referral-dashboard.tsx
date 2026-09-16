@@ -36,7 +36,7 @@ export function ReferralDashboard() {
   return (
     <div>
       <PageHeader
-        title="معرفی دوستان"
+        title="گرفتن تخفیف"
         description="کد معرفی خود را با دوستانتان به اشتراک بگذارید و وضعیت معرفی‌های خود را ببینید."
       />
 

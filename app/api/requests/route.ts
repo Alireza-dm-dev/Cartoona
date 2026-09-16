@@ -5,18 +5,15 @@ import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lif
 import { createExpiredParentSessionResponse } from "@/lib/auth/expired-parent-session-response"
 import { parseAndValidateDraft } from "@/lib/requests/request-submission"
 import { mapRequestRpcError } from "@/lib/requests/request-rpc-error"
+import { sanitizeFileName } from "@/lib/requests/sanitize-file-name"
+import {
+  resolveOwnedSourceAsset,
+  sourceAssetCopyName,
+  PRIVATE_UPLOADS_BUCKET,
+} from "@/lib/parent/gallery/source-asset"
 
 const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"]
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MiB
-
-function sanitizeFileName(name: string): string {
-  let safe = name.replace(/[/\\]/g, "_")
-  safe = safe.replace(/\.\./g, "")
-  safe = safe.replace(/[^a-zA-Z0-9._-]/g, "_")
-  safe = safe.replace(/_+/g, "_")
-  safe = safe.replace(/^_|_$/g, "")
-  return safe.slice(0, 255) || "file"
-}
 
 export async function POST(request: Request) {
   const contentType = request.headers.get("content-type") || ""
@@ -129,6 +126,45 @@ export async function POST(request: Request) {
     }
 
     fileUploaded = true
+  } else {
+    // ── Reuse of an existing private-gallery asset ────────────────────────
+    // The browser sends a media_assets id and never a storage path, so the
+    // path is resolved server-side from a row that is proven to belong to
+    // this parent. The object is then copied into the new order's own folder,
+    // which keeps the <uid>/<orderId>/ storage invariant the RPC and the
+    // storage policies both depend on.
+    const sourceAssetId = formData.get("sourceAssetId")
+
+    if (typeof sourceAssetId === "string" && sourceAssetId.trim().length > 0) {
+      const resolved = await resolveOwnedSourceAsset(supabase, sourceAssetId.trim())
+
+      if (!resolved.ok) {
+        // A foreign id and a non-existent id answer identically, so this
+        // cannot be used to probe another parent's media.
+        return NextResponse.json({
+          error: "فایل انتخاب‌شده در دسترس نیست. لطفاً دوباره انتخاب کنید یا فایل جدیدی بارگذاری کنید.",
+          code: "source_asset_unavailable",
+        }, { status: 422 })
+      }
+
+      const copyName = sourceAssetCopyName(resolved.asset, sanitizeFileName)
+      storagePath = `${user.id}/${orderId}/${copyName}`
+
+      const { error: copyError } = await supabase.storage
+        .from(PRIVATE_UPLOADS_BUCKET)
+        .copy(resolved.asset.path, storagePath)
+
+      if (copyError) {
+        return NextResponse.json({
+          error: "استفاده از فایل قبلی با خطا مواجه شد. لطفاً دوباره تلاش کنید.",
+          code: "source_asset_copy_failed",
+        }, { status: 500 })
+      }
+
+      // Marked as uploaded so the rollback below removes the copy, not the
+      // original, if the request insert fails.
+      fileUploaded = true
+    }
   }
 
   const { data: rpcData, error: rpcError } = await createAdminSupabaseClient()

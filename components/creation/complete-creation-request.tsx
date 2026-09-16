@@ -8,6 +8,9 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { readCreationDraft } from "@/lib/creation/creation-draft";
 import type { CreationDraft, ImageCreationDraft, VideoCreationDraft, DrawingCreationDraft } from "@/lib/creation/creation-draft";
 import { CreationDraftSummaryCard } from "@/components/creation/pending-creation-draft-card";
+import { PrivateGalleryPicker } from "@/components/creation/private-gallery-picker";
+import type { ParentGalleryMedia } from "@/lib/parent/gallery/types";
+import { PARENT_PORTAL_HOME } from "@/lib/parent/navigation/parent-nav";
 import { useCreationPricing } from "@/lib/pricing/use-creation-pricing";
 import { calculateCreationCost } from "@/lib/pricing/calculate-creation-cost";
 import { FORM_TO_INTERNAL, VIDEO_DURATION_TO_INTERNAL, isVideoDurationChoice } from "@/lib/pricing/pricing-keys";
@@ -23,6 +26,11 @@ export default function CompleteCreationRequest() {
   const [draft, setDraft] = useState<CreationDraft | null>(null);
   const [hasFinishedLoading, setHasFinishedLoading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  // A source can come from the device or from the parent's private gallery.
+  // Only one of the two is ever active, so a request cannot carry both.
+  const [sourceMode, setSourceMode] = useState<"upload" | "gallery">("upload");
+  const [selectedGalleryMedia, setSelectedGalleryMedia] =
+    useState<ParentGalleryMedia | null>(null);
   const [fileError, setFileError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -78,10 +86,10 @@ export default function CompleteCreationRequest() {
               <Button>شروع ساخت</Button>
             </Link>
             <Link
-              href="/dashboard"
+              href={PARENT_PORTAL_HOME}
               className="text-xs text-text-dark/50 hover:text-text-dark/70"
             >
-              رفتن به داشبورد
+              رفتن به درخواست‌ها
             </Link>
           </div>
         }
@@ -111,7 +119,7 @@ export default function CompleteCreationRequest() {
     ? "انتخاب دوباره نقاشی"
     : "انتخاب دوباره فایل مرجع";
 
-  const fileSelected = selectedFile !== null;
+  const fileSelected = selectedFile !== null || selectedGalleryMedia !== null;
 
   const fileRequiredAndMissing = requiresFileReselection && !fileSelected;
 
@@ -128,15 +136,38 @@ export default function CompleteCreationRequest() {
       return;
     }
 
+    setSelectedGalleryMedia(null);
     setSelectedFile(file);
   }
 
   function handleRemoveFile() {
     setSelectedFile(null);
+    setSelectedGalleryMedia(null);
     setFileError("");
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
+  }
+
+  /**
+   * Record an explicit choice from the private gallery.
+   *
+   * Only the asset id travels with the request. The storage path is never sent
+   * by the browser — the server resolves it from a row it has proven belongs
+   * to this parent.
+   */
+  function handleGallerySelect(media: ParentGalleryMedia) {
+    setFileError("");
+    setSelectedFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    setSelectedGalleryMedia(media);
+  }
+
+  function handleUseUpload() {
+    setSourceMode("upload");
+    setSelectedGalleryMedia(null);
   }
 
   function getReadinessText(): string {
@@ -181,7 +212,9 @@ export default function CompleteCreationRequest() {
                     انتخاب شده
                   </span>
                   <span className="flex-1 truncate text-text-dark">
-                    {selectedFile.name}
+                    {selectedFile
+                      ? selectedFile.name
+                      : (selectedGalleryMedia?.label ?? "فایل انتخاب‌شده از گالری")}
                   </span>
                   <button
                     type="button"
@@ -192,25 +225,70 @@ export default function CompleteCreationRequest() {
                   </button>
                 </div>
                 <p className="mt-1 text-xs text-mint-green">
-                  آماده برای مرحله ثبت نهایی
+                  {selectedGalleryMedia
+                    ? "این فایل از گالری خصوصی شما انتخاب شد و برای این درخواست استفاده می‌شود."
+                    : "آماده برای مرحله ثبت نهایی"}
                 </p>
               </div>
             ) : (
-              <div className="flex flex-col gap-2">
-                <div className="rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm text-text-dark/50">
-                  فایل فقط در حافظه همین صفحه نگه‌داری می‌شود و هنوز بارگذاری
-                  نشده است.
+              <div className="flex flex-col gap-3">
+                {/* Two ways to provide the source. The parent is authenticated
+                    here, so the gallery is safe to offer — the public creation
+                    pages stay anonymous and are not changed. */}
+                <div className="flex flex-wrap gap-2" role="group" aria-label="روش انتخاب فایل">
+                  <button
+                    type="button"
+                    onClick={handleUseUpload}
+                    aria-pressed={sourceMode === "upload"}
+                    className={`min-h-[44px] rounded-lg border px-3 text-sm font-medium transition-colors ${
+                      sourceMode === "upload"
+                        ? "border-candy-pink text-candy-pink"
+                        : "border-soft-border text-text-dark/70"
+                    }`}
+                  >
+                    آپلود تصویر جدید
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSourceMode("gallery")}
+                    aria-pressed={sourceMode === "gallery"}
+                    className={`min-h-[44px] rounded-lg border px-3 text-sm font-medium transition-colors ${
+                      sourceMode === "gallery"
+                        ? "border-candy-pink text-candy-pink"
+                        : "border-soft-border text-text-dark/70"
+                    }`}
+                  >
+                    انتخاب از گالری خصوصی
+                  </button>
                 </div>
-                <label className="inline-flex cursor-pointer items-center gap-2 text-sm font-medium text-candy-pink hover:opacity-80 self-start">
-                  {fileSelectionLabel}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept={acceptedFileTypes}
-                    onChange={handleFileChange}
-                    className="sr-only"
+
+                {sourceMode === "upload" ? (
+                  <div className="flex flex-col gap-2">
+                    <div className="rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm text-text-dark/50">
+                      فایل فقط در حافظه همین صفحه نگه‌داری می‌شود و هنوز بارگذاری
+                      نشده است.
+                    </div>
+                    <label className="inline-flex min-h-[44px] cursor-pointer items-center gap-2 text-sm font-medium text-candy-pink hover:opacity-80 self-start">
+                      {fileSelectionLabel}
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept={acceptedFileTypes}
+                        onChange={handleFileChange}
+                        className="sr-only"
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  /* Nothing is selected while the picker is on screen:
+                     choosing an item moves this card into its confirmation
+                     state, which is where the parent confirms the reuse. */
+                  <PrivateGalleryPicker
+                    selectedId={null}
+                    onSelect={handleGallerySelect}
+                    onCancel={handleUseUpload}
                   />
-                </label>
+                )}
               </div>
             )}
 
@@ -280,10 +358,10 @@ export default function CompleteCreationRequest() {
 
         <div className="mt-4 text-center">
           <Link
-            href="/dashboard"
+            href={PARENT_PORTAL_HOME}
             className="text-sm text-text-dark/50 hover:text-text-dark/70"
           >
-            بازگشت به داشبورد
+            بازگشت به درخواست‌ها
           </Link>
         </div>
       </Card>

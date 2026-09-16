@@ -11,13 +11,18 @@ export default function SettingsPage() {
         description="مدیریت پروفایل، رمز عبور، حریم خصوصی و حذف حساب."
       />
 
-      <Card className="mb-4">
-        <h3 className="font-semibold text-text-dark">پروفایل</h3>
-        <p className="mt-1 text-sm text-text-dark/50">
-          نام و اطلاعات حساب والدین.
-        </p>
-        {/* TODO: Profile edit form */}
-      </Card>
+      {/* Anchor target for the "پروفایل" navigation entry. Profile and settings
+          are one page: the nav deep-links here rather than introducing a second
+          profile system. */}
+      <section id="profile" className="scroll-mt-24">
+        <Card className="mb-4">
+          <h3 className="font-semibold text-text-dark">پروفایل</h3>
+          <p className="mt-1 text-sm text-text-dark/50">
+            نام و اطلاعات حساب والدین.
+          </p>
+          {/* TODO: Profile edit form */}
+        </Card>
+      </section>
 
       <Card className="mb-4">
         <h3 className="font-semibold text-text-dark">رمز عبور</h3>
