@@ -1,10 +1,20 @@
 import Link from "next/link";
+import { ParentAccountDrawer } from "@/components/layout/parent-account-drawer";
+import { getPublicHeaderAccount } from "@/lib/auth/public-header-account";
 
-export default function CreationLayout({
+/**
+ * Reading the session cookie here opts the creation routes out of static
+ * rendering, so a signed-in parent keeps their account control while creating.
+ * The anonymous entry points are unchanged: deferred auth still works exactly
+ * as before for a visitor who has not signed in.
+ */
+export default async function CreationLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const account = await getPublicHeaderAccount();
+
   return (
     <div className="flex flex-col min-h-full">
       <header className="border-b border-soft-border bg-white">
@@ -13,18 +23,24 @@ export default function CreationLayout({
             کارتونا
           </Link>
           <div className="flex items-center gap-3">
-            <Link
-              href="/login"
-              className="rounded-full px-4 py-2 text-sm font-medium text-parent-navy hover:bg-soft-border/50 transition-colors"
-            >
-              ورود
-            </Link>
-            <Link
-              href="/signup"
-              className="rounded-full bg-candy-pink px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity"
-            >
-              ساخت حساب
-            </Link>
+            {account ? (
+              <ParentAccountDrawer account={account} />
+            ) : (
+              <>
+                <Link
+                  href="/login"
+                  className="rounded-full px-4 py-2 text-sm font-medium text-parent-navy hover:bg-soft-border/50 transition-colors"
+                >
+                  ورود
+                </Link>
+                <Link
+                  href="/signup"
+                  className="rounded-full bg-candy-pink px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity"
+                >
+                  ساخت حساب
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </header>

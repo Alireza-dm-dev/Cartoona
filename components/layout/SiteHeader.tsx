@@ -2,8 +2,17 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { ParentAccountDrawer } from "@/components/layout/parent-account-drawer";
+import type { ParentAccountSummary } from "@/lib/auth/parent-account";
 
-export function SiteHeader() {
+/**
+ * Header for the marketing sub-pages.
+ *
+ * `account` is resolved by the server layout and passed down, so this client
+ * component never inspects the session itself and the header is already
+ * correct in the first HTML.
+ */
+export function SiteHeader({ account }: { account: ParentAccountSummary | null }) {
   const pathname = usePathname();
 
   if (pathname === "/") return null;
@@ -22,18 +31,24 @@ export function SiteHeader() {
           <Link href="/faq">سوالات متداول</Link>
         </nav>
         <div className="flex items-center gap-3">
-          <Link
-            href="/login"
-            className="rounded-full px-4 py-2 text-sm font-medium text-parent-navy hover:bg-soft-border/50 transition-colors"
-          >
-            ورود
-          </Link>
-          <Link
-            href="/signup"
-            className="rounded-full bg-candy-pink px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity"
-          >
-            شروع کنید
-          </Link>
+          {account ? (
+            <ParentAccountDrawer account={account} />
+          ) : (
+            <>
+              <Link
+                href="/login"
+                className="rounded-full px-4 py-2 text-sm font-medium text-parent-navy hover:bg-soft-border/50 transition-colors"
+              >
+                ورود
+              </Link>
+              <Link
+                href="/signup"
+                className="rounded-full bg-candy-pink px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity"
+              >
+                شروع کنید
+              </Link>
+            </>
+          )}
         </div>
       </div>
     </header>

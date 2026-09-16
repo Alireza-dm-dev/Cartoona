@@ -10,6 +10,7 @@ import { FaqTeaserSection } from "@/components/marketing/FaqTeaserSection";
 import { FinalCtaSection } from "@/components/marketing/FinalCtaSection";
 import { HOMEPAGE_MEDIA_SLOTS } from "@/lib/homepage/media-slots";
 import { getResolvedHomepage } from "@/lib/homepage/resolver";
+import { getPublicHeaderAccount } from "@/lib/auth/public-header-account";
 
 /**
  * The homepage reads the CMS on every request so an admin edit is visible on
@@ -22,6 +23,9 @@ export const dynamic = "force-dynamic";
 export default async function HomePage() {
   const resolved = await getResolvedHomepage();
   const { content, media } = resolved;
+  // The homepage carries its own header inside the hero, so the account is
+  // resolved here rather than in the marketing layout.
+  const account = await getPublicHeaderAccount();
 
   return (
     <>
@@ -33,6 +37,7 @@ export default async function HomePage() {
           tv_video: media[HOMEPAGE_MEDIA_SLOTS.HERO_TV_VIDEO],
         }}
         layout={{ rect: resolved.heroLayout }}
+        account={account}
       />
 
       {/* Every section after the hero shares one continuous artwork canvas, so

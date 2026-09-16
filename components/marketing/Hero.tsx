@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { ParentAccountDrawer } from "@/components/layout/parent-account-drawer";
+import type { ParentAccountSummary } from "@/lib/auth/parent-account";
 import type { HeroTvRect } from "@/lib/homepage/hero-layout";
 import type { HeroContent, NavigationContent } from "@/lib/homepage/types";
 
@@ -138,6 +140,11 @@ export interface HeroProps {
   navigation: NavigationContent;
   media: HeroMedia;
   layout: HeroLayout;
+  /**
+   * The signed-in parent, resolved on the server by the page. Null for
+   * anonymous visitors and for admins, who keep the public actions.
+   */
+  account?: ParentAccountSummary | null;
 }
 
 /**
@@ -145,7 +152,7 @@ export interface HeroProps {
  * and the default already happened in the resolver, so there is exactly one
  * place that decision lives and the component simply uses what it is handed.
  */
-export function Hero({ content, navigation, media, layout }: HeroProps) {
+export function Hero({ content, navigation, media, layout, account = null }: HeroProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const frameRef = useRef<HTMLDivElement>(null);
   const geometry = useHeroGeometry(frameRef, layout.rect);
@@ -226,31 +233,41 @@ export function Hero({ content, navigation, media, layout }: HeroProps) {
           </div>
 
           <div className="hidden shrink-0 items-center gap-4 md:flex">
-            <Link
-              href="/login"
-              className="text-[15px] leading-normal font-bold text-parent-navy hover:text-candy-pink transition-colors"
-            >
-              {navigation.loginLabel}
-            </Link>
-            <Link href="/signup">
-              <Button
-                size="sm"
-                className="rounded-full px-5 py-2 text-[15px] font-bold shadow-[0_6px_16px_rgba(242,100,154,0.35)]"
-              >
-                {navigation.signupLabel}
-              </Button>
-            </Link>
+            {account ? (
+              <ParentAccountDrawer account={account} />
+            ) : (
+              <>
+                <Link
+                  href="/login"
+                  className="text-[15px] leading-normal font-bold text-parent-navy hover:text-candy-pink transition-colors"
+                >
+                  {navigation.loginLabel}
+                </Link>
+                <Link href="/signup">
+                  <Button
+                    size="sm"
+                    className="rounded-full px-5 py-2 text-[15px] font-bold shadow-[0_6px_16px_rgba(242,100,154,0.35)]"
+                  >
+                    {navigation.signupLabel}
+                  </Button>
+                </Link>
+              </>
+            )}
           </div>
 
           <div className="flex shrink-0 items-center gap-2.5 md:hidden">
-            <Link href="/signup">
-              <Button
-                size="sm"
-                className="rounded-full px-4 py-2 text-sm font-bold shadow-[0_6px_16px_rgba(242,100,154,0.35)]"
-              >
-                {navigation.signupLabel}
-              </Button>
-            </Link>
+            {account ? (
+              <ParentAccountDrawer account={account} />
+            ) : (
+              <Link href="/signup">
+                <Button
+                  size="sm"
+                  className="rounded-full px-4 py-2 text-sm font-bold shadow-[0_6px_16px_rgba(242,100,154,0.35)]"
+                >
+                  {navigation.signupLabel}
+                </Button>
+              </Link>
+            )}
             <button
               type="button"
               onClick={() => setMenuOpen((open) => !open)}
@@ -277,13 +294,15 @@ export function Hero({ content, navigation, media, layout }: HeroProps) {
                 {navigation[route.label]}
               </Link>
             ))}
-            <Link
-              href="/login"
-              onClick={() => setMenuOpen(false)}
-              className="rounded-2xl px-4 py-3.5 text-base font-semibold text-parent-navy hover:bg-candy-pink/10 hover:text-candy-pink transition-colors"
-            >
-              {navigation.loginLabel}
-            </Link>
+            {!account && (
+              <Link
+                href="/login"
+                onClick={() => setMenuOpen(false)}
+                className="rounded-2xl px-4 py-3.5 text-base font-semibold text-parent-navy hover:bg-candy-pink/10 hover:text-candy-pink transition-colors"
+              >
+                {navigation.loginLabel}
+              </Link>
+            )}
           </div>
         )}
 

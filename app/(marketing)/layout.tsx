@@ -1,14 +1,22 @@
 import Link from "next/link";
 import { SiteHeader } from "@/components/layout/SiteHeader";
+import { getPublicHeaderAccount } from "@/lib/auth/public-header-account";
 
-export default function MarketingLayout({
+/**
+ * Reading the session cookie here opts the marketing routes out of static
+ * rendering. That is the deliberate cost of a header that is already correct
+ * in the first HTML instead of swapping in after a client-side fetch.
+ */
+export default async function MarketingLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const account = await getPublicHeaderAccount();
+
   return (
     <div className="flex flex-col min-h-full">
-      <SiteHeader />
+      <SiteHeader account={account} />
       <main className="flex-1">{children}</main>
       <footer className="border-t border-soft-border bg-white">
         <div className="mx-auto flex max-w-[1200px] flex-col items-center gap-4 px-6 py-8 text-sm text-text-dark/60 sm:flex-row sm:justify-between">
