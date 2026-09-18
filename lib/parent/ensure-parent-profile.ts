@@ -9,11 +9,16 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * one row with one set of rules. Writes go through the caller's user-scoped
  * client, so the `parent_profiles_insert_own` RLS policy — not this code — is
  * what ultimately binds a profile to its own `auth.uid()`.
+ *
+ * The name is optional. Phone + OTP signup never collects one, so a missing
+ * name is an ordinary outcome rather than a failure; the column is nullable
+ * and the account UI falls back to "حساب والد" at display time. No placeholder
+ * is ever written.
  */
 
 export type EnsureParentProfileResult =
   | { ok: true; created: boolean; profileId: string }
-  | { ok: false; reason: "missing_name" | "write_failed" };
+  | { ok: false; reason: "write_failed" };
 
 /**
  * `grant` records consent as given; `preserve` leaves an existing verdict
@@ -54,15 +59,19 @@ async function readProfile(
  */
 export async function ensureParentProfile(
   supabase: SupabaseClient,
-  params: { userId: string; fullName: string; consent: ConsentIntent },
+  params: { userId: string; fullName?: string | null; consent: ConsentIntent },
 ): Promise<EnsureParentProfileResult> {
-  const fullName = (params.fullName || "").trim();
-  if (!fullName) return { ok: false, reason: "missing_name" };
+  // Null, absent and whitespace all mean the same thing: no name was given.
+  // They are never turned into an empty string, which the column rejects.
+  const trimmed = (params.fullName || "").trim();
+  const fullName = trimmed.length > 0 ? trimmed : null;
 
   const existing = await readProfile(supabase, params.userId);
   if (existing.failed) return { ok: false, reason: "write_failed" };
 
   if (existing.row) {
+    // An existing name is never touched here. A parent who has a name keeps
+    // it even if a later caller happens to pass nothing.
     // Consent is only ever moved forward, never revoked by a repeated call.
     if (params.consent === "grant" && !existing.row.consent_granted) {
       const { error } = await supabase

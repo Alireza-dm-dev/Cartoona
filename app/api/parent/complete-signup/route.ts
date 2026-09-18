@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { ensureParentProfile } from "@/lib/parent/ensure-parent-profile"
-import { isValidFullName } from "@/lib/auth/phone"
 
 /**
  * Finishes a production parent signup once the SMS code has been verified.
@@ -14,6 +13,11 @@ import { isValidFullName } from "@/lib/auth/phone"
  *
  * Safe to call more than once: `ensureParentProfile` is idempotent, so a retry
  * after a network failure returns the existing profile.
+ *
+ * Signup is phone + OTP only and collects no name, so there is usually nothing
+ * to write into `full_name`. A name is still honoured if one happens to be on
+ * the identity — an older account, or a future flow that sets it — but its
+ * absence is not an error and no placeholder is substituted.
  */
 export async function POST() {
   const supabase = await createServerSupabaseClient()
@@ -44,13 +48,8 @@ export async function POST() {
   }
 
   const metadataName = user.user_metadata?.full_name
-  const fullName = typeof metadataName === "string" ? metadataName.trim() : ""
-  if (!isValidFullName(fullName)) {
-    return NextResponse.json(
-      { error: "نام والد ثبت نشده است. لطفاً دوباره ثبت‌نام کنید." },
-      { status: 422 },
-    )
-  }
+  const trimmedName = typeof metadataName === "string" ? metadataName.trim() : ""
+  const fullName = trimmedName.length > 0 ? trimmedName : null
 
   const result = await ensureParentProfile(supabase, {
     userId: user.id,

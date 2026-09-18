@@ -56,6 +56,22 @@ export function mapModerationStatusLabel(status: string | null | undefined): str
   return UNKNOWN_MODERATION_LABEL;
 }
 
+/**
+ * The child-name row for a request detail, or null when none was given.
+ *
+ * Returns null rather than a row with a placeholder value: a request created
+ * before the field existed and a request where the parent chose not to name
+ * the child are the same thing to an admin, and neither is worth a row that
+ * says "ثبت نشده".
+ */
+export function mapChildNameRow(
+  childName: string | null | undefined,
+): AdminTypeDetailRow | null {
+  const trimmed = typeof childName === "string" ? childName.trim() : "";
+  if (!trimmed) return null;
+  return { label: "نام کودک", value: trimmed };
+}
+
 export function mapChildProfileLabel(childProfileId: string | null | undefined): string {
   return childProfileId ? childProfileId : CHILD_PROFILE_MISSING_LABEL;
 }
@@ -114,9 +130,13 @@ export function mapImageTypeRows(input: {
   characterName: string | null;
   referenceFile: boolean;
   consentGranted: boolean;
+  /** Optional; omitted entirely when the request carries no child name. */
+  childName?: string | null;
 }): AdminTypeDetailRow[] {
   const rows: AdminTypeDetailRow[] = [];
   rows.push({ label: "شخصیت", value: input.characterName || "ثبت نشده" });
+  const imageChildRow = mapChildNameRow(input.childName);
+  if (imageChildRow) rows.push(imageChildRow);
   rows.push({
     label: "توضیح والد",
     value: joinMultiline([input.description]) || "ثبت نشده",
@@ -141,8 +161,12 @@ export function mapVideoTypeRows(input: {
   durationSeconds: number | null;
   charactersSpeak: boolean | null;
   referenceFile: boolean;
+  /** Optional; omitted entirely when the request carries no child name. */
+  childName?: string | null;
 }): AdminTypeDetailRow[] {
   const rows: AdminTypeDetailRow[] = [];
+  const videoChildRow = mapChildNameRow(input.childName);
+  if (videoChildRow) rows.push(videoChildRow);
   rows.push({ label: "سناریو", value: input.script || "ثبت نشده", multiline: true });
 
   if (input.style && input.style.trim()) {

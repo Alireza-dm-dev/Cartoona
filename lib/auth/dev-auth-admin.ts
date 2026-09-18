@@ -64,7 +64,12 @@ export async function listUsers(): Promise<GoTrueUser[]> {
 
 export async function createUser(params: {
   email: string
-  password: string
+  /**
+   * Optional. Omit it entirely to create a passwordless identity — the shape
+   * phone + OTP signup produces, where the parent has not chosen a password
+   * and none may be invented for them. They can add one later from Settings.
+   */
+  password?: string
   email_confirm: boolean
   user_metadata?: Record<string, unknown>
 }): Promise<GoTrueUser> {

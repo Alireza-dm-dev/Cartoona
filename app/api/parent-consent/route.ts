@@ -45,10 +45,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid consent value" }, { status: 422 })
   }
 
-  const fullName = user.user_metadata?.full_name
-  if (!fullName || typeof fullName !== "string" || !fullName.trim()) {
-    return NextResponse.json({ error: "Failed to record consent" }, { status: 500 })
-  }
+  // A name is optional: phone + OTP signup never asks for one, and consent is
+  // about the parent's decision, not about what the account is called. An
+  // existing name is passed through; its absence is not a failure.
+  const metadataName = user.user_metadata?.full_name
+  const trimmedName = typeof metadataName === "string" ? metadataName.trim() : ""
+  const fullName = trimmedName.length > 0 ? trimmedName : null
 
   const consentGrantedAt = new Date().toISOString()
 
@@ -56,7 +58,7 @@ export async function POST(request: Request) {
   // and apply the same rules to it.
   const result = await ensureParentProfile(supabase, {
     userId: user.id,
-    fullName: fullName.trim(),
+    fullName,
     consent: "grant",
   })
 

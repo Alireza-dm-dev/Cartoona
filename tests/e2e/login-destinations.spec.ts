@@ -1,30 +1,11 @@
 import { test, expect } from "@playwright/test";
-import * as fs from "fs";
-import * as path from "path";
 import { assertSafeDatabaseTarget } from "../helpers/assert-safe-database-target";
+import { loadTestEnv } from "../helpers/load-test-env";
 
 const BASE = process.env.CARTOONA_TEST_BASE_URL || "http://localhost:3000";
 const PASSWORD = "TestPass999!";
 
-function loadEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
-  try {
-    const content = fs.readFileSync(path.resolve(__dirname, "../../.env.local"), "utf-8");
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eqIdx = trimmed.indexOf("=");
-      if (eqIdx === -1) continue;
-      const key = trimmed.slice(0, eqIdx);
-      const val = trimmed.slice(eqIdx + 1);
-      env[key] = val;
-      process.env[key] = val; // Set in process.env for guard compatibility
-    }
-  } catch { /* fallback */ }
-  return env;
-}
-
-loadEnv();
+loadTestEnv();
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_SECRET = process.env.SUPABASE_SECRET_KEY || "";
 
@@ -46,7 +27,6 @@ function adminHeaders() {
 const TS = String(Date.now()).slice(-8);
 const PARENT_A_PHONE = `090${TS.slice(0, 8)}`;
 const PARENT_B_PHONE = `091${TS.slice(0, 8)}`;
-const FULL_NAME = "کاربر تست";
 
 const cleanup: (() => Promise<void>)[] = [];
 
@@ -87,16 +67,18 @@ async function setParentConsent(userId: string, granted: boolean): Promise<void>
   });
 }
 
+/**
+ * Sign up with a phone number alone, then choose a password from Settings.
+ *
+ * Signup itself no longer creates a credential, so a spec that needs password
+ * login has to set one the same way a parent does: against the session the
+ * OTP established.
+ */
 async function signupDevUser(phone: string): Promise<void> {
   const r1 = await fetch(`${BASE}/api/dev/parent-auth`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      action: "signup_request_code",
-      phone,
-      fullName: FULL_NAME,
-      password: PASSWORD,
-    }),
+    body: JSON.stringify({ action: "signup_request_code", phone }),
   });
   const d1 = await r1.json();
   const r2 = await fetch(`${BASE}/api/dev/parent-auth`, {
@@ -105,13 +87,21 @@ async function signupDevUser(phone: string): Promise<void> {
     body: JSON.stringify({
       action: "signup_verify_code",
       phone,
-      fullName: FULL_NAME,
-      password: PASSWORD,
       code: d1.developmentCode,
       challengeToken: d1.challengeToken,
     }),
   });
   if (!r2.ok) throw new Error(`Signup failed for ${phone}`);
+
+  const cookie = (r2.headers.getSetCookie?.() ?? [])
+    .map((c) => c.split(";")[0])
+    .join("; ");
+  const setPassword = await fetch(`${BASE}/api/parent/password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookie },
+    body: JSON.stringify({ password: PASSWORD, confirmPassword: PASSWORD }),
+  });
+  if (!setPassword.ok) throw new Error(`Setting a password failed for ${phone}`);
 }
 
 async function setupParentA(): Promise<void> {
@@ -138,7 +128,9 @@ function readPersianCode(text: string): string {
 }
 
 async function doDevSmsLogin(page: import("@playwright/test").Page, phone: string): Promise<void> {
-  await page.getByRole("button", { name: "ورود با کد پیامکی", exact: true }).click();
+  // Code login is the default tab, so this click is a no-op on a fresh load
+  // and a real switch when a previous step moved to the password tab.
+  await page.getByRole("button", { name: "ورود با کد", exact: true }).click();
   await page.waitForTimeout(300);
   await page.fill('input[placeholder="مثال: 09123456789"]', phone);
   await page.getByRole("button", { name: "دریافت کد ورود", exact: true }).click();
@@ -265,7 +257,7 @@ for (const [label, fromValue] of unsafeAfterLogin) {
     await page.waitForLoadState("networkidle");
 
     await doDevSmsLogin(page, PARENT_B_PHONE);
-    await page.waitForURL(/\/dashboard($|\?)/, { timeout: 15000 });
+    await page.waitForURL(/\/dashboard(\/orders)?($|\?)/, { timeout: 15000 });
 
     // Must stay on the app's own origin
     expect(page.url()).toContain(new URL(BASE).host);
@@ -295,7 +287,7 @@ test("Part 6b — Parent B consent=true → /dashboard", async ({ page }) => {
 
   await doDevPasswordLogin(page, PARENT_B_PHONE);
 
-  await page.waitForURL(/\/dashboard($|\?)/, { timeout: 15000 });
+  await page.waitForURL(/\/dashboard(\/orders)?($|\?)/, { timeout: 15000 });
 });
 
 // ══════════════════════════════════════════════════════════════════════
@@ -311,7 +303,7 @@ test("Part 7a — Wrong OTP preserves session-expired notice", async ({ page }) 
   await expect(notice).toBeVisible();
 
   // Trigger dev OTP request
-  await page.getByRole("button", { name: "ورود با کد پیامکی", exact: true }).click();
+  await page.getByRole("button", { name: "ورود با کد", exact: true }).click();
   await page.waitForTimeout(300);
   await page.fill('input[placeholder="مثال: 09123456789"]', PARENT_A_PHONE);
   await page.getByRole("button", { name: "دریافت کد ورود", exact: true }).click();
@@ -387,17 +379,19 @@ test("Part 2e — Notice is informational (bg-cream)", async ({ page }) => {
   expect(classAttr).toContain("bg-cream");
 });
 
-test("Part 2d — password tab active by default, SMS offered as secondary", async ({ page }) => {
+test("Part 2d — code tab active by default, password offered as secondary", async ({ page }) => {
+  // Code login works for every parent; password login only for the subset who
+  // chose to set one. The default follows that.
   await page.goto(`${BASE}/login`);
   await page.waitForLoadState("networkidle");
 
+  const codeTab = page.getByText("ورود با کد", { exact: true });
+  await expect(codeTab).toBeVisible();
+  await expect(codeTab).toHaveClass(/border-candy-pink/);
+
   const passwordTab = page.getByText("ورود با رمز عبور", { exact: true });
   await expect(passwordTab).toBeVisible();
-  await expect(passwordTab).toHaveClass(/border-candy-pink/);
-
-  const smsTab = page.getByText("ورود با کد پیامکی", { exact: true });
-  await expect(smsTab).toBeVisible();
-  await expect(smsTab).not.toHaveClass(/border-candy-pink/);
+  await expect(passwordTab).not.toHaveClass(/border-candy-pink/);
 });
 
 // ══════════════════════════════════════════════════════════════════════

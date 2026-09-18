@@ -7,6 +7,7 @@ import { readCreationDraft } from "@/lib/creation/creation-draft";
 import type { CreationDraft } from "@/lib/creation/creation-draft";
 import { characters } from "@/config/characters";
 import { mapVideoDurationLabel } from "@/lib/pricing/pricing-keys";
+import { CHILD_NAME_LABEL, normalizeChildName } from "@/lib/creation/child-name";
 
 export type PendingCreationDraftStage = "signup" | "consent" | "completion";
 
@@ -26,6 +27,19 @@ function renderRow(label: string, value: string) {
       <span className="text-text-dark font-medium text-left">{value}</span>
     </div>
   );
+}
+
+/**
+ * The child-name row, or nothing.
+ *
+ * Renders only for a name that survives normalization, so a legacy draft with
+ * no field, a draft holding null, and a draft holding whitespace all produce
+ * the same empty output rather than a row with a blank value.
+ */
+function childNameRow(childName: string | null | undefined) {
+  const normalized = normalizeChildName(childName ?? null);
+  if (!normalized) return null;
+  return renderRow(CHILD_NAME_LABEL, normalized);
 }
 
 function formatTimestamp(createdAt: string): string | null {
@@ -86,6 +100,10 @@ export function CreationDraftSummaryCard({
                   c ? `${c.emoji} ${c.name}` : "شخصیت انتخاب‌شده",
                 )}
                 {renderRow("سبک", draft.style)}
+                {/* Absent on drafts written before the field existed, and on
+                    drafts where the parent left it blank. Both are the same
+                    thing here: no row at all. */}
+                {childNameRow(draft.childName)}
                 {draft.referenceFileName &&
                   renderRow("فایل مرجع", draft.referenceFileName)}
               </>
@@ -115,6 +133,7 @@ export function CreationDraftSummaryCard({
                       : "خیر، بدون صحبت"
                     : "مشخص نشده",
                 )}
+                {childNameRow(draft.childName)}
                 {draft.referenceFileName &&
                   renderRow("فایل مرجع", draft.referenceFileName)}
               </>

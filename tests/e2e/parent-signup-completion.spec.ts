@@ -1,11 +1,10 @@
 import { test, expect } from "@playwright/test"
-import * as fs from "fs"
-import * as path from "path"
 import {
   assertSafeDatabaseTarget,
   guardedProjectRef,
   guardedSupabaseUrl,
 } from "../helpers/assert-safe-database-target"
+import { loadTestEnv } from "../helpers/load-test-env"
 
 // ⚠️ Stateful signup-completion tests. They create real auth identities and
 // parent profiles, so they run against a disposable/local target ONLY, never
@@ -13,20 +12,7 @@ import {
 // and both the Supabase URL and the auth cookie name are derived from the same
 // environment the guard inspected, so its verdict binds every request here.
 
-function loadEnv(): void {
-  try {
-    const content = fs.readFileSync(path.resolve(__dirname, "../../.env.local"), "utf-8")
-    for (const line of content.split("\n")) {
-      const t = line.trim()
-      if (!t || t.startsWith("#")) continue
-      const eq = t.indexOf("=")
-      if (eq === -1) continue
-      process.env[t.slice(0, eq)] = t.slice(eq + 1)
-    }
-  } catch { /* ignore */ }
-}
-
-loadEnv()
+loadTestEnv()
 
 const _guard = assertSafeDatabaseTarget()
 if (!_guard.ok) throw new Error(`Guard blocked: ${_guard.reason}`)
@@ -214,8 +200,10 @@ test("an admin identity is refused and gets no parent profile", async () => {
   expect(await profilesFor(admin.userId)).toHaveLength(0)
 })
 
-test("failures surface a safe message with no database detail", async () => {
-  // A parent whose account carries no full_name cannot have a profile built.
+test("a parent with no name on the identity still gets a profile", async () => {
+  // Phone + OTP signup carries no name, so this is the ordinary case now. The
+  // profile is created with a NULL name rather than being refused or filled
+  // with a placeholder.
   const email = `signup-noname-${TS}@example.com`
   const created = await (await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
     method: "POST",
@@ -231,15 +219,25 @@ test("failures surface a safe message with no database detail", async () => {
   })).json()
 
   const result = await completeSignup(login.access_token)
-  expect(result.status).toBe(422)
+  expect(result.status).toBe(200)
+  expect(result.body.success).toBe(true)
+
+  const profiles = await profilesFor(created.id)
+  expect(profiles).toHaveLength(1)
+  expect(profiles[0].full_name).toBeNull()
+  expect(profiles[0].consent_granted).toBe(false)
+})
+
+test("a genuine failure still surfaces a safe message with no database detail", async () => {
+  // An unauthenticated call is the failure that remains reachable from
+  // outside; whatever it says must not describe the schema.
+  const result = await completeSignup()
+  expect(result.status).toBe(401)
 
   const message = String(result.body.error ?? "")
-  expect(message.length).toBeGreaterThan(0)
   for (const leak of ["parent_profiles", "constraint", "violates", "23505", "postgres", "supabase"]) {
     expect(message.toLowerCase(), leak).not.toContain(leak)
   }
-
-  expect(await profilesFor(created.id)).toHaveLength(0)
 })
 
 test("a parent can open /dashboard/orders after signup completion", async ({ page }) => {
@@ -274,8 +272,6 @@ test("the dev signup flow still produces exactly one profile", async () => {
     body: JSON.stringify({
       action: "signup_request_code",
       phone,
-      fullName: FULL_NAME,
-      password: "ParentPass123!",
     }),
   })).json()
   expect(request.developmentCode).toMatch(/^\d{6}$/)
@@ -286,8 +282,6 @@ test("the dev signup flow still produces exactly one profile", async () => {
     body: JSON.stringify({
       action: "signup_verify_code",
       phone,
-      fullName: FULL_NAME,
-      password: "ParentPass123!",
       code: request.developmentCode,
       challengeToken: request.challengeToken,
     }),

@@ -1,10 +1,9 @@
 import { test, expect } from "@playwright/test"
-import * as fs from "fs"
-import * as path from "path"
 import {
   assertSafeDatabaseTarget,
   guardedSupabaseUrl,
 } from "../helpers/assert-safe-database-target"
+import { loadTestEnv } from "../helpers/load-test-env"
 
 // ⚠️ Stateful parent-auth tests. They create real auth identities and parent
 // profiles, so they run against a disposable/local target ONLY, never the
@@ -12,20 +11,7 @@ import {
 // the Supabase URL is derived from the same environment the guard inspected,
 // so the guard's verdict is binding on every request made here.
 
-function loadEnv(): void {
-  try {
-    const content = fs.readFileSync(path.resolve(__dirname, "../../.env.local"), "utf-8")
-    for (const line of content.split("\n")) {
-      const t = line.trim()
-      if (!t || t.startsWith("#")) continue
-      const eq = t.indexOf("=")
-      if (eq === -1) continue
-      process.env[t.slice(0, eq)] = t.slice(eq + 1)
-    }
-  } catch { /* ignore */ }
-}
-
-loadEnv()
+loadTestEnv()
 
 const _guard = assertSafeDatabaseTarget()
 if (!_guard.ok) throw new Error(`Guard blocked: ${_guard.reason}`)
@@ -37,7 +23,6 @@ const HDR = { "Content-Type": "application/json", apikey: KEY, Authorization: `B
 
 const TS = String(Date.now()).slice(-8)
 const PHONE = `0935${TS.slice(0, 7)}`
-const FULL_NAME = "والد تست"
 const PASSWORD = "ParentPass123!"
 const WRONG_PASSWORD = "WrongPass123!"
 
@@ -45,13 +30,19 @@ function devEmailFor(phone: string): string {
   return `parent-98${phone.replace(/^0/, "")}@dev.cartoona.example`
 }
 
-async function api(body: unknown): Promise<{ status: number; json: Record<string, unknown> }> {
+async function api(
+  body: unknown,
+): Promise<{ status: number; json: Record<string, unknown>; cookies: string[] }> {
   const resp = await fetch(`${BASE}/api/dev/parent-auth`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   })
-  return { status: resp.status, json: await resp.json() }
+  return {
+    status: resp.status,
+    json: await resp.json(),
+    cookies: resp.headers.getSetCookie?.() ?? [],
+  }
 }
 
 async function adminUsers(): Promise<Array<{ id: string; email: string }>> {
@@ -86,12 +77,10 @@ test.afterAll(async () => {
 
 test.describe.configure({ mode: "serial" })
 
-test("1-5 — signup with phone + password verifies with the issued code and creates one parent", async () => {
+test("1-5 — phone-only signup verifies with the issued code and creates one parent", async () => {
   const request = await api({
     action: "signup_request_code",
     phone: PHONE,
-    fullName: FULL_NAME,
-    password: PASSWORD,
   })
   expect(request.status).toBe(200)
   expect(request.json.developmentCode).toMatch(/^\d{6}$/)
@@ -101,8 +90,6 @@ test("1-5 — signup with phone + password verifies with the issued code and cre
   const verify = await api({
     action: "signup_verify_code",
     phone: PHONE,
-    fullName: FULL_NAME,
-    password: PASSWORD,
     code: request.json.developmentCode,
     challengeToken: request.json.challengeToken,
   })
@@ -117,7 +104,31 @@ test("1-5 — signup with phone + password verifies with the issued code and cre
   expect(await countProfiles(userId!)).toBe(1)
 })
 
-test("6 — phone + password login works after signup", async () => {
+/**
+ * Signup no longer creates a credential, so the password these tests use has
+ * to be chosen the way a real parent chooses one: from Settings, against an
+ * authenticated session.
+ */
+test("6-pre — the parent sets a password from Settings", async () => {
+  const request = await api({ action: "login_request_code", phone: PHONE })
+  const verify = await api({
+    action: "login_verify_code",
+    phone: PHONE,
+    code: request.json.developmentCode,
+    challengeToken: request.json.challengeToken,
+  })
+  expect(verify.status).toBe(200)
+
+  const cookie = (verify.cookies ?? []).map((c) => c.split(";")[0]).join("; ")
+  const resp = await fetch(`${BASE}/api/parent/password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookie },
+    body: JSON.stringify({ password: PASSWORD, confirmPassword: PASSWORD }),
+  })
+  expect(resp.status).toBe(200)
+})
+
+test("6 — phone + password login works once a password has been set", async () => {
   const login = await api({ action: "password_login", phone: PHONE, password: PASSWORD })
   expect(login.status).toBe(200)
   expect(login.json.success).toBe(true)
@@ -134,7 +145,10 @@ test("6b — every supported phone form logs into the same account", async () =>
 test("7 — wrong password is rejected without disclosing the account", async () => {
   const login = await api({ action: "password_login", phone: PHONE, password: WRONG_PASSWORD })
   expect(login.status).toBe(401)
-  expect(login.json.error).toBe("شماره موبایل یا رمز عبور صحیح نیست.")
+  // The message stays neutral about which half was wrong, and points at the
+  // code route, which is the way in that always works.
+  expect(String(login.json.error)).toContain("شماره موبایل یا رمز عبور صحیح نیست")
+  expect(String(login.json.error)).toContain("ورود با کد")
 
   const unknown = await api({
     action: "password_login",
@@ -205,6 +219,9 @@ test("10 — authenticated parent reaches /dashboard/orders and 11 — logout en
   await page.goto(`${BASE}/login?from=/dashboard/orders`)
   await page.waitForLoadState("networkidle")
 
+  // Code login is the default tab now, so password login is chosen explicitly.
+  await page.getByRole("button", { name: "ورود با رمز عبور" }).click()
+
   await page.fill('input[placeholder="مثال: 09123456789"]', PHONE)
   await page.fill('input[placeholder="رمز عبور"]', PASSWORD)
   await page.getByRole("button", { name: "ورود", exact: true }).click()
@@ -225,8 +242,6 @@ test("signup cannot create a second identity for the same phone", async () => {
   const retry = await api({
     action: "signup_request_code",
     phone: PHONE,
-    fullName: FULL_NAME,
-    password: PASSWORD,
   })
   expect(retry.status).toBe(409)
 
@@ -234,14 +249,14 @@ test("signup cannot create a second identity for the same phone", async () => {
   expect(await countProfiles(userId!)).toBe(1)
 })
 
-test("signup rejects a password below the minimum length", async () => {
+test("signup refuses a password field outright", async () => {
+  // A password is not part of signup any more, so sending one is an
+  // unsupported field rather than a value to validate.
   const resp = await api({
     action: "signup_request_code",
-    phone: `0936${TS.slice(0, 7)}`,
-    fullName: FULL_NAME,
+    phone: `0934${TS.slice(0, 7)}`,
     password: "short",
   })
   expect(resp.status).toBe(400)
-  expect(resp.json.error).toBe("رمز عبور باید حداقل ۸ کاراکتر باشد.")
   expect(resp.json.developmentCode).toBeUndefined()
 })

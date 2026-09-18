@@ -9,8 +9,6 @@ import {
   normalizeIranPhone,
   isValidIranPhone,
   toPersianDigits,
-  isValidParentPassword,
-  PARENT_PASSWORD_MIN_LENGTH,
 } from "@/lib/auth/phone";
 
 function mapAuthError(message: string): string {
@@ -24,8 +22,17 @@ function mapAuthError(message: string): string {
   if (m.includes("expired")) {
     return "کد تأیید منقضی شده است. لطفاً دوباره درخواست دهید.";
   }
-  if (m.includes("sms") || m.includes("phone provider") || (m.includes("send") && m.includes("sms"))) {
-    return "ارسال پیامک تأیید با خطا مواجه شد. لطفاً دوباره تلاش کنید.";
+  // An unconfigured SMS provider surfaces here. It is reported as a service
+  // problem rather than as something the parent typed wrongly, because no
+  // amount of retrying a correct phone number will fix it.
+  if (
+    m.includes("sms") ||
+    m.includes("phone provider") ||
+    m.includes("provider") ||
+    m.includes("unsupported") ||
+    (m.includes("send") && m.includes("sms"))
+  ) {
+    return "ارسال پیامک تأیید در حال حاضر ممکن نیست. لطفاً بعداً تلاش کنید یا با پشتیبانی تماس بگیرید.";
   }
   if (m.includes("invalid") || m.includes("otp") || m.includes("token") || m.includes("code")) {
     return "کد تأیید نادرست است. لطفاً دوباره تلاش کنید.";
@@ -39,11 +46,15 @@ function isDevEnvironment(): boolean {
   return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
 }
 
+/**
+ * Parent signup: a phone number, a code, and the upload permission checkbox.
+ *
+ * No name and no password are collected. A password is optional for the life
+ * of the account and is set later from Settings; asking for one here would
+ * make an optional credential a condition of having an account at all.
+ */
 export default function SignupPage() {
-  const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
-  const [password, setPassword] = useState("");
-  const [passwordConfirm, setPasswordConfirm] = useState("");
   const [step, setStep] = useState(1);
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
@@ -54,18 +65,10 @@ export default function SignupPage() {
   const [challengeToken, setChallengeToken] = useState("");
   const [devCode, setDevCode] = useState("");
 
-  const handleInfoSubmit = async (e: React.FormEvent) => {
+  const handlePhoneSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
 
-    if (!name.trim()) {
-      setError("لطفاً نام والد را وارد کنید.");
-      return;
-    }
-    if (name.trim().length < 2 || name.trim().length > 100) {
-      setError("نام والد باید بین ۲ تا ۱۰۰ کاراکتر باشد.");
-      return;
-    }
     if (!phone.trim()) {
       setError("لطفاً شماره موبایل را وارد کنید.");
       return;
@@ -73,14 +76,6 @@ export default function SignupPage() {
     const normPhone = normalizeIranPhone(phone);
     if (!isValidIranPhone(normPhone)) {
       setError("شماره موبایل وارد شده معتبر نیست. لطفاً یک شماره موبایل ایران (مثلاً 09123456789) وارد کنید.");
-      return;
-    }
-    if (!isValidParentPassword(password)) {
-      setError(`رمز عبور باید حداقل ${toPersianDigits(String(PARENT_PASSWORD_MIN_LENGTH))} کاراکتر باشد.`);
-      return;
-    }
-    if (password !== passwordConfirm) {
-      setError("رمز عبور و تکرار آن یکسان نیستند.");
       return;
     }
     if (!agreed) {
@@ -99,8 +94,6 @@ export default function SignupPage() {
           body: JSON.stringify({
             action: "signup_request_code",
             phone: phone,
-            fullName: name.trim(),
-            password,
           }),
         });
 
@@ -123,12 +116,12 @@ export default function SignupPage() {
     } else {
       try {
         const supabase = createBrowserSupabaseClient();
-        const { error: otpError } = await supabase.auth.signUp({
+        // Phone OTP, not signUp({ phone, password }): the account is created
+        // by verifying the code, so no password has to exist for a parent to
+        // have an account. shouldCreateUser is left at its default (true),
+        // which is what makes this the signup path rather than a login.
+        const { error: otpError } = await supabase.auth.signInWithOtp({
           phone: normPhone,
-          password,
-          options: {
-            data: { full_name: name.trim() },
-          },
         });
 
         if (otpError) {
@@ -166,8 +159,6 @@ export default function SignupPage() {
           body: JSON.stringify({
             action: "signup_verify_code",
             phone: phone,
-            fullName: name.trim(),
-            password,
             code: code.trim(),
             challengeToken,
           }),
@@ -233,61 +224,29 @@ export default function SignupPage() {
       <Card>
         <h1 className="text-2xl font-brand text-parent-navy">ساخت حساب والدین</h1>
         <p className="mt-1 text-sm text-text-dark/60">
-          برای شروع استفاده از کارتونا، نام، شماره موبایل و رمز عبور والد یا سرپرست قانونی را وارد کنید.
+          برای شروع استفاده از کارتونا، فقط شماره موبایل والد یا سرپرست قانونی را وارد کنید.
         </p>
 
         <div className="mt-6 space-y-4">
           {step === 1 ? (
-            <form onSubmit={handleInfoSubmit} className="space-y-4">
+            <form onSubmit={handlePhoneSubmit} className="space-y-4">
               <div className="space-y-2">
-                <label className="block text-sm font-medium text-text-dark">نام والد</label>
+                <label htmlFor="signup-phone" className="block text-sm font-medium text-text-dark">
+                  شماره موبایل
+                </label>
                 <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="مثال: مریم احمدی"
-                  className="w-full rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-text-dark">شماره موبایل</label>
-                <input
+                  id="signup-phone"
                   type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder="مثال: 09123456789"
-                  className="w-full rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label htmlFor="signup-password" className="block text-sm font-medium text-text-dark">رمز عبور</label>
-                <input
-                  id="signup-password"
-                  type="password"
-                  autoComplete="new-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="حداقل ۸ کاراکتر"
-                  className="w-full rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+                  className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
                 />
                 <p className="text-xs text-text-dark/40">
-                  با همین رمز عبور می‌توانید دفعات بعد وارد شوید.
+                  کد ورود به همین شماره ارسال می‌شود. تنظیم رمز عبور اختیاری است و بعداً از بخش تنظیمات انجام می‌شود.
                 </p>
-              </div>
-
-              <div className="space-y-2">
-                <label htmlFor="signup-password-confirm" className="block text-sm font-medium text-text-dark">تکرار رمز عبور</label>
-                <input
-                  id="signup-password-confirm"
-                  type="password"
-                  autoComplete="new-password"
-                  value={passwordConfirm}
-                  onChange={(e) => setPasswordConfirm(e.target.value)}
-                  placeholder="رمز عبور را دوباره وارد کنید"
-                  className="w-full rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
-                />
               </div>
 
               <div className="flex items-start gap-3">
@@ -331,8 +290,11 @@ export default function SignupPage() {
               )}
 
               <div className="space-y-2">
-                <label className="block text-sm font-medium text-text-dark">کد تأیید</label>
+                <label htmlFor="signup-code" className="block text-sm font-medium text-text-dark">
+                  کد تأیید
+                </label>
                 <input
+                  id="signup-code"
                   type="text"
                   inputMode="numeric"
                   autoComplete="one-time-code"
@@ -340,7 +302,7 @@ export default function SignupPage() {
                   value={code}
                   onChange={(e) => setCode(e.target.value)}
                   placeholder="کد ۶ رقمی"
-                  className="w-full rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+                  className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
                 />
               </div>
 

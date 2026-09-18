@@ -14,6 +14,14 @@ export type ImageCreationDraft = CreationDraftBase & {
   occasion: string;
   parentNote: string;
   referenceFileName: string;
+  /**
+   * Optional child name, kept beside the reference file it belongs with.
+   *
+   * Optional in the type as well as in the form: drafts written before this
+   * field existed are still version 1 and must keep loading, so every reader
+   * has to treat it as possibly absent rather than possibly empty.
+   */
+  childName?: string | null;
 };
 
 export type VideoCreationDraft = CreationDraftBase & {
@@ -26,6 +34,8 @@ export type VideoCreationDraft = CreationDraftBase & {
   occasion: string;
   parentNote: string;
   referenceFileName: string;
+  /** Optional child name. See `ImageCreationDraft.childName`. */
+  childName?: string | null;
 };
 
 export type DrawingCreationDraft = CreationDraftBase & {

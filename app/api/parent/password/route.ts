@@ -128,7 +128,14 @@ export async function POST(request: Request) {
     return jsonError("رمز عبور و تکرار آن یکسان نیستند.", 400)
   }
 
-  const { error: updateError } = await supabase.auth.updateUser({ password })
+  // The flag is written in the same call as the password, so the account can
+  // never be left claiming a credential it does not have. Settings reads it to
+  // decide between "set a password" and "change your password"; it is a UI
+  // hint only, and login still proves the credential for real.
+  const { error: updateError } = await supabase.auth.updateUser({
+    password,
+    data: { password_set: true },
+  })
 
   if (updateError) {
     const msg = updateError.message.toLowerCase()

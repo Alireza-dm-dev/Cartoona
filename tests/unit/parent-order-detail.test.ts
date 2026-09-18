@@ -140,6 +140,28 @@ describe("type-aware detail rows", () => {
     expect(rows[0].value).toBe("داینو دودو");
   });
 
+  it("shows the child name when the request carries one", () => {
+    const imageRows = buildDetailRows({ ...base, type: "image", childName: "آریا" });
+    expect(imageRows).toContainEqual({ label: "نام کودک", value: "آریا" });
+
+    const videoRows = buildDetailRows({
+      ...base,
+      type: "video",
+      video: { script: "یک ماجرا", style: null, duration_seconds: null, duration_choice: "5_10", characters_speak: true },
+      childName: "آریا",
+    });
+    expect(videoRows).toContainEqual({ label: "نام کودک", value: "آریا" });
+  });
+
+  it("omits the child-name row entirely when there is none", () => {
+    // Requests created before the column existed carry null here, and must not
+    // gain a row reading "ثبت نشده".
+    for (const childName of [undefined, null, "", "   "]) {
+      const rows = buildDetailRows({ ...base, type: "image", childName });
+      expect(rows.some((r) => r.label === "نام کودک")).toBe(false);
+    }
+  });
+
   it("shows duration and speech for a new video request, and no style row", () => {
     const rows = buildDetailRows({
       ...base,

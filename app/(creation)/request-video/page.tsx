@@ -20,6 +20,18 @@ import type { VideoDurationChoice } from "@/lib/pricing/pricing-keys";
 import { saveCreationDraft } from "@/lib/creation/creation-draft";
 import type { VideoCreationDraft } from "@/lib/creation/creation-draft";
 import { characters } from "@/config/characters";
+import { PresetChips } from "@/components/creation/preset-chips";
+import {
+  CHILD_NAME_LABEL,
+  CHILD_NAME_MAX_LENGTH,
+  CHILD_NAME_PLACEHOLDER,
+  checkChildName,
+  normalizeChildName,
+} from "@/lib/creation/child-name";
+import {
+  VIDEO_OCCASION_PRESETS,
+  VIDEO_STORY_PRESETS,
+} from "@/lib/creation/creation-presets";
 
 const categoryLabels: Record<string, string> = {
   Adventure: "ماجراجویی",
@@ -51,11 +63,17 @@ export default function RequestVideoPage() {
   const [occasion, setOccasion] = useState("");
   const [parentNote, setParentNote] = useState("");
   const [referenceFileName, setReferenceFileName] = useState<string | null>(null);
+  const [childName, setChildName] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const { catalog, loading: pricingLoading, error: pricingError, refresh: refreshPricing } = useCreationPricing();
 
   const selectedCharacter = characters.find((c) => c.name === selectedCharacterId);
+
+  // Review and draft both show the stored form of the name, not the raw field.
+  // Step 2 cannot be passed with an unusable name, so by review time this is
+  // either a real name or null.
+  const normalizedChildName = normalizeChildName(childName);
 
   const vidDuration = duration ? VIDEO_DURATION_TO_INTERNAL[duration] : null
   const costResult = catalog && vidDuration
@@ -81,6 +99,12 @@ export default function RequestVideoPage() {
     }
     if (charactersSpeak === null) {
       newErrors.charactersSpeak = "لطفاً مشخص کنید کاراکترها صحبت کنند یا خیر.";
+    }
+    // Optional: an empty field passes. Only a filled-in but unusable name
+    // stops the step.
+    const child = checkChildName(childName);
+    if (!child.ok) {
+      newErrors.childName = child.message;
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -133,6 +157,9 @@ export default function RequestVideoPage() {
       occasion: occasion || "",
       parentNote: parentNote || "",
       referenceFileName: referenceFileName || "",
+      // Normalized before it is stored, so the draft carries the same string
+      // the database will, and null rather than "" when it was left blank.
+      childName: normalizedChildName,
     };
     saveCreationDraft(draft);
     router.push("/signup");
@@ -256,6 +283,13 @@ export default function RequestVideoPage() {
               <label className="block text-sm font-medium text-text-dark" htmlFor="storyDescription">
                 توضیح داستان یا صحنه <span className="text-coral">*</span>
               </label>
+              <PresetChips
+                presets={VIDEO_STORY_PRESETS}
+                value={storyDescription}
+                onSelect={setStoryDescription}
+                label="یکی را انتخاب کنید یا خودتان بنویسید"
+                idPrefix="story"
+              />
               <textarea
                 id="storyDescription"
                 placeholder="متن خود را اینجا بنویسید"
@@ -337,6 +371,13 @@ export default function RequestVideoPage() {
               <label className="block text-sm font-medium text-text-dark" htmlFor="occasion">
                 مناسبت یا پیام ویدیو
               </label>
+              <PresetChips
+                presets={VIDEO_OCCASION_PRESETS}
+                value={occasion}
+                onSelect={setOccasion}
+                label="اختیاری — یکی را انتخاب کنید یا خودتان بنویسید"
+                idPrefix="occasion"
+              />
               <input
                 id="occasion"
                 type="text"
@@ -358,6 +399,33 @@ export default function RequestVideoPage() {
                 onChange={(e) => setParentNote(e.target.value)}
                 className={`${inputClass} min-h-[60px]`}
               />
+            </div>
+
+            {/* Child name sits directly above the reference upload: the two
+                describe the same child, and a parent who uploads a photo is
+                the parent most likely to want the name attached to it. */}
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-text-dark" htmlFor="childName">
+                {CHILD_NAME_LABEL}
+              </label>
+              <input
+                id="childName"
+                type="text"
+                value={childName}
+                onChange={(e) => setChildName(e.target.value)}
+                placeholder={CHILD_NAME_PLACEHOLDER}
+                maxLength={CHILD_NAME_MAX_LENGTH}
+                autoComplete="off"
+                aria-invalid={errors.childName ? true : undefined}
+                aria-describedby="childName-hint"
+                className={inputClass}
+              />
+              <p id="childName-hint" className="text-xs text-text-dark/50">
+                اختیاری — برای شخصی‌سازی ویدیو استفاده می‌شود.
+              </p>
+              {errors.childName && (
+                <p className="mt-1 text-sm text-coral" role="alert">{errors.childName}</p>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -438,6 +506,12 @@ export default function RequestVideoPage() {
                 <div className="flex justify-between gap-4">
                   <span className="text-text-dark/50">یادداشت والد</span>
                   <span className="text-text-dark">{parentNote}</span>
+                </div>
+              )}
+              {normalizedChildName && (
+                <div className="flex justify-between gap-4">
+                  <span className="text-text-dark/50">{CHILD_NAME_LABEL}</span>
+                  <span className="text-text-dark">{normalizedChildName}</span>
                 </div>
               )}
               {referenceFileName && (

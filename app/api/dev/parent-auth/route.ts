@@ -7,8 +7,6 @@ import {
   deriveDevEmail,
   isDevAuthEnabled,
   isLocalhost,
-  isValidFullName,
-  isValidParentPassword,
   generateOtpChallenge,
   consumeOtpChallenge,
   type OtpFailureReason,
@@ -29,8 +27,11 @@ const ALLOWED_ACTIONS = new Set([
 ])
 
 const ACTION_FIELDS: Record<string, Set<string>> = {
-  signup_request_code: new Set(["action", "phone", "fullName", "password"]),
-  signup_verify_code: new Set(["action", "phone", "fullName", "password", "code", "challengeToken"]),
+  // Signup is phone + code only. A name or a password sent here is an
+  // unsupported field and is rejected rather than quietly ignored, so a stale
+  // client cannot half-work against the new contract.
+  signup_request_code: new Set(["action", "phone"]),
+  signup_verify_code: new Set(["action", "phone", "code", "challengeToken"]),
   login_request_code: new Set(["action", "phone"]),
   login_verify_code: new Set(["action", "phone", "code", "challengeToken"]),
   password_login: new Set(["action", "phone", "password"]),
@@ -63,7 +64,19 @@ function normalizeAndValidatePhone(raw: string): string {
 const INVALID_PHONE_MESSAGE =
   "شماره موبایل وارد شده معتبر نیست. لطفاً یک شماره موبایل ایران (مثلاً 09123456789) وارد کنید."
 
-const PASSWORD_RULE_MESSAGE = "رمز عبور باید حداقل ۸ کاراکتر باشد."
+/**
+ * The only answer password login ever gives on failure.
+ *
+ * It is deliberately identical for a wrong password, an unknown phone, and an
+ * account that has no password at all. Saying "this account has no password"
+ * would be more helpful, but it would also turn this endpoint into an oracle
+ * for whether any given phone number has an account. The OTP alternative is
+ * named in the same breath, which is the help a parent in that state actually
+ * needs.
+ */
+const PASSWORD_LOGIN_FAILED_MESSAGE =
+  "شماره موبایل یا رمز عبور صحیح نیست. اگر برای این حساب رمز عبور تنظیم نکرده‌اید، با «ورود با کد» وارد شوید."
+
 
 /**
  * Maps an OTP failure to a message that is honest about the code itself.
@@ -232,20 +245,16 @@ function readPassword(body: Record<string, unknown>): string {
   return typeof body.password === "string" ? body.password : ""
 }
 
+/**
+ * Issue a signup code for a phone number that does not yet have an account.
+ *
+ * Phone is the only input. The "already registered" answer here is not an
+ * enumeration leak the way it would be on the password path: this is the
+ * signup form, where the parent is asserting the number is theirs and needs to
+ * be told to log in instead of being sent in a circle.
+ */
 async function handleSignupRequestCode(body: Record<string, unknown>) {
   const phone = normalizeAndValidatePhone(body.phone as string)
-
-  const fullName = (body.fullName as string || "").trim()
-  if (!fullName || !isValidFullName(fullName)) {
-    return jsonError("نام والد باید بین ۲ تا ۱۰۰ کاراکتر باشد.", 400)
-  }
-
-  // The password is validated here as well as at verify time so an unusable
-  // password is reported before the parent spends a verification code on it.
-  const password = readPassword(body)
-  if (!isValidParentPassword(password)) {
-    return jsonError(PASSWORD_RULE_MESSAGE, 400)
-  }
 
   const devEmail = deriveDevEmail(phone)
   const existing = await findUserByPhone(phone, devEmail)
@@ -253,7 +262,7 @@ async function handleSignupRequestCode(body: Record<string, unknown>) {
     return jsonError("برای این شماره حسابی وجود دارد. از صفحه ورود استفاده کنید.", 409)
   }
 
-  const challenge = generateOtpChallenge("signup", phone, fullName)
+  const challenge = generateOtpChallenge("signup", phone)
 
   return NextResponse.json(
     {
@@ -266,21 +275,23 @@ async function handleSignupRequestCode(body: Record<string, unknown>) {
   )
 }
 
+/**
+ * Verify the signup code and create the parent account.
+ *
+ * The account is created with no password at all. Supabase is happy to hold a
+ * passwordless identity, and the parent can add one later from Settings; what
+ * must not happen is this route inventing a password on their behalf, because
+ * a credential the parent never chose is one they can neither use nor revoke.
+ *
+ * With no password to sign in with, the session comes from the magic-link
+ * mechanism the login path has always used — the same code path, so signup and
+ * OTP login now establish a session identically.
+ */
 async function handleSignupVerifyCode(
   body: Record<string, unknown>,
   env: { NEXT_PUBLIC_SUPABASE_URL: string; NEXT_PUBLIC_SUPABASE_ANON_KEY: string },
 ) {
   const phone = normalizeAndValidatePhone(body.phone as string)
-
-  const fullName = (body.fullName as string || "").trim()
-  if (!fullName || !isValidFullName(fullName)) {
-    return jsonError("نام والد باید بین ۲ تا ۱۰۰ کاراکتر باشد.", 400)
-  }
-
-  const password = readPassword(body)
-  if (!isValidParentPassword(password)) {
-    return jsonError(PASSWORD_RULE_MESSAGE, 400)
-  }
 
   const code = typeof body.code === "string" ? body.code.trim() : ""
   if (!/^\d{6}$/.test(code)) {
@@ -292,7 +303,7 @@ async function handleSignupVerifyCode(
     return jsonError("درخواست نامعتبر است.", 400)
   }
 
-  const verification = consumeOtpChallenge(challengeToken, "signup", phone, code, fullName)
+  const verification = consumeOtpChallenge(challengeToken, "signup", phone, code)
   if (!verification.ok) {
     return jsonError(otpErrorMessage(verification.reason), 401)
   }
@@ -310,14 +321,13 @@ async function handleSignupVerifyCode(
     createdUser = await apiCreateUser({
       email: devEmail,
       email_confirm: true,
-      // The parent's own password is the account password, so the later
-      // phone + password login signs in against this exact credential.
-      password,
+      // No `password` key: the identity is created without one. `password_set`
+      // records that fact for the account UI; /api/parent/password flips it
+      // when the parent chooses a password later.
       user_metadata: {
-        full_name: fullName,
         normalized_phone: phone,
         dev_parent: true,
-        password_enabled: true,
+        password_set: false,
       },
     })
   } catch {
@@ -327,9 +337,10 @@ async function handleSignupVerifyCode(
   const userId = createdUser.id
 
   const admin = createAdminSupabaseClient()
+  // full_name is omitted, not blanked: signup never asks for a name, and the
+  // column is nullable precisely so no placeholder has to be invented here.
   const { error: profileError } = await admin.from("parent_profiles").insert({
     user_id: userId,
-    full_name: fullName,
     consent_granted: false,
     consent_granted_at: null,
   })
@@ -339,9 +350,7 @@ async function handleSignupVerifyCode(
     return jsonError("ثبت‌نام انجام نشد. لطفاً دوباره تلاش کنید.", 500)
   }
 
-  // Signing in with the submitted password rather than a magic link proves the
-  // stored credential actually works before the parent ever reaches /login.
-  const sessionResponse = await createSessionViaPassword(devEmail, password, env)
+  const sessionResponse = await createSessionViaMagicLink(devEmail, env)
   if (!sessionResponse) {
     await apiDeleteUser(userId).catch(() => {})
     return jsonError("ورود به حساب انجام نشد. لطفاً دوباره تلاش کنید.", 500)
@@ -425,6 +434,17 @@ async function handleLoginVerifyCode(
   return sessionResponse
 }
 
+/**
+ * Phone + password login, for parents who chose a password in Settings.
+ *
+ * Every failure answers with the same message and the same status. A parent
+ * who never set a password, a parent who mistyped one, and a phone number with
+ * no account at all are indistinguishable from the outside — which is the
+ * point: the honest "you have no password yet" message would double as a
+ * membership oracle for any phone number someone cared to try. The message
+ * itself names the OTP route, so the parent who genuinely has no password is
+ * still told what to do.
+ */
 async function handlePasswordLogin(
   body: Record<string, unknown>,
   env: { NEXT_PUBLIC_SUPABASE_URL: string; NEXT_PUBLIC_SUPABASE_ANON_KEY: string },
@@ -433,15 +453,13 @@ async function handlePasswordLogin(
 
   const password = readPassword(body)
   if (!password) {
-    return jsonError("شماره موبایل یا رمز عبور صحیح نیست.", 401)
+    return jsonError(PASSWORD_LOGIN_FAILED_MESSAGE, 401)
   }
 
-  // Credential failures stay deliberately uniform here: unlike the SMS flow,
-  // password login must not disclose whether the phone is registered.
   const devEmail = deriveDevEmail(phone)
   const user = await findUserByPhone(phone, devEmail)
   if (!user) {
-    return jsonError("شماره موبایل یا رمز عبور صحیح نیست.", 401)
+    return jsonError(PASSWORD_LOGIN_FAILED_MESSAGE, 401)
   }
 
   const admin = createAdminSupabaseClient()
@@ -451,17 +469,20 @@ async function handlePasswordLogin(
     .eq("id", user.id)
     .maybeSingle()
   if (!roleRow || roleRow.role !== "parent") {
-    return jsonError("شماره موبایل یا رمز عبور صحیح نیست.", 401)
+    return jsonError(PASSWORD_LOGIN_FAILED_MESSAGE, 401)
   }
 
   const actualEmail = user.email
   if (!actualEmail) {
-    return jsonError("شماره موبایل یا رمز عبور صحیح نیست.", 401)
+    return jsonError(PASSWORD_LOGIN_FAILED_MESSAGE, 401)
   }
 
+  // A passwordless account simply fails this sign-in, which lands on the same
+  // message as a wrong password. No separate branch is needed, and adding one
+  // would be the leak described above.
   const sessionResponse = await createSessionViaPassword(actualEmail, password, env)
   if (!sessionResponse) {
-    return jsonError("شماره موبایل یا رمز عبور صحیح نیست.", 401)
+    return jsonError(PASSWORD_LOGIN_FAILED_MESSAGE, 401)
   }
   return sessionResponse
 }

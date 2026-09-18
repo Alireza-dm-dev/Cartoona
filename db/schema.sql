@@ -118,7 +118,9 @@ CREATE TRIGGER on_auth_user_created
 CREATE TABLE IF NOT EXISTS public.parent_profiles (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id           UUID NOT NULL UNIQUE REFERENCES public.users(id) ON DELETE CASCADE,
-  full_name         TEXT NOT NULL,
+  -- Nullable since 20260918110000: phone + OTP signup never collects a name.
+  -- NULL means "no name given", never a placeholder (UI shows "حساب والد").
+  full_name         TEXT CHECK (full_name IS NULL OR char_length(btrim(full_name)) > 0),
   consent_granted   BOOLEAN NOT NULL DEFAULT FALSE,
   consent_granted_at TIMESTAMPTZ,
   referral_code     TEXT NOT NULL UNIQUE CHECK (referral_code ~ '^CT[0-9A-F]{12}$'),
@@ -172,6 +174,9 @@ CREATE TABLE IF NOT EXISTS public.orders (
   description       TEXT,
   character_id      UUID REFERENCES public.characters(id),
   candy_cost        INTEGER NOT NULL DEFAULT 0,
+  -- Optional child first name from the creation form (20260918100000).
+  -- NULL for every request that did not supply one. Not a child_profiles link.
+  child_name        TEXT CHECK (child_name IS NULL OR (char_length(child_name) BETWEEN 1 AND 60 AND char_length(btrim(child_name)) > 0)),
   moderation_status TEXT NOT NULL DEFAULT 'pending' CHECK (moderation_status IN ('pending', 'passed', 'flagged', 'blocked', 'manual_review')),
   assigned_admin_id UUID REFERENCES public.users(id),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),

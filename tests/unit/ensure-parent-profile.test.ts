@@ -10,7 +10,8 @@ import { ensureParentProfile } from "@/lib/parent/ensure-parent-profile"
 interface Row {
   id: string
   user_id: string
-  full_name: string
+  /** Nullable since the phone-only signup: a parent may simply have no name. */
+  full_name: string | null
   consent_granted: boolean
   consent_granted_at: string | null
 }
@@ -262,16 +263,54 @@ describe("failure handling", () => {
     expect(result).toEqual({ ok: false, reason: "write_failed" })
   })
 
-  it("refuses to create a profile without a name", async () => {
-    const { client, rows, calls } = makeClient()
+  it("creates a profile with no name at all", async () => {
+    // Phone + OTP signup has no name to give. That is an ordinary account,
+    // not a failure, and the row is created with NULL rather than a
+    // placeholder the parent never chose.
+    const { client, rows } = makeClient()
 
-    for (const name of ["", "   "]) {
-      const result = await ensureParentProfile(client, { userId: USER, fullName: name, consent: "preserve" })
-      expect(result).toEqual({ ok: false, reason: "missing_name" })
+    const result = await ensureParentProfile(client, { userId: USER, consent: "preserve" })
+
+    expect(result.ok).toBe(true)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].full_name).toBeNull()
+  })
+
+  it("treats an empty or whitespace name as no name, never as an empty string", async () => {
+    // The column rejects a blank string, so these must normalize to NULL.
+    for (const name of ["", "   ", null, undefined]) {
+      const { client, rows } = makeClient()
+      const result = await ensureParentProfile(client, {
+        userId: USER,
+        fullName: name,
+        consent: "preserve",
+      })
+      expect(result.ok).toBe(true)
+      expect(rows[0].full_name).toBeNull()
     }
+  })
 
-    expect(rows).toHaveLength(0)
-    expect(calls.selects).toBe(0)
+  it("keeps an existing name when a later call passes none", async () => {
+    // An OTP login or a consent grant must never blank out the name of a
+    // parent who signed up back when signup collected one.
+    const { client, rows } = makeClient({
+      rows: [{
+        id: "existing", user_id: USER, full_name: NAME,
+        consent_granted: false, consent_granted_at: null,
+      }],
+    })
+
+    const result = await ensureParentProfile(client, { userId: USER, consent: "grant" })
+
+    expect(result).toEqual({ ok: true, created: false, profileId: "existing" })
+    expect(rows[0].full_name).toBe(NAME)
+    expect(rows[0].consent_granted).toBe(true)
+  })
+
+  it("still stores a name when one is given", async () => {
+    const { client, rows } = makeClient()
+    await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "preserve" })
+    expect(rows[0].full_name).toBe(NAME)
   })
 
   it("never leaks a database message in its result", async () => {

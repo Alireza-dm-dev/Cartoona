@@ -8,7 +8,7 @@ import type {
   AdminQueueResult,
   AdminTypeDetailRow,
 } from "@/lib/admin/requests/types"
-import { mapMediaAsset, mapOrderDetail, mapQueueRow, mapVideoTypeRows } from "@/lib/admin/requests/mappers"
+import { mapChildNameRow, mapMediaAsset, mapOrderDetail, mapQueueRow, mapVideoTypeRows } from "@/lib/admin/requests/mappers"
 import { clampPage } from "@/lib/admin/requests/validation"
 import { createPrivateSignedUrl } from "@/lib/storage/private-signed-url"
 
@@ -18,6 +18,7 @@ interface OrderParentJoin {
   status: string
   title: string | null
   description: string | null
+  child_name: string | null
   candy_cost: number
   moderation_status: string
   created_at: string
@@ -26,7 +27,8 @@ interface OrderParentJoin {
   parent_profiles:
     | {
         id: string
-        full_name: string
+        // Nullable since 20260918110000: phone-only parents have no name.
+        full_name: string | null
         user_id: string
         users: { email: string | null } | null
       }
@@ -118,7 +120,7 @@ export async function queryAdminRequestDetail(
   const { data: order, error } = await supabase
     .from("orders")
     .select(
-      "id, type, status, title, description, candy_cost, moderation_status, created_at, updated_at, character_id, parent_id, parent_profiles(id, full_name, user_id, users(id, email)), characters(id, name), media_assets(id, type, file_url, mime_type, created_at)",
+      "id, type, status, title, description, child_name, candy_cost, moderation_status, created_at, updated_at, character_id, parent_id, parent_profiles(id, full_name, user_id, users(id, email)), characters(id, name), media_assets(id, type, file_url, mime_type, created_at)",
     )
     .eq("id", input.requestId)
     .maybeSingle()
@@ -152,6 +154,7 @@ export async function queryAdminRequestDetail(
       durationSeconds: typeof video?.duration_seconds === "number" ? video.duration_seconds : null,
       charactersSpeak: typeof video?.characters_speak === "boolean" ? video.characters_speak : null,
       referenceFile,
+      childName: detailRow.child_name,
     })
   } else if (detailRow.type === "drawing_animation") {
     const { data: drawing } = await supabase
@@ -166,7 +169,11 @@ export async function queryAdminRequestDetail(
     ]
   } else if (detailRow.type === "image") {
     const referenceFile = detailRow.media_assets.some((m) => m.type === "upload")
-    typeRows = [{ label: "فایل مرجع", value: referenceFile ? "بارگذاری شده" : "بارگذاری نشده" }]
+    const childRow = mapChildNameRow(detailRow.child_name)
+    typeRows = [
+      ...(childRow ? [childRow] : []),
+      { label: "فایل مرجع", value: referenceFile ? "بارگذاری شده" : "بارگذاری نشده" },
+    ]
   }
 
   // Short-lived signed URLs for source media only. Final deliverables are

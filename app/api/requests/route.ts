@@ -182,6 +182,7 @@ export async function POST(request: Request) {
       p_file_path: storagePath,
       p_duration_choice: normalized.durationChoice,
       p_characters_speak: normalized.charactersSpeak,
+      p_child_name: normalized.childName,
     })
 
   if (rpcError) {

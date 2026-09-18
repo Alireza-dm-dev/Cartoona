@@ -20,7 +20,7 @@ import { mapVideoDurationLabel } from "@/lib/pricing/pricing-keys";
  * sees by default. `assigned_admin_id` and `moderation_status` are absent.
  */
 const DETAIL_COLUMNS =
-  "id, type, status, title, description, candy_cost, created_at, updated_at, characters(name)";
+  "id, type, status, title, description, child_name, candy_cost, created_at, updated_at, characters(name)";
 
 const NOT_RECORDED = "ثبت نشده";
 /**
@@ -46,6 +46,7 @@ interface RawDetailRow {
   status: unknown;
   title: unknown;
   description: unknown;
+  child_name: unknown;
   candy_cost: unknown;
   created_at: unknown;
   updated_at: unknown;
@@ -85,15 +86,28 @@ export function buildDetailRows(input: {
   } | null;
   drawing: { animation_style?: unknown } | null;
   hasSourceMedia: boolean;
+  /**
+   * Optional child name from the request. Absent for every request made
+   * before the field existed and for every parent who left it blank, and in
+   * both cases no row is produced rather than one reading "ثبت نشده".
+   */
+  childName?: unknown;
 }): ParentDetailRow[] {
   const rows: ParentDetailRow[] = [];
+  const childName = text(input.childName);
 
   if (input.type === "image") {
     rows.push({ label: "شخصیت", value: input.characterName ?? NOT_RECORDED });
+    if (childName !== null) {
+      rows.push({ label: "نام کودک", value: childName });
+    }
   }
 
   if (input.type === "video") {
     rows.push({ label: "شخصیت", value: input.characterName ?? NOT_RECORDED });
+    if (childName !== null) {
+      rows.push({ label: "نام کودک", value: childName });
+    }
 
     // Style is no longer collected. The row appears only for the historical
     // requests that already carry one, so new requests show no empty row.
@@ -288,6 +302,7 @@ export async function getParentOrderDetail(
       video,
       drawing,
       hasSourceMedia: sourceMedia.length > 0,
+      childName: row.child_name,
     }),
     timeline: toParentTimeline(history),
     closure: toParentClosure(history),

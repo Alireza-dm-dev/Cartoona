@@ -120,6 +120,68 @@ describe("image detail mapping", () => {
   });
 });
 
+describe("child name row", () => {
+  test("appears on an image request that carries one", () => {
+    const rows = mapImageTypeRows({
+      description: null,
+      characterName: "کاپیتان آبنبات",
+      referenceFile: false,
+      consentGranted: true,
+      childName: "آریا",
+    });
+    expect(rows).toContainEqual({ label: "نام کودک", value: "آریا" });
+  });
+
+  test("appears on a video request that carries one", () => {
+    const rows = mapVideoTypeRows({
+      script: "داستان شب",
+      style: null,
+      durationChoice: "5_10",
+      durationSeconds: null,
+      charactersSpeak: true,
+      referenceFile: false,
+      childName: "آریا",
+    });
+    expect(rows).toContainEqual({ label: "نام کودک", value: "آریا" });
+  });
+
+  test("is omitted entirely when the request has no child name", () => {
+    // A historical request and one where the parent declined to give a name
+    // are the same to an admin: no row, rather than a row saying "ثبت نشده".
+    for (const childName of [undefined, null, "", "   "]) {
+      const imageRows = mapImageTypeRows({
+        description: null,
+        characterName: null,
+        referenceFile: false,
+        consentGranted: false,
+        childName,
+      });
+      const videoRows = mapVideoTypeRows({
+        script: null,
+        style: null,
+        durationChoice: null,
+        durationSeconds: null,
+        charactersSpeak: null,
+        referenceFile: false,
+        childName,
+      });
+      expect(imageRows.some((r) => r.label === "نام کودک")).toBe(false);
+      expect(videoRows.some((r) => r.label === "نام کودک")).toBe(false);
+    }
+  });
+
+  test("trims the stored value before showing it", () => {
+    const rows = mapImageTypeRows({
+      description: null,
+      characterName: null,
+      referenceFile: false,
+      consentGranted: false,
+      childName: "  آریا  ",
+    });
+    expect(rows).toContainEqual({ label: "نام کودک", value: "آریا" });
+  });
+});
+
 describe("video detail mapping", () => {
   test("a new request shows duration and speech, and no style row", () => {
     const rows = mapVideoTypeRows({

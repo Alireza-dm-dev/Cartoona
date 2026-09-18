@@ -27,7 +27,7 @@ function mapLoginError(message: string): string {
     return "تلاش‌های ورود بیش از حد مجاز بود. لطفاً کمی بعد دوباره تلاش کنید.";
   }
   if (m.includes("invalid") || m.includes("credential") || m.includes("password")) {
-    return "شماره موبایل یا رمز عبور نادرست است.";
+    return PASSWORD_LOGIN_FAILED_MESSAGE;
   }
   return "ورود انجام نشد. لطفاً دوباره تلاش کنید.";
 }
@@ -53,8 +53,21 @@ function resolveDevDestination(next: unknown): string {
 
 type LoginMode = "sms" | "password";
 
+/**
+ * One answer for every password-login failure.
+ *
+ * A parent who never set a password cannot be told so directly without that
+ * same answer revealing, for any phone number, whether an account exists. The
+ * message therefore stays neutral and points at the code route instead, which
+ * is the thing that will actually work for them.
+ */
+const PASSWORD_LOGIN_FAILED_MESSAGE =
+  "شماره موبایل یا رمز عبور صحیح نیست. اگر برای این حساب رمز عبور تنظیم نکرده‌اید، با «ورود با کد» وارد شوید.";
+
 export default function LoginPage() {
-  const [mode, setMode] = useState<LoginMode>("password");
+  // Code login is the default: every parent can use it, while password login
+  // only works for the subset who chose to set one.
+  const [mode, setMode] = useState<LoginMode>("sms");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -254,7 +267,7 @@ export default function LoginPage() {
         const data = await res.json();
 
         if (!res.ok) {
-          setError(data.error || "شماره موبایل یا رمز عبور صحیح نیست.");
+          setError(data.error || PASSWORD_LOGIN_FAILED_MESSAGE);
           return;
         }
 
@@ -310,7 +323,8 @@ export default function LoginPage() {
     <Card>
       <h1 className="text-2xl font-brand text-parent-navy">ورود والدین</h1>
       <p className="mt-1 text-sm text-text-dark/60">
-        برای ورود به پنل والدین، شماره موبایل و رمز عبور خود را وارد کنید.
+        برای ورود به پنل والدین، شماره موبایل خود را وارد کنید و کد ورود را دریافت کنید.
+        اگر رمز عبور تنظیم کرده‌اید، می‌توانید با رمز عبور هم وارد شوید.
       </p>
 
       {expiredNotice === "session_expired" && (
@@ -321,10 +335,25 @@ export default function LoginPage() {
         </div>
       )}
 
-      <div className="mt-6 flex gap-2 border-b border-soft-border pb-0">
+      {/* Code login comes first in the order as well as in the default: it is
+          the method that works for every parent. */}
+      <div className="mt-6 flex flex-wrap gap-2 border-b border-soft-border pb-0">
         <button
           type="button"
-          className={`pb-2 px-4 text-sm font-medium transition-colors border-b-2 ${
+          aria-pressed={mode === "sms"}
+          className={`min-h-[44px] pb-2 px-4 text-sm font-medium transition-colors border-b-2 ${
+            mode === "sms"
+              ? "border-candy-pink text-candy-pink"
+              : "border-transparent text-text-dark/50 hover:text-text-dark/70"
+          }`}
+          onClick={() => { setMode("sms"); setError(""); setSmsStep(1); setCode(""); }}
+        >
+          ورود با کد
+        </button>
+        <button
+          type="button"
+          aria-pressed={mode === "password"}
+          className={`min-h-[44px] pb-2 px-4 text-sm font-medium transition-colors border-b-2 ${
             mode === "password"
               ? "border-candy-pink text-candy-pink"
               : "border-transparent text-text-dark/50 hover:text-text-dark/70"
@@ -332,17 +361,6 @@ export default function LoginPage() {
           onClick={() => { setMode("password"); setError(""); }}
         >
           ورود با رمز عبور
-        </button>
-        <button
-          type="button"
-          className={`pb-2 px-4 text-sm font-medium transition-colors border-b-2 ${
-            mode === "sms"
-              ? "border-candy-pink text-candy-pink"
-              : "border-transparent text-text-dark/50 hover:text-text-dark/70"
-          }`}
-          onClick={() => { setMode("sms"); setError(""); setSmsStep(1); setCode(""); }}
-        >
-          ورود با کد پیامکی
         </button>
       </div>
 
@@ -355,7 +373,7 @@ export default function LoginPage() {
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
               placeholder="مثال: 09123456789"
-              className="w-full rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+              className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
             />
           </div>
 
@@ -395,7 +413,7 @@ export default function LoginPage() {
               value={code}
               onChange={(e) => setCode(e.target.value)}
               placeholder="کد ۶ رقمی"
-              className="w-full rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+              className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
             />
           </div>
 
@@ -431,20 +449,24 @@ export default function LoginPage() {
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
               placeholder="مثال: 09123456789"
-              className="w-full rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+              className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
             />
           </div>
 
           <div className="space-y-2">
-            <label className="block text-sm font-medium text-text-dark">رمز عبور</label>
+            <label htmlFor="login-password" className="block text-sm font-medium text-text-dark">رمز عبور</label>
             <input
+              id="login-password"
               type="password"
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="رمز عبور"
-              className="w-full rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+              className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
             />
+            <p className="text-xs text-text-dark/40">
+              رمز عبور اختیاری است. اگر برای حساب خود رمز عبور تنظیم نکرده‌اید، از «ورود با کد» استفاده کنید.
+            </p>
           </div>
 
           {error && <p className="text-xs text-coral">{error}</p>}

@@ -34,10 +34,22 @@ function getDevSecret(): string {
   return process.env.DEV_PARENT_AUTH_SECRET!
 }
 
+/**
+ * Issue a signed OTP challenge for a phone number.
+ *
+ * The payload binds only what the OTP transaction itself needs: what it is
+ * for, whose phone it was issued to, the code, and its lifetime. Signup used
+ * to bind the parent's name into the same signature, which meant the name had
+ * to be resubmitted byte-identically at verify time. Signup no longer collects
+ * a name, and binding fields the transaction does not need would only create
+ * new ways for a correct code to be refused.
+ *
+ * Expiry, single use and the attempt ceiling are unchanged and are enforced by
+ * `consumeOtpChallenge` below.
+ */
 export function generateOtpChallenge(
   purpose: "signup" | "login",
   phone: string,
-  fullName?: string,
 ): { challengeToken: string; developmentCode: string; expiresInSeconds: number } {
   const code = crypto.randomInt(0, 1000000).toString().padStart(6, "0")
   const now = Math.floor(Date.now() / 1000)
@@ -50,10 +62,6 @@ export function generateOtpChallenge(
     iat: now,
     exp: now + expiresInSeconds,
     nonce: crypto.randomBytes(16).toString("hex"),
-  }
-
-  if (purpose === "signup" && fullName) {
-    payload.fullName = fullName
   }
 
   const serialized = JSON.stringify(payload)
@@ -113,7 +121,6 @@ function decodeChallenge(
   purpose: "signup" | "login",
   phone: string,
   code: string,
-  expectedFullName?: string,
 ): OtpVerifyResult {
   let parsed: { signed: string; signature: string }
   try {
@@ -149,10 +156,6 @@ function decodeChallenge(
   if (payload.purpose !== purpose) return { ok: false, reason: "mismatch" }
   if (payload.phone !== phone) return { ok: false, reason: "mismatch" }
 
-  if (purpose === "signup" && expectedFullName !== undefined) {
-    if (payload.fullName !== expectedFullName) return { ok: false, reason: "mismatch" }
-  }
-
   // Expiry is checked before the code so a stale-but-correct code reports
   // honestly as expired rather than as a wrong code.
   const now = Math.floor(Date.now() / 1000)
@@ -180,9 +183,8 @@ export function verifyOtpChallenge(
   purpose: "signup" | "login",
   phone: string,
   code: string,
-  expectedFullName?: string,
 ): boolean {
-  return decodeChallenge(challengeToken, purpose, phone, code, expectedFullName).ok
+  return decodeChallenge(challengeToken, purpose, phone, code).ok
 }
 
 /**
@@ -195,7 +197,6 @@ export function consumeOtpChallenge(
   purpose: "signup" | "login",
   phone: string,
   code: string,
-  expectedFullName?: string,
 ): OtpVerifyResult {
   const now = Math.floor(Date.now() / 1000)
   evictExpired(now)
@@ -208,7 +209,7 @@ export function consumeOtpChallenge(
     return { ok: false, reason: "too_many_attempts" }
   }
 
-  const result = decodeChallenge(challengeToken, purpose, phone, code, expectedFullName)
+  const result = decodeChallenge(challengeToken, purpose, phone, code)
 
   if (!result.ok) {
     // Only track challenges that are genuinely ours; garbage tokens must not

@@ -133,17 +133,25 @@ describe("dev OTP issue/verify consistency", () => {
     ).toEqual({ ok: true })
   })
 
-  it("verifies a signup code including the bound parent name", () => {
-    const challenge = generateOtpChallenge("signup", PHONE, "مریم احمدی")
+  it("verifies a signup code from the phone and code alone", () => {
+    // Signup collects a phone number and nothing else, so the challenge binds
+    // nothing else either. No name and no password take part in the exchange.
+    const challenge = generateOtpChallenge("signup", PHONE)
     expect(
-      consumeOtpChallenge(
-        challenge.challengeToken,
-        "signup",
-        PHONE,
-        challenge.developmentCode,
-        "مریم احمدی",
-      ),
+      consumeOtpChallenge(challenge.challengeToken, "signup", PHONE, challenge.developmentCode),
     ).toEqual({ ok: true })
+  })
+
+  it("does not carry a name or a password in the signed payload", () => {
+    const challenge = generateOtpChallenge("signup", PHONE)
+    const decoded = JSON.parse(
+      Buffer.from(challenge.challengeToken, "base64url").toString(),
+    )
+    const payload = JSON.parse(decoded.signed)
+    expect(payload).not.toHaveProperty("fullName")
+    expect(payload).not.toHaveProperty("password")
+    expect(payload.phone).toBe(PHONE)
+    expect(payload.purpose).toBe("signup")
   })
 
   it("verifies regardless of which supported phone form the caller typed", () => {
@@ -173,16 +181,9 @@ describe("dev OTP issue/verify consistency", () => {
   })
 
   it("rejects a signup code replayed as a login code", () => {
-    const challenge = generateOtpChallenge("signup", PHONE, "مریم احمدی")
+    const challenge = generateOtpChallenge("signup", PHONE)
     expect(
       consumeOtpChallenge(challenge.challengeToken, "login", PHONE, challenge.developmentCode),
-    ).toEqual({ ok: false, reason: "mismatch" })
-  })
-
-  it("rejects a signup code bound to a different parent name", () => {
-    const challenge = generateOtpChallenge("signup", PHONE, "مریم احمدی")
-    expect(
-      consumeOtpChallenge(challenge.challengeToken, "signup", PHONE, challenge.developmentCode, "علی رضایی"),
     ).toEqual({ ok: false, reason: "mismatch" })
   })
 

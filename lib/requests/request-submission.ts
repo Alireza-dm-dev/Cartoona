@@ -1,6 +1,7 @@
 import type { CreationDraft, ImageCreationDraft, VideoCreationDraft, DrawingCreationDraft } from "@/lib/creation/creation-draft"
 import type { OrderType } from "@/types/app"
 import { FORM_TO_INTERNAL, VIDEO_DURATION_TO_INTERNAL, isVideoDurationChoice } from "@/lib/pricing/pricing-keys"
+import { checkChildName } from "@/lib/creation/child-name"
 import type { InternalDuration, VideoDurationChoice } from "@/lib/pricing/pricing-keys"
 
 export interface NormalizedRequest {
@@ -23,6 +24,16 @@ export interface NormalizedRequest {
   /** Required for new video requests. Null for every other type. */
   charactersSpeak: boolean | null
   fileName: string | null
+  /**
+   * Optional child name, carried as its own field rather than folded into
+   * `description`.
+   *
+   * It lands in its own `orders.child_name` column, so admin and parent views
+   * can render it as a labelled row and a later feature can read it back
+   * without parsing Persian prose. Null means the parent gave no name —
+   * including every draft written before the field existed.
+   */
+  childName: string | null
 }
 
 export interface ParseError {
@@ -94,9 +105,11 @@ function validateImageDraft(draft: ImageCreationDraft): ParseResult {
 
   const characterId = trimToNull(draft.selectedCharacterId)
   const fileName = trimToNull(draft.referenceFileName)
+  const child = checkChildName(draft.childName)
 
   const errors = collectErrors([
     { field: "selectedCharacterId", valid: characterId !== null, message: "انتخاب شخصیت برای درخواست تصویر الزامی است" },
+    { field: "childName", valid: child.ok, message: child.ok ? "" : child.message },
   ])
   if (errors.length > 0) return { ok: false, errors }
 
@@ -114,6 +127,7 @@ function validateImageDraft(draft: ImageCreationDraft): ParseResult {
       animationStyle: null,
       charactersSpeak: null,
       fileName,
+      childName: child.ok ? child.value : null,
     },
   }
 }
@@ -122,6 +136,7 @@ function validateVideoDraft(draft: VideoCreationDraft): ParseResult {
   const storyTrimmed = trimToNull(draft.storyDescription)
   const characterId = trimToNull(draft.selectedCharacterId)
   const fileName = trimToNull(draft.referenceFileName)
+  const child = checkChildName(draft.childName)
 
   const occasionNote: string[] = []
   if (draft.occasion) occasionNote.push(`مناسبت: ${draft.occasion}`)
@@ -146,6 +161,7 @@ function validateVideoDraft(draft: VideoCreationDraft): ParseResult {
     { field: "storyDescription", valid: storyTrimmed !== null, message: "توضیح داستان برای ویدیو الزامی است" },
     { field: "duration", valid: durationKey !== null, message: "مدت زمان ویدیو مشخص نشده است" },
     { field: "charactersSpeak", valid: charactersSpeak !== null, message: "لطفاً مشخص کنید کاراکترها صحبت کنند یا خیر" },
+    { field: "childName", valid: child.ok, message: child.ok ? "" : child.message },
   ])
   if (errors.length > 0) return { ok: false, errors }
 
@@ -163,6 +179,7 @@ function validateVideoDraft(draft: VideoCreationDraft): ParseResult {
       animationStyle: null,
       charactersSpeak,
       fileName,
+      childName: child.ok ? child.value : null,
     },
   }
 }
@@ -203,6 +220,8 @@ function validateDrawingDraft(draft: DrawingCreationDraft, title: string): Parse
       animationStyle: movementTrimmed,
       charactersSpeak: null,
       fileName,
+      // The drawing form does not collect a child name in this phase.
+      childName: null,
     },
   }
 }

@@ -2,8 +2,32 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
 import { SafetyNotice } from "@/components/ui/safety-notice";
 import { ParentPasswordForm } from "@/components/settings/parent-password-form";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 
-export default function SettingsPage() {
+/**
+ * Whether this parent has already chosen a password.
+ *
+ * `password_set` is written by /api/parent/password. `password_enabled` is the
+ * older flag from the days when signup required a password, and is read so
+ * those accounts are described correctly too. Neither is a permission check —
+ * they only decide whether the card says "set" or "change".
+ */
+async function hasPasswordSet(): Promise<boolean> {
+  try {
+    const supabase = await createServerSupabaseClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    const metadata = user?.user_metadata ?? {};
+    return metadata.password_set === true || metadata.password_enabled === true;
+  } catch {
+    // The page still renders; the parent is simply offered the neutral
+    // "set a password" wording.
+    return false;
+  }
+}
+
+export default async function SettingsPage() {
+  const passwordSet = await hasPasswordSet();
+
   return (
     <div className="mx-auto max-w-[880px]">
       <PageHeader
@@ -25,15 +49,19 @@ export default function SettingsPage() {
       </section>
 
       <Card className="mb-4">
-        <h3 className="font-semibold text-text-dark">رمز عبور</h3>
+        <h3 className="font-semibold text-text-dark">
+          {passwordSet ? "تغییر رمز عبور" : "تنظیم رمز عبور"}
+        </h3>
         <p className="mt-1 text-sm text-text-dark/50">
-          با تنظیم رمز عبور می‌توانید علاوه بر کد پیامکی، با شماره موبایل و رمز عبور وارد شوید.
+          {passwordSet
+            ? "می‌توانید رمز عبور فعلی حساب خود را تغییر دهید."
+            : "رمز عبور اختیاری است. با تنظیم آن می‌توانید علاوه بر کد ورود، با شماره موبایل و رمز عبور هم وارد شوید."}
         </p>
         <p className="mt-1 text-xs text-text-dark/40">
-          ورود با کد پیامکی همیشه برای حساب شما فعال می‌ماند.
+          ورود با کد همیشه برای حساب شما فعال می‌ماند، چه رمز عبور تنظیم کنید چه نکنید.
         </p>
         <div className="mt-4">
-          <ParentPasswordForm />
+          <ParentPasswordForm passwordSet={passwordSet} />
         </div>
       </Card>
 
