@@ -2,10 +2,11 @@
 
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
-import { readCreationDraft } from "@/lib/creation/creation-draft";
+import { clearCreationDraft, readCreationDraft } from "@/lib/creation/creation-draft";
 import type { CreationDraft, ImageCreationDraft, VideoCreationDraft, DrawingCreationDraft } from "@/lib/creation/creation-draft";
 import { CreationDraftSummaryCard } from "@/components/creation/pending-creation-draft-card";
 import { PrivateGalleryPicker } from "@/components/creation/private-gallery-picker";
@@ -14,6 +15,13 @@ import { PARENT_PORTAL_HOME } from "@/lib/parent/navigation/parent-nav";
 import { useCreationPricing } from "@/lib/pricing/use-creation-pricing";
 import { calculateCreationCost } from "@/lib/pricing/calculate-creation-cost";
 import { FORM_TO_INTERNAL, VIDEO_DURATION_TO_INTERNAL, isVideoDurationChoice } from "@/lib/pricing/pricing-keys";
+import {
+  buildRequestFormData,
+  checkUploadFile,
+  classifySubmissionError,
+  readCreatedOrderId,
+} from "@/lib/requests/submission-client";
+import type { SubmitErrorKind } from "@/lib/requests/submission-client";
 import type { InternalDuration } from "@/lib/pricing/pricing-keys";
 
 const imageAcceptedTypes = "image/png,image/jpeg,image/webp";
@@ -21,6 +29,19 @@ const videoReferenceAcceptedTypes = "image/png,image/jpeg,image/webp,video/mp4,v
 
 const imageAcceptedMimeTypes = ["image/png", "image/jpeg", "image/webp"];
 const videoReferenceAcceptedMimeTypes = ["image/png", "image/jpeg", "image/webp", "video/mp4", "video/webm"];
+
+/**
+ * Where the submission has got to.
+ *
+ * "success" is terminal and is held until the redirect lands, so the button
+ * cannot be pressed again during the navigation that follows a created order.
+ */
+type SubmitPhase = "idle" | "submitting" | "success";
+
+interface SubmitError {
+  kind: SubmitErrorKind;
+  message: string;
+}
 
 export default function CompleteCreationRequest() {
   const [draft, setDraft] = useState<CreationDraft | null>(null);
@@ -33,6 +54,15 @@ export default function CompleteCreationRequest() {
     useState<ParentGalleryMedia | null>(null);
   const [fileError, setFileError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [phase, setPhase] = useState<SubmitPhase>("idle");
+  const [submitError, setSubmitError] = useState<SubmitError | null>(null);
+  /**
+   * Guards against a second submission starting before the first has
+   * answered. React state is not enough on its own: two clicks in the same
+   * tick both read the old state, and each created order costs real candy.
+   */
+  const inFlight = useRef(false);
+  const router = useRouter();
 
   const { catalog, loading: pricingLoading, error: pricingError, refresh: refreshPricing } = useCreationPricing();
 
@@ -128,8 +158,9 @@ export default function CompleteCreationRequest() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!acceptedMimeTypes.includes(file.type)) {
-      setFileError("فرمت این فایل پشتیبانی نمی‌شود. لطفاً یک فایل مجاز انتخاب کنید.");
+    const check = checkUploadFile(file, acceptedMimeTypes);
+    if (!check.ok) {
+      setFileError(check.message);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -144,6 +175,7 @@ export default function CompleteCreationRequest() {
     setSelectedFile(null);
     setSelectedGalleryMedia(null);
     setFileError("");
+    setSubmitError(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -158,6 +190,7 @@ export default function CompleteCreationRequest() {
    */
   function handleGallerySelect(media: ParentGalleryMedia) {
     setFileError("");
+    setSubmitError(null);
     setSelectedFile(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -170,14 +203,106 @@ export default function CompleteCreationRequest() {
     setSelectedGalleryMedia(null);
   }
 
+  /**
+   * Send the request.
+   *
+   * Everything that decides the outcome — the price, the candy debit, who owns
+   * the selected gallery asset, whether consent was granted — is settled on the
+   * server. This function's whole job is to hand over the draft and at most one
+   * source, then act on the answer. It deliberately computes no price and
+   * trusts none of the numbers already on screen.
+   */
+  async function handleSubmit(): Promise<void> {
+    if (inFlight.current || phase !== "idle") return;
+    if (!draft) return;
+    if (fileRequiredAndMissing) return;
+
+    inFlight.current = true;
+    setSubmitError(null);
+    setPhase("submitting");
+
+    // Every failure goes through here, so the in-flight lock cannot be left
+    // held by a path that forgot to release it. Success deliberately does not
+    // release: the component is on its way off screen.
+    const fail = (error: SubmitError) => {
+      inFlight.current = false;
+      setSubmitError(error);
+      setPhase("idle");
+    };
+
+    try {
+      // At most one source. The two pieces of state are already mutually
+      // exclusive; the builder refuses the impossible case rather than picking.
+      const built = buildRequestFormData(draft, {
+        file: selectedFile,
+        galleryAssetId: selectedGalleryMedia?.id ?? null,
+      });
+
+      if (!built.ok) {
+        fail({
+          kind: "validation",
+          message: "برای هر درخواست فقط یک فایل مجاز است: یا بارگذاری جدید، یا انتخاب از گالری.",
+        });
+        return;
+      }
+
+      const res = await fetch("/api/requests", { method: "POST", body: built.formData });
+
+      // An expired or missing session is not an error to render in place —
+      // the parent needs the login flow, and the existing guard on
+      // /complete-request will bring them back here afterwards.
+      if (res.status === 401) {
+        window.location.assign("/login?reason=session_expired&from=/complete-request");
+        return;
+      }
+
+      if (res.status === 403) {
+        window.location.assign("/parent-consent");
+        return;
+      }
+
+      const body = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        fail({
+          kind: classifySubmissionError(res.status, body?.code),
+          message:
+            typeof body?.error === "string" && body.error.length > 0
+              ? body.error
+              : "ثبت درخواست با خطا مواجه شد. لطفاً دوباره تلاش کنید.",
+        });
+        return;
+      }
+
+      const orderId = readCreatedOrderId(body);
+      if (!orderId) {
+        // The order may well exist; what is missing is a place to send the
+        // parent. The draft is kept so nothing they typed is lost.
+        fail({
+          kind: "request",
+          message: "ثبت درخواست با خطا مواجه شد. لطفاً سفارش‌های خود را بررسی کنید.",
+        });
+        return;
+      }
+
+      // Only now, with a real order id in hand, is the draft safe to discard.
+      // Clearing it any earlier would lose the parent's work on a failure.
+      setPhase("success");
+      clearCreationDraft();
+      router.push(`/dashboard/orders/${orderId}`);
+    } catch {
+      fail({
+        kind: "request",
+        message: "ارتباط با سرور برقرار نشد. لطفاً دوباره تلاش کنید.",
+      });
+    }
+  }
+
   function getReadinessText(): string {
     if (fileRequiredAndMissing) {
-      return "برای ادامه، ابتدا فایل لازم را دوباره انتخاب کنید. ثبت نهایی پس از اتصال سفارش‌ها و بارگذاری خصوصی فایل فعال می‌شود.";
+      return "برای ادامه، ابتدا فایل لازم را دوباره انتخاب کنید.";
     }
-    if (requiresFileReselection && fileSelected) {
-      return "فایل و اطلاعات درخواست آماده هستند. ثبت نهایی پس از اتصال سفارش‌ها و بارگذاری خصوصی فایل فعال می‌شود.";
-    }
-    return "اطلاعات درخواست آماده است. ثبت نهایی پس از اتصال سفارش‌ها فعال می‌شود.";
+    return "با ثبت نهایی، هزینه این درخواست از موجودی آب‌نبات شما کسر می‌شود.";
   }
 
   return (
@@ -304,8 +429,8 @@ export default function CompleteCreationRequest() {
       <Card>
         <h2 className="font-semibold text-parent-navy">مرحله ثبت نهایی</h2>
         <p className="mt-1 text-sm text-text-dark/60">
-          در مرحله بعد، فایل‌های لازم دوباره انتخاب می‌شوند و درخواست پس از
-          تأیید شما ثبت خواهد شد.
+          با تأیید شما، درخواست ثبت می‌شود و هزینه آن از موجودی آب‌نبات شما کسر
+          می‌گردد.
         </p>
 
         {!requiresFileReselection && (
@@ -344,15 +469,71 @@ export default function CompleteCreationRequest() {
         )}
 
         <p className="mt-2 text-xs text-text-dark/40">
-          در حال حاضر هیچ سفارش یا کسر آب‌نباتی انجام نشده است.
+          تا زمانی که دکمه «ثبت نهایی درخواست» را نزده‌اید، هیچ سفارشی ثبت
+          نمی‌شود و آب‌نباتی کسر نمی‌شود.
         </p>
 
+        {submitError && (
+          <div
+            className="mt-4 rounded-lg border border-coral/30 bg-coral/5 px-3 py-3"
+            role="alert"
+            aria-live="assertive"
+          >
+            <p className="text-sm text-coral">{submitError.message}</p>
+
+            {/* Each failure that has a way forward offers it. The rest are
+                simply retried with the button below. */}
+            {submitError.kind === "insufficient_candy" && (
+              <Link
+                href="/dashboard/billing"
+                className="mt-2 inline-flex min-h-[44px] items-center text-sm font-medium text-candy-pink hover:opacity-80"
+              >
+                افزایش موجودی آب‌نبات
+              </Link>
+            )}
+            {submitError.kind === "gallery" && (
+              <p className="mt-1 text-xs text-text-dark/60">
+                لطفاً فایل دیگری از گالری انتخاب کنید یا فایل جدیدی بارگذاری کنید.
+              </p>
+            )}
+            {submitError.kind === "upload" && (
+              <p className="mt-1 text-xs text-text-dark/60">
+                لطفاً فایل را دوباره انتخاب کنید.
+              </p>
+            )}
+            {submitError.kind === "pricing" && (
+              <button
+                type="button"
+                onClick={refreshPricing}
+                className="mt-2 min-h-[44px] text-sm text-candy-pink hover:opacity-80"
+              >
+                تلاش دوباره برای دریافت هزینه
+              </button>
+            )}
+          </div>
+        )}
+
         <div className="mt-6">
-          <Button disabled className="w-full">
-            ثبت نهایی درخواست
+          <Button
+            className="w-full min-h-[44px]"
+            onClick={handleSubmit}
+            disabled={fileRequiredAndMissing || phase !== "idle"}
+            aria-busy={phase === "submitting"}
+          >
+            {phase === "submitting"
+              ? "در حال ثبت درخواست…"
+              : phase === "success"
+                ? "ثبت شد — در حال انتقال…"
+                : "ثبت نهایی درخواست"}
           </Button>
-          <p className="mt-2 text-center text-xs text-text-dark/40">
-            {getReadinessText()}
+
+          {/* aria-live so the state change is announced, not only shown. */}
+          <p className="mt-2 text-center text-xs text-text-dark/40" aria-live="polite">
+            {phase === "submitting"
+              ? "در حال بارگذاری فایل و ثبت درخواست. لطفاً این صفحه را نبندید."
+              : phase === "success"
+                ? "درخواست شما ثبت شد. در حال انتقال به صفحه سفارش…"
+                : getReadinessText()}
           </p>
         </div>
 
