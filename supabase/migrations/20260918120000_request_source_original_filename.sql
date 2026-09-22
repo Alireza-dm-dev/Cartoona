@@ -27,8 +27,32 @@
 --    media_assets insert changed.
 -- ═════════════════════════════════════════════════════════════════════════════
 
-DROP FUNCTION IF EXISTS public.create_parent_request_trusted(
+-- Every signature this function has ever legitimately had is dropped by
+-- exact argument list before the intended one is created. Dropping only the
+-- immediately-preceding signature was not enough: re-running this file after
+-- a later migration had already moved the function on left the newer overload
+-- in place and added a second one, and PostgREST then answers PGRST203 for
+-- any call that does not name every argument.
+--
+-- Listed explicitly rather than dropped by name alone, so a future overload
+-- nobody has reviewed is never silently removed. No CASCADE: nothing depends
+-- on this function, and a dependency appearing later should fail loudly.
+-- This migration owns the 15-argument signature.
+
+DROP FUNCTION IF EXISTS public.create_parent_request_trusted(  -- 11-arg
+  UUID, UUID, TEXT, TEXT, TEXT, UUID, TEXT, TEXT, TEXT, TEXT, TEXT
+);
+
+DROP FUNCTION IF EXISTS public.create_parent_request_trusted(  -- 13-arg
+  UUID, UUID, TEXT, TEXT, TEXT, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BOOLEAN
+);
+
+DROP FUNCTION IF EXISTS public.create_parent_request_trusted(  -- 14-arg
   UUID, UUID, TEXT, TEXT, TEXT, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BOOLEAN, TEXT
+);
+
+DROP FUNCTION IF EXISTS public.create_parent_request_trusted(  -- 15-arg
+  UUID, UUID, TEXT, TEXT, TEXT, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BOOLEAN, TEXT, TEXT
 );
 
 CREATE OR REPLACE FUNCTION public.create_parent_request_trusted(
@@ -524,7 +548,9 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.create_parent_request_trusted IS
+COMMENT ON FUNCTION public.create_parent_request_trusted(
+  UUID, UUID, TEXT, TEXT, TEXT, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BOOLEAN, TEXT, TEXT
+) IS
   'Trusted server-only parent request creation. Callable only by service_role. '
   'Accepts a verified parent_profile_id from the API route instead of relying '
   'on auth.uid(). Atomically inserts the order (and extensions), locks and '
