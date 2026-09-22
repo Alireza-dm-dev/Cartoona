@@ -140,10 +140,14 @@ async function canonicalCharacter(): Promise<{ id: string; name: string }> {
 async function submit(
   cookie: string,
   draft: unknown,
-  source?: { file?: File; sourceAssetId?: string },
+  source?: { file?: File; sourceAssetId?: string; submissionKey?: string },
 ): Promise<{ status: number; json: Record<string, unknown> }> {
   const form = new FormData()
   form.set("draft", JSON.stringify(draft))
+  // A fresh key per call unless the caller is deliberately testing a retry —
+  // every other test in this file submits once and does not care about
+  // idempotency, so it must not need to know the field exists.
+  form.set("submissionKey", source?.submissionKey ?? crypto.randomUUID())
   if (source?.file) form.set("file", source.file)
   if (source?.sourceAssetId) form.set("sourceAssetId", source.sourceAssetId)
 
@@ -610,4 +614,225 @@ test("11, 12 — the created order appears in the portal and its detail page loa
   // And the raw path is never handed over as JSON for a script to read.
   expect(html).not.toContain('"file_url"')
   expect(html).not.toContain('"storagePath"')
+})
+
+// ── Idempotent submission (V0.1.16) ─────────────────────────────────────────
+// The same submissionKey, resubmitted any number of times, must never create
+// a second order, a second candy debit, or a second source-media row.
+
+async function candyDebitCount(orderId: string): Promise<number> {
+  const rows = await (await fetch(
+    `${SUPABASE_URL}/rest/v1/candy_transactions?reference_id=eq.${orderId}&type=eq.order_debit&select=id`,
+    { headers: HDR },
+  )).json()
+  return Array.isArray(rows) ? rows.length : 0
+}
+
+async function ordersBySubmissionKey(parentId: string, key: string): Promise<Array<Record<string, unknown>>> {
+  return (await fetch(
+    `${SUPABASE_URL}/rest/v1/orders?parent_id=eq.${parentId}&submission_key=eq.${key}&select=id`,
+    { headers: HDR },
+  )).json()
+}
+
+test.describe("idempotent order submission (V0.1.16)", () => {
+  test("1, 2 — a normal first submission and an exact retry resolve to the same order", async () => {
+    await setBalance(parent.profileId, 500)
+    const before = await getBalance(parent.profileId)
+    const key = crypto.randomUUID()
+
+    const first = await submit(parent.cookie, imageDraft(character.name), {
+      file: pngFile("idem-1.png"),
+      submissionKey: key,
+    })
+    expect(first.status).toBe(200)
+    expect(first.json.replayed).toBe(false)
+    const orderId = first.json.orderId as string
+
+    const retry = await submit(parent.cookie, imageDraft(character.name), {
+      file: pngFile("idem-1.png"),
+      submissionKey: key,
+    })
+    expect(retry.status).toBe(200)
+    expect(retry.json.orderId).toBe(orderId)
+    expect(retry.json.replayed).toBe(true)
+
+    expect(await getBalance(parent.profileId)).toBe(before - 15)
+    expect(await candyDebitCount(orderId)).toBe(1)
+    expect(await sourceAssets(orderId)).toHaveLength(1)
+  })
+
+  test("3 — five sequential retries still produce exactly one order, one debit, one asset", async () => {
+    await setBalance(parent.profileId, 500)
+    const before = await getBalance(parent.profileId)
+    const key = crypto.randomUUID()
+
+    let orderId: string | null = null
+    for (let i = 0; i < 5; i++) {
+      const result = await submit(parent.cookie, imageDraft(character.name), {
+        file: pngFile(`idem-seq-${i}.png`),
+        submissionKey: key,
+      })
+      expect(result.status, `attempt ${i}`).toBe(200)
+      if (orderId) {
+        expect(result.json.orderId, `attempt ${i}`).toBe(orderId)
+        expect(result.json.replayed, `attempt ${i}`).toBe(true)
+      } else {
+        orderId = result.json.orderId as string
+        expect(result.json.replayed).toBe(false)
+      }
+    }
+
+    expect(await getBalance(parent.profileId)).toBe(before - 15)
+    expect(await candyDebitCount(orderId!)).toBe(1)
+    expect(await sourceAssets(orderId!)).toHaveLength(1)
+    expect(await ordersBySubmissionKey(parent.profileId, key)).toHaveLength(1)
+  })
+
+  test("4, 5, 6, 7 — five concurrent identical submissions collapse to one order", async () => {
+    await setBalance(parent.profileId, 500)
+    const before = await getBalance(parent.profileId)
+    const key = crypto.randomUUID()
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        submit(parent.cookie, imageDraft(character.name), {
+          file: pngFile(`idem-conc-${i}.png`),
+          submissionKey: key,
+        }),
+      ),
+    )
+
+    for (const r of results) expect(r.status).toBe(200)
+    const orderIds = new Set(results.map((r) => r.json.orderId))
+    expect(orderIds.size).toBe(1)
+    const orderId = [...orderIds][0] as string
+
+    // Exactly one of the five actually created the order; the rest replayed it.
+    const replayedFlags = results.map((r) => r.json.replayed)
+    expect(replayedFlags.filter((v) => v === false)).toHaveLength(1)
+    expect(replayedFlags.filter((v) => v === true)).toHaveLength(4)
+
+    expect(await getBalance(parent.profileId)).toBe(before - 15)
+    expect(await candyDebitCount(orderId)).toBe(1)
+    expect(await sourceAssets(orderId)).toHaveLength(1)
+    expect(await ordersBySubmissionKey(parent.profileId, key)).toHaveLength(1)
+  })
+
+  test("8 — gallery original is unaffected by a retried submission", async () => {
+    await setBalance(parent.profileId, 500)
+
+    const seed = await submit(parent.cookie, imageDraft(character.name), {
+      file: pngFile("idem-gallery-seed.png"),
+    })
+    expect(seed.status).toBe(200)
+    const seedAssets = await sourceAssets(seed.json.orderId as string)
+    const galleryAssetId = seedAssets[0].id as string
+    const galleryPath = String(seedAssets[0].file_url)
+
+    const key = crypto.randomUUID()
+    const first = await submit(
+      parent.cookie,
+      imageDraft(character.name, { referenceFileName: "idem-gallery-seed.png" }),
+      { sourceAssetId: galleryAssetId, submissionKey: key },
+    )
+    expect(first.status).toBe(200)
+    const orderId = first.json.orderId as string
+
+    const retry = await submit(
+      parent.cookie,
+      imageDraft(character.name, { referenceFileName: "idem-gallery-seed.png" }),
+      { sourceAssetId: galleryAssetId, submissionKey: key },
+    )
+    expect(retry.status).toBe(200)
+    expect(retry.json.orderId).toBe(orderId)
+
+    expect(await sourceAssets(orderId)).toHaveLength(1)
+    expect(await storageObjectExists(galleryPath)).toBe(true)
+    expect(await sourceAssets(seed.json.orderId as string)).toHaveLength(1)
+  })
+
+  test("9 — a different parent with the same key creates their own independent order", async () => {
+    const other = await createParent("37")
+    await setBalance(parent.profileId, 500)
+    await setBalance(other.profileId, 500)
+
+    const key = crypto.randomUUID()
+    const mine = await submit(parent.cookie, imageDraft(character.name), {
+      file: pngFile("idem-sec-a.png"),
+      submissionKey: key,
+    })
+    const theirs = await submit(other.cookie, imageDraft(character.name), {
+      file: pngFile("idem-sec-b.png"),
+      submissionKey: key,
+    })
+
+    expect(mine.status).toBe(200)
+    expect(theirs.status).toBe(200)
+    expect(mine.json.orderId).not.toBe(theirs.json.orderId)
+    expect(mine.json.replayed).toBe(false)
+    expect(theirs.json.replayed).toBe(false)
+  })
+
+  test("10 — an invalid source does not become successful through replay", async () => {
+    await setBalance(parent.profileId, 500)
+    const before = await getBalance(parent.profileId)
+    const key = crypto.randomUUID()
+
+    const first = await submit(parent.cookie, imageDraft(character.name), {
+      sourceAssetId: "11111111-1111-4111-8111-111111111111",
+      submissionKey: key,
+    })
+    expect(first.status).toBe(422)
+
+    const retry = await submit(parent.cookie, imageDraft(character.name), {
+      sourceAssetId: "11111111-1111-4111-8111-111111111111",
+      submissionKey: key,
+    })
+    expect(retry.status).toBe(422)
+
+    // Nothing was ever created under this key, on either attempt.
+    expect(await getBalance(parent.profileId)).toBe(before)
+    expect(await ordersBySubmissionKey(parent.profileId, key)).toHaveLength(0)
+  })
+
+  test("11 — a timeout/retry simulation returns the same orderId", async () => {
+    await setBalance(parent.profileId, 500)
+    const key = crypto.randomUUID()
+
+    // A real timeout means the client never reads the first response even
+    // though the server finished the work. Issuing a second call with the
+    // same key, independent of the first call's outcome, reproduces that.
+    const first = await submit(parent.cookie, imageDraft(character.name), {
+      file: pngFile("idem-timeout.png"),
+      submissionKey: key,
+    })
+    expect(first.status).toBe(200)
+
+    const retry = await submit(parent.cookie, imageDraft(character.name), {
+      file: pngFile("idem-timeout.png"),
+      submissionKey: key,
+    })
+    expect(retry.status).toBe(200)
+    expect(retry.json.orderId).toBe(first.json.orderId)
+  })
+
+  test("12 — the order from a retried submission appears once in the parent's orders", async () => {
+    await setBalance(parent.profileId, 500)
+    const key = crypto.randomUUID()
+
+    const first = await submit(parent.cookie, imageDraft(character.name), {
+      file: pngFile("idem-list.png"),
+      submissionKey: key,
+    })
+    expect(first.status).toBe(200)
+    await submit(parent.cookie, imageDraft(character.name), {
+      file: pngFile("idem-list.png"),
+      submissionKey: key,
+    })
+
+    const rows = await ordersBySubmissionKey(parent.profileId, key)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].id).toBe(first.json.orderId)
+  })
 })

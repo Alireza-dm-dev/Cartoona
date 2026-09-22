@@ -73,9 +73,15 @@ export type BuildFormDataResult =
  * For a gallery reuse only the asset id is sent. The storage path is not
  * available to the browser and must never be, which is why there is no
  * parameter for one.
+ *
+ * `submissionKey` is required: it is the idempotency key for this logical
+ * submit attempt, stable across a retry of the same attempt. The caller is
+ * responsible for keeping the same key across retries and minting a new one
+ * only for a genuinely new logical submission.
  */
 export function buildRequestFormData(
   draft: unknown,
+  submissionKey: string,
   source: SubmissionSource = {},
 ): BuildFormDataResult {
   const file = source.file ?? null
@@ -88,6 +94,7 @@ export function buildRequestFormData(
 
   const formData = new FormData()
   formData.set("draft", JSON.stringify(draft))
+  formData.set("submissionKey", submissionKey)
 
   if (file) {
     formData.set("file", file)

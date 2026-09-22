@@ -22,19 +22,22 @@ const draft = {
   childName: "آریا",
 }
 
+const SUBMISSION_KEY = "11111111-1111-4111-8111-111111111111"
+
 describe("building the request body", () => {
-  it("sends the draft alone when there is no source file", () => {
-    const built = buildRequestFormData(draft)
+  it("sends the draft and the submission key when there is no source file", () => {
+    const built = buildRequestFormData(draft, SUBMISSION_KEY)
     expect(built.ok).toBe(true)
     if (!built.ok) return
     expect(built.formData.get("draft")).toBe(JSON.stringify(draft))
+    expect(built.formData.get("submissionKey")).toBe(SUBMISSION_KEY)
     expect(built.formData.get("file")).toBeNull()
     expect(built.formData.get("sourceAssetId")).toBeNull()
   })
 
   it("attaches an uploaded file", () => {
     const file = new File(["x"], "photo.png", { type: "image/png" })
-    const built = buildRequestFormData(draft, { file })
+    const built = buildRequestFormData(draft, SUBMISSION_KEY, { file })
     expect(built.ok).toBe(true)
     if (!built.ok) return
     expect(built.formData.get("file")).toBe(file)
@@ -42,24 +45,24 @@ describe("building the request body", () => {
   })
 
   it("sends only the asset id for a gallery reuse, never a path", () => {
-    const built = buildRequestFormData(draft, {
-      galleryAssetId: "11111111-1111-4111-8111-111111111111",
+    const built = buildRequestFormData(draft, SUBMISSION_KEY, {
+      galleryAssetId: "22222222-2222-4222-8222-222222222222",
     })
     expect(built.ok).toBe(true)
     if (!built.ok) return
-    expect(built.formData.get("sourceAssetId")).toBe("11111111-1111-4111-8111-111111111111")
+    expect(built.formData.get("sourceAssetId")).toBe("22222222-2222-4222-8222-222222222222")
     expect(built.formData.get("file")).toBeNull()
 
     // There is no field in the body that could carry a storage path.
     const keys = [...built.formData.keys()]
-    expect(keys.sort()).toEqual(["draft", "sourceAssetId"])
+    expect(keys.sort()).toEqual(["draft", "sourceAssetId", "submissionKey"])
   })
 
   it("refuses both source modes at once rather than choosing one", () => {
     const file = new File(["x"], "photo.png", { type: "image/png" })
-    const built = buildRequestFormData(draft, {
+    const built = buildRequestFormData(draft, SUBMISSION_KEY, {
       file,
-      galleryAssetId: "11111111-1111-4111-8111-111111111111",
+      galleryAssetId: "22222222-2222-4222-8222-222222222222",
     })
     expect(built.ok).toBe(false)
     if (built.ok) return
@@ -68,11 +71,22 @@ describe("building the request body", () => {
 
   it("treats a blank gallery id as no selection", () => {
     for (const id of ["", "   ", null, undefined]) {
-      const built = buildRequestFormData(draft, { galleryAssetId: id })
+      const built = buildRequestFormData(draft, SUBMISSION_KEY, { galleryAssetId: id })
       expect(built.ok).toBe(true)
       if (!built.ok) return
       expect(built.formData.get("sourceAssetId")).toBeNull()
     }
+  })
+
+  it("sends the exact same key across repeated calls for the same attempt", () => {
+    // The builder itself does not mint or remember a key — that is the
+    // caller's job — but it must faithfully carry whatever key it is given,
+    // unchanged, so a retry that reuses the caller's key produces an
+    // identical field every time.
+    const first = buildRequestFormData(draft, SUBMISSION_KEY)
+    const second = buildRequestFormData(draft, SUBMISSION_KEY)
+    if (!first.ok || !second.ok) throw new Error("expected both builds to succeed")
+    expect(first.formData.get("submissionKey")).toBe(second.formData.get("submissionKey"))
   })
 })
 

@@ -22,6 +22,13 @@ export interface SubmissionSuccess {
   type: string | null
   status: string | null
   candyCost: number | null
+  /**
+   * Whether this response is a replay of an earlier attempt for the same
+   * submission key rather than a just-created order. Internal/diagnostic
+   * only — the client redirects to the same place either way and does not
+   * need to branch on it.
+   */
+  replayed: boolean
 }
 
 /** Unknown shape of the single row `create_parent_request_trusted` returns. */
@@ -30,6 +37,7 @@ export interface RawCreatedOrderRow {
   type?: unknown
   status?: unknown
   candy_cost?: unknown
+  replayed?: unknown
 }
 
 function text(value: unknown): string | null {
@@ -60,5 +68,6 @@ export function toSubmissionSuccess(row: unknown): SubmissionSuccess | null {
       typeof candidate.candy_cost === "number" && Number.isFinite(candidate.candy_cost)
         ? candidate.candy_cost
         : null,
+    replayed: candidate.replayed === true,
   }
 }

@@ -177,6 +177,12 @@ CREATE TABLE IF NOT EXISTS public.orders (
   -- Optional child first name from the creation form (20260918100000).
   -- NULL for every request that did not supply one. Not a child_profiles link.
   child_name        TEXT CHECK (child_name IS NULL OR (char_length(child_name) BETWEEN 1 AND 60 AND char_length(btrim(child_name)) > 0)),
+  -- Idempotency key for one logical creation submit attempt (20260922100000).
+  -- NULL for every order created before this column existed. Unique per
+  -- parent via a partial index (orders_parent_submission_key_key) so a
+  -- retried POST /api/requests for the same attempt cannot create a second
+  -- order, candy debit, or source-media row.
+  submission_key    UUID,
   moderation_status TEXT NOT NULL DEFAULT 'pending' CHECK (moderation_status IN ('pending', 'passed', 'flagged', 'blocked', 'manual_review')),
   assigned_admin_id UUID REFERENCES public.users(id),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),

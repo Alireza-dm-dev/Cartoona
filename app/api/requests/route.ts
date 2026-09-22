@@ -7,6 +7,7 @@ import { parseAndValidateDraft } from "@/lib/requests/request-submission"
 import { mapRequestRpcError } from "@/lib/requests/request-rpc-error"
 import { toSubmissionSuccess } from "@/lib/requests/submission-response"
 import { resolveCharacterId } from "@/lib/requests/resolve-character"
+import { isValidSubmissionKey } from "@/lib/requests/submission-key"
 import { sanitizeFileName } from "@/lib/requests/sanitize-file-name"
 import {
   resolveOwnedSourceAsset,
@@ -81,6 +82,44 @@ export async function POST(request: Request) {
   }
 
   const normalized = parsed.data
+
+  // The idempotency key for this logical submit attempt. Required and
+  // UUID-shaped only — never free text, never derived from the draft. The
+  // trusted RPC re-derives ownership from the resolved parent id below, so a
+  // guessed or reused key can never retrieve another parent's order.
+  const submissionKeyRaw = formData.get("submissionKey")
+  if (!isValidSubmissionKey(submissionKeyRaw)) {
+    return NextResponse.json({
+      error: "شناسه درخواست نامعتبر است. لطفاً صفحه را دوباره بارگذاری کنید.",
+      code: "invalid_submission_key",
+    }, { status: 422 })
+  }
+  const submissionKey = submissionKeyRaw
+
+  // ── Idempotency fast path ───────────────────────────────────────────────
+  // A plain retry of an already-succeeded submission is the common case this
+  // whole feature exists for. Checked before any upload or copy, so a retry
+  // never re-uploads or re-copies a source file it already wrote the first
+  // time. This is an optimization only — the RPC enforces the same rule
+  // again, inside the transaction, guarded by the database's own unique
+  // constraint, which is what actually protects concurrent duplicate
+  // submissions (see 20260922100000_idempotent_order_submission.sql).
+  const { data: existingOrder } = await supabase
+    .from("orders")
+    .select("id, type, status, candy_cost")
+    .eq("parent_id", parentProfile.id)
+    .eq("submission_key", submissionKey)
+    .maybeSingle()
+
+  if (existingOrder) {
+    const replayed = toSubmissionSuccess(existingOrder)
+    if (replayed) {
+      return NextResponse.json(
+        { ...replayed, replayed: true },
+        { headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } },
+      )
+    }
+  }
 
   // The draft names the character; the RPC needs its id. Resolved here, before
   // anything is uploaded, so an unknown character costs no storage write.
@@ -229,6 +268,7 @@ export async function POST(request: Request) {
       p_characters_speak: normalized.charactersSpeak,
       p_child_name: normalized.childName,
       p_original_filename: originalFilename,
+      p_submission_key: submissionKey,
     })
 
   if (rpcError) {
@@ -260,6 +300,18 @@ export async function POST(request: Request) {
       { error: "ثبت درخواست با خطا مواجه شد. لطفاً سفارش‌های خود را بررسی کنید." },
       { status: 500, headers: { "Cache-Control": "no-store" } },
     )
+  }
+
+  // A concurrent duplicate lost the race inside the RPC: `success.orderId` is
+  // the winner's order, not `orderId` (the one generated above and used to
+  // build `storagePath`). Whatever this request wrote to storage belongs to
+  // no order and never will, so it is removed exactly like a rollback — the
+  // same cleanup the error branch above already performs.
+  if (success.replayed && fileUploaded && storagePath && success.orderId !== orderId) {
+    await supabase.storage
+      .from("parent-uploads")
+      .remove([storagePath])
+      .catch(() => {})
   }
 
   return NextResponse.json(success, {

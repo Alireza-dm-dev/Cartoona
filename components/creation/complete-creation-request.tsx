@@ -62,6 +62,16 @@ export default function CompleteCreationRequest() {
    * tick both read the old state, and each created order costs real candy.
    */
   const inFlight = useRef(false);
+  /**
+   * The idempotency key for the current logical submit attempt.
+   *
+   * Minted once, on the first submit, and reused unchanged across every
+   * retry of that same attempt — including a retry after a timeout or a lost
+   * response, which is exactly the case client-side in-flight locking cannot
+   * cover by itself. Cleared only when the parent materially changes the
+   * source file (a new logical submission) or after a confirmed success.
+   */
+  const submissionKeyRef = useRef<string | null>(null);
   const router = useRouter();
 
   const { catalog, loading: pricingLoading, error: pricingError, refresh: refreshPricing } = useCreationPricing();
@@ -169,6 +179,9 @@ export default function CompleteCreationRequest() {
 
     setSelectedGalleryMedia(null);
     setSelectedFile(file);
+    // A new source file is a new logical submission: the next submit gets a
+    // fresh key rather than one tied to whatever the previous file was.
+    submissionKeyRef.current = null;
   }
 
   function handleRemoveFile() {
@@ -176,6 +189,7 @@ export default function CompleteCreationRequest() {
     setSelectedGalleryMedia(null);
     setFileError("");
     setSubmitError(null);
+    submissionKeyRef.current = null;
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -196,6 +210,8 @@ export default function CompleteCreationRequest() {
       fileInputRef.current.value = "";
     }
     setSelectedGalleryMedia(media);
+    // A new source choice is a new logical submission.
+    submissionKeyRef.current = null;
   }
 
   function handleUseUpload() {
@@ -231,9 +247,17 @@ export default function CompleteCreationRequest() {
     };
 
     try {
+      // Minted once per logical submission and kept for every retry — a
+      // timed-out response must not cause a second order, so the key does
+      // not regenerate just because this is not the first attempt.
+      if (!submissionKeyRef.current) {
+        submissionKeyRef.current = crypto.randomUUID();
+      }
+      const submissionKey = submissionKeyRef.current;
+
       // At most one source. The two pieces of state are already mutually
       // exclusive; the builder refuses the impossible case rather than picking.
-      const built = buildRequestFormData(draft, {
+      const built = buildRequestFormData(draft, submissionKey, {
         file: selectedFile,
         galleryAssetId: selectedGalleryMedia?.id ?? null,
       });
@@ -288,6 +312,7 @@ export default function CompleteCreationRequest() {
       // Only now, with a real order id in hand, is the draft safe to discard.
       // Clearing it any earlier would lose the parent's work on a failure.
       setPhase("success");
+      submissionKeyRef.current = null;
       clearCreationDraft();
       router.push(`/dashboard/orders/${orderId}`);
     } catch {

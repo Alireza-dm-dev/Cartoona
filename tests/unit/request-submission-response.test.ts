@@ -26,6 +26,7 @@ describe("submission success serializer", () => {
       type: "image",
       status: "pending_review",
       candyCost: 12,
+      replayed: false,
     })
   })
 
@@ -45,11 +46,20 @@ describe("submission success serializer", () => {
     const serialized = JSON.stringify(result)
 
     expect(Object.keys(result!).sort()).toEqual(
-      ["candyCost", "orderId", "status", "success", "type"].sort(),
+      ["candyCost", "orderId", "replayed", "status", "success", "type"].sort(),
     )
     for (const leak of ["file_url", "secret-child-photo", "parent_id", "assigned_admin", "internal_note", "parent-uploads"]) {
       expect(serialized).not.toContain(leak)
     }
+  })
+
+  it("reports whether the row is a replay of an earlier attempt", () => {
+    expect(toSubmissionSuccess({ ...row, replayed: true })?.replayed).toBe(true)
+    expect(toSubmissionSuccess({ ...row, replayed: false })?.replayed).toBe(false)
+    // Only a literal boolean true counts; anything else defaults to false
+    // rather than being coerced.
+    expect(toSubmissionSuccess({ ...row, replayed: "true" })?.replayed).toBe(false)
+    expect(toSubmissionSuccess(row)?.replayed).toBe(false)
   })
 
   it("refuses a row with no usable id rather than half-succeeding", () => {
