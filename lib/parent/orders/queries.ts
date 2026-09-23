@@ -8,9 +8,11 @@ import { isKnownOrderType } from "./type-mapping";
 /**
  * Columns the parent list reads. Listed explicitly rather than with `*` so a
  * future column on `orders` cannot widen what the parent sees by accident.
- * Notably absent: assigned_admin_id, moderation_status, description.
+ * Notably absent: assigned_admin_id, moderation_status, description,
+ * updated_at (touched by every status transition, not only delivery — never
+ * a source of completedAt; see get_parent_orders_delivered_at instead).
  */
-const PARENT_ORDER_COLUMNS = "id, type, status, title, candy_cost, created_at, updated_at";
+const PARENT_ORDER_COLUMNS = "id, type, status, title, candy_cost, created_at";
 
 /** Untrusted shape of one row as it arrives from PostgREST. */
 interface RawOrderRow {
@@ -20,7 +22,6 @@ interface RawOrderRow {
   title: unknown;
   candy_cost: unknown;
   created_at: unknown;
-  updated_at: unknown;
 }
 
 const FALLBACK_TITLE = "درخواست بدون عنوان";
@@ -33,8 +34,17 @@ const FALLBACK_TITLE = "درخواست بدون عنوان";
  * unknown type or a status with no parent-facing meaning is dropped rather
  * than guessed at, so a newer database than this build degrades by hiding a
  * row instead of leaking an internal string into the UI.
+ *
+ * `deliveredAt` is the row's earliest 'delivered' transition from
+ * get_parent_orders_delivered_at (null when the order was never delivered,
+ * or when the caller did not fetch one for it) — the same source of truth
+ * the order detail page uses, so list and detail can never disagree for the
+ * same order. Never derived from `orders.updated_at`.
  */
-export function toParentOrderSummary(row: RawOrderRow): ParentOrderSummary | null {
+export function toParentOrderSummary(
+  row: RawOrderRow,
+  deliveredAt: string | null = null,
+): ParentOrderSummary | null {
   if (typeof row.id !== "string" || row.id.length === 0) return null;
 
   const requestType = typeof row.type === "string" ? row.type : null;
@@ -52,11 +62,7 @@ export function toParentOrderSummary(row: RawOrderRow): ParentOrderSummary | nul
     ? row.title.trim()
     : FALLBACK_TITLE;
 
-  // `updated_at` doubles as the completion timestamp, but only once the
-  // request actually reached the delivered state. Exposing it otherwise would
-  // leak the timing of internal admin activity on an in-flight request.
-  const completedAt =
-    status === "ready" && typeof row.updated_at === "string" ? row.updated_at : null;
+  const completedAt = deliveredAt;
 
   return {
     id: row.id,
@@ -108,8 +114,33 @@ export async function getParentOrders(
   if (error) return { ok: false, reason: "read_failed" };
 
   const rows = Array.isArray(data) ? (data as unknown as RawOrderRow[]) : [];
+
+  // One batch call for every row's delivered timestamp, never one call per
+  // order (get_parent_order_status_history is single-order and would be
+  // N+1 here). Skipped entirely for an empty list.
+  const deliveredAtByOrderId = new Map<string, string>();
+  const orderIds = rows
+    .map((r) => r.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+
+  if (orderIds.length > 0) {
+    const { data: delivered } = await supabase.rpc("get_parent_orders_delivered_at", {
+      p_order_ids: orderIds,
+    });
+    for (const row of Array.isArray(delivered) ? delivered : []) {
+      if (typeof row?.order_id === "string" && typeof row?.delivered_at === "string") {
+        deliveredAtByOrderId.set(row.order_id, row.delivered_at);
+      }
+    }
+  }
+
   const orders = rows
-    .map(toParentOrderSummary)
+    .map((row) =>
+      toParentOrderSummary(
+        row,
+        typeof row.id === "string" ? deliveredAtByOrderId.get(row.id) ?? null : null,
+      ),
+    )
     .filter((o): o is ParentOrderSummary => o !== null);
 
   return { ok: true, orders };

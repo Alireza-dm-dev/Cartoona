@@ -27,7 +27,6 @@ const row = (over: Record<string, unknown> = {}) => ({
   title: "پرواز پرهای مهتابی",
   candy_cost: 150,
   created_at: "2026-09-01T10:00:00.000Z",
-  updated_at: "2026-09-02T10:00:00.000Z",
   ...over,
 });
 
@@ -138,12 +137,34 @@ describe("parent order serializer", () => {
     }
   });
 
-  it("sets completedAt only once the request is delivered", () => {
-    expect(toParentOrderSummary(row({ status: "delivered" }))?.completedAt).toBe(
-      "2026-09-02T10:00:00.000Z",
+  it("sets completedAt from the deliveredAt argument, never from the row itself", () => {
+    expect(
+      toParentOrderSummary(row({ status: "delivered" }), "2026-09-05T12:34:56.789012Z")?.completedAt,
+    ).toBe("2026-09-05T12:34:56.789012Z");
+    // No deliveredAt supplied (e.g. no delivered history row exists yet):
+    // completedAt is null even though the order's own status is delivered.
+    expect(toParentOrderSummary(row({ status: "delivered" }))?.completedAt).toBeNull();
+  });
+
+  it("never derives completedAt from orders.updated_at", () => {
+    // `updated_at` is not even part of the row this function accepts — a
+    // caller cannot pass it in and have it silently used.
+    const out = toParentOrderSummary(
+      row({ status: "delivered", updated_at: "2020-01-01T00:00:00.000Z" }),
     );
-    // `ready` means the file exists but has not been handed over, so showing a
-    // completion date would misrepresent internal progress as delivery.
+    expect(out?.completedAt).toBeNull();
+    expect(out?.completedAt).not.toBe("2020-01-01T00:00:00.000Z");
+  });
+
+  it("passes deliveredAt through regardless of status, mirroring the detail page", () => {
+    // `ready` (internal) means the file exists but has not been handed over.
+    // In practice no delivered history row exists for such an order, so the
+    // caller would never pass a non-null deliveredAt here — but the function
+    // itself does not gate on status, so this proves it never re-derives or
+    // second-guesses the value it was given.
+    expect(
+      toParentOrderSummary(row({ status: "ready" }), "2026-09-05T00:00:00.000Z")?.completedAt,
+    ).toBe("2026-09-05T00:00:00.000Z");
     expect(toParentOrderSummary(row({ status: "ready" }))?.completedAt).toBeNull();
     expect(toParentOrderSummary(row({ status: "in_progress" }))?.completedAt).toBeNull();
   });
