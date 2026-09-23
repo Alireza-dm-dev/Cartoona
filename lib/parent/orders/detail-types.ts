@@ -68,6 +68,22 @@ export interface ParentSourceMedia {
  * notes, no `assigned_admin_id`, no `moderation_status`, no storage paths, no
  * other parent's identifiers, and no raw internal status or event name.
  */
+/**
+ * The current approved, parent-visible final deliverable, or null.
+ *
+ * Deliberately not gated on `status`: whether this is non-null is decided
+ * purely by the media-level predicate (asset_role=final, delivery_status=
+ * approved, parent_visible=true — see final-media-queries.ts), the same one
+ * the storage RLS policy trusts. `status` can briefly disagree with it in
+ * either direction, and the page must not show a broken control while that
+ * settles.
+ */
+export interface ParentFinalMedia {
+  id: string;
+  mimeType: string | null;
+  fileName: string | null;
+}
+
 export interface ParentOrderDetail extends ParentOrderSummary {
   requestType: OrderType;
   /** Parent-authored description, shown as the request brief. */
@@ -79,6 +95,12 @@ export interface ParentOrderDetail extends ParentOrderSummary {
   /** Present only for a terminal rejected/cancelled request. */
   closure: ParentOrderClosure | null;
   sourceMedia: ParentSourceMedia[];
+  /**
+   * Metadata only — never a signed URL. The detail page uses this to decide
+   * which panel to render; the actual preview/download URL is minted on
+   * demand by POST /api/parent/orders/[orderId]/final-media.
+   */
+  finalMedia: ParentFinalMedia | null;
 }
 
 export type ParentOrderDetailResult =

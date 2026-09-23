@@ -175,6 +175,21 @@ describe("PATCH /status input parsing", () => {
     if (!r.ok) expect(r.status).toBe(400);
   });
 
+  test("preserves microsecond precision rather than truncating through Date", () => {
+    // orders.updated_at is a Postgres timestamptz (microsecond precision);
+    // JS Date only carries milliseconds. Round-tripping through `new
+    // Date(...).toISOString()` silently dropped the last three digits, so a
+    // value read straight from the database no longer matched itself once
+    // sent back — the RPC's exact equality check then refused every update
+    // with a 409 the admin could not resolve by reloading.
+    const r = parseAdminStatusUpdateInput({
+      status: "in_progress",
+      expectedUpdatedAt: "2026-08-01T10:00:00.123456+00:00",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.input.expectedUpdatedAt).toBe("2026-08-01T10:00:00.123456+00:00");
+  });
+
   test("rejects unexpected keys with 400", () => {
     const r = parseAdminStatusUpdateInput({
       status: "ready",

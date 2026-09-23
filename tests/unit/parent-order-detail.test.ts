@@ -4,6 +4,7 @@ import {
   CLOSURE_LABELS,
   TIMELINE_LABELS,
   closureReasonText,
+  deliveredAt,
   toParentClosure,
   toParentTimeline,
   type RawHistoryRow,
@@ -86,6 +87,44 @@ describe("timeline mapping", () => {
   it("treats a blank note as absent", () => {
     expect(toParentTimeline([h({ parent_visible_note: "   " })])[0].note).toBeNull();
     expect(toParentTimeline([h({ parent_visible_note: 42 })])[0].note).toBeNull();
+  });
+});
+
+describe("deliveredAt — completedAt derived from the real transition", () => {
+  it("returns null when the order was never delivered", () => {
+    expect(deliveredAt([h({ new_status: "in_progress" }), h({ new_status: "ready" })])).toBeNull();
+  });
+
+  it("returns the delivered row's own timestamp, not just any row's", () => {
+    const at = deliveredAt([
+      h({ new_status: "pending_review", created_at: "2026-01-01T00:00:00.000Z" }),
+      h({ new_status: "delivered", created_at: "2026-04-05T12:30:00.000Z" }),
+    ]);
+    expect(at).toBe("2026-04-05T12:30:00.000Z");
+  });
+
+  it("ignores unrelated statuses that happen to share the word, e.g. ready", () => {
+    // The internal `delivered` value, never the parent-facing "ready" label
+    // it maps to — history rows are read raw here, before translation.
+    expect(deliveredAt([h({ new_status: "ready", created_at: "2026-01-01T00:00:00.000Z" })])).toBeNull();
+  });
+
+  it("is not fooled by a later, unrelated status change", () => {
+    // A hypothetical future transition after delivered must not read as a
+    // fresher "completion" than the delivery itself.
+    const at = deliveredAt([
+      h({ new_status: "delivered", created_at: "2026-02-01T00:00:00.000Z" }),
+      h({ new_status: "in_progress", created_at: "2026-03-01T00:00:00.000Z" }),
+    ]);
+    expect(at).toBe("2026-02-01T00:00:00.000Z");
+  });
+
+  it("takes the earliest delivered row if more than one somehow exists", () => {
+    const at = deliveredAt([
+      h({ new_status: "delivered", created_at: "2026-05-01T00:00:00.000Z" }),
+      h({ new_status: "delivered", created_at: "2026-01-01T00:00:00.000Z" }),
+    ]);
+    expect(at).toBe("2026-01-01T00:00:00.000Z");
   });
 });
 

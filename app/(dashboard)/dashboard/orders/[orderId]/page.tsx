@@ -7,8 +7,10 @@ import { OrderTimeline } from "@/components/dashboard/orders/order-timeline";
 import {
   OrderClosureBlock,
   OrderDetailRows,
+  OrderFulfilmentPending,
   OrderSourceMedia,
 } from "@/components/dashboard/orders/order-detail-sections";
+import { OrderFinalMedia } from "@/components/dashboard/orders/order-final-media";
 import { OrdersErrorState, OrdersNoProfileState } from "@/components/dashboard/orders/orders-states";
 import { getParentOrderDetail } from "@/lib/parent/orders/detail-queries";
 import { PARENT_STATUS_LABELS, PARENT_STATUS_VARIANTS } from "@/lib/parent/orders/status-mapping";
@@ -106,6 +108,18 @@ export default async function OrderDetailPage({
 
           <div className="grid gap-6">
             {result.detail.closure && <OrderClosureBlock closure={result.detail.closure} />}
+
+            {!result.detail.closure && (
+              result.detail.finalMedia ? (
+                <OrderFinalMedia
+                  key={result.detail.finalMedia.id}
+                  orderId={result.detail.id}
+                  finalMedia={result.detail.finalMedia}
+                />
+              ) : (
+                <OrderFulfilmentPending status={result.detail.status} />
+              )
+            )}
 
             <OrderDetailRows
               rows={result.detail.detailRows}

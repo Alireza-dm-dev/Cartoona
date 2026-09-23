@@ -4,15 +4,17 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { OrderType } from "@/types/app";
 import type {
   ParentDetailRow,
+  ParentFinalMedia,
   ParentOrderDetail,
   ParentOrderDetailResult,
   ParentSourceMedia,
 } from "./detail-types";
 import { toParentOrderStatus } from "./status-mapping";
-import { toParentClosure, toParentTimeline, type RawHistoryRow } from "./timeline-mapping";
+import { deliveredAt, toParentClosure, toParentTimeline, type RawHistoryRow } from "./timeline-mapping";
 import { isKnownOrderType } from "./type-mapping";
 import { createPrivateSignedUrl } from "@/lib/storage/private-signed-url";
 import { mapVideoDurationLabel } from "@/lib/pricing/pricing-keys";
+import { resolveCurrentParentFinalMedia } from "./final-media-queries";
 
 /**
  * Columns read for the detail page. Listed explicitly for the same reason as
@@ -20,7 +22,7 @@ import { mapVideoDurationLabel } from "@/lib/pricing/pricing-keys";
  * sees by default. `assigned_admin_id` and `moderation_status` are absent.
  */
 const DETAIL_COLUMNS =
-  "id, type, status, title, description, child_name, candy_cost, created_at, updated_at, characters(name)";
+  "id, type, status, title, description, child_name, candy_cost, created_at, characters(name)";
 
 const NOT_RECORDED = "ثبت نشده";
 /**
@@ -49,7 +51,6 @@ interface RawDetailRow {
   child_name: unknown;
   candy_cost: unknown;
   created_at: unknown;
-  updated_at: unknown;
   characters?: { name?: unknown } | { name?: unknown }[] | null;
 }
 
@@ -284,6 +285,14 @@ export async function getParentOrderDetail(
   });
   if (Array.isArray(historyRows)) history = historyRows as RawHistoryRow[];
 
+  // Metadata only — never a signed URL here. The page decides which panel to
+  // render from this alone; the actual preview/download link is minted on
+  // demand by the dedicated endpoint, never persisted or embedded in SSR HTML.
+  const finalRow = await resolveCurrentParentFinalMedia(supabase, row.id);
+  const finalMedia: ParentFinalMedia | null = finalRow
+    ? { id: finalRow.id, mimeType: finalRow.mimeType, fileName: finalRow.fileName }
+    : null;
+
   const candyRaw = typeof row.candy_cost === "number" ? row.candy_cost : 0;
   const candyCost = Number.isFinite(candyRaw) && candyRaw > 0 ? Math.trunc(candyRaw) : 0;
 
@@ -294,7 +303,9 @@ export async function getParentOrderDetail(
     displayTitle: text(row.title) ?? "درخواست بدون عنوان",
     status,
     candyCost,
-    completedAt: status === "ready" && typeof row.updated_at === "string" ? row.updated_at : null,
+    // The real delivered transition, not a proxy off orders.updated_at (which
+    // is touched by every status change, not only this one).
+    completedAt: deliveredAt(history),
     description: text(row.description),
     detailRows: buildDetailRows({
       type: requestType,
@@ -307,6 +318,7 @@ export async function getParentOrderDetail(
     timeline: toParentTimeline(history),
     closure: toParentClosure(history),
     sourceMedia,
+    finalMedia,
   };
 
   return { ok: true, detail };

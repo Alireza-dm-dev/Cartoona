@@ -1,7 +1,6 @@
 import { test, expect } from "@playwright/test"
-import * as fs from "fs"
-import * as path from "path"
 import { assertSafeDatabaseTarget, guardedProjectRef, guardedSupabaseUrl } from "../helpers/assert-safe-database-target"
+import { loadTestEnv } from "../helpers/load-test-env"
 
 /**
  * Stateful end-to-end coverage for the Admin request fulfilment workflow.
@@ -13,28 +12,18 @@ import { assertSafeDatabaseTarget, guardedProjectRef, guardedSupabaseUrl } from 
  * supersede, and parent visibility boundaries.
  */
 
-const BASE = "http://localhost:3000"
-function loadEnv(): void {
-  try {
-    const content = fs.readFileSync(path.resolve(__dirname, "../../.env.local"), "utf-8")
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith("#")) continue
-      const eqIdx = trimmed.indexOf("=")
-      if (eqIdx === -1) continue
-      const key = trimmed.slice(0, eqIdx)
-      const val = trimmed.slice(eqIdx + 1)
-      if (key === "NEXT_PUBLIC_SUPABASE_URL" || key === "SUPABASE_URL") {
-        // keep the real target — the guard verifies it is disposable
-        process.env[key] = val
-      } else {
-        process.env[key] = val
-      }
-    }
-  } catch { /* fallback */ }
-}
+// Overridable so a stateful run against the disposable target (a second dev
+// server on its own port, per the project's rehearsal convention) cannot
+// silently fall through to whatever happens to be listening on 3000.
+const BASE = process.env.CARTOONA_TEST_BASE_URL || "http://localhost:3000"
 
-loadEnv()
+// This file used to read .env.local itself and unconditionally overwrite
+// process.env with it, which silently discarded a caller's own exported
+// disposable-target override — the exact failure mode loadTestEnv() exists to
+// prevent (its own doc comment covers this). Reusing it here, matching every
+// other stateful spec in this suite, means a shell-exported override is
+// respected instead of being clobbered back to whatever .env.local says.
+loadTestEnv()
 
 const _guard = assertSafeDatabaseTarget()
 if (!_guard.ok) throw new Error(`Guard blocked: ${_guard.reason}`)
@@ -201,8 +190,12 @@ test.beforeAll(async () => {
         consent_granted_at: new Date().toISOString(),
       }),
     })
+    // PostgREST's `Prefer: return=representation` always answers with an
+    // array, even for a single-row insert — `row?.id` was reading a property
+    // an array never has, so this fell through to "parent profile not
+    // created" on every run that didn't hit the already-exists branch above.
     const row = await created.json()
-    parentProfileId = row?.id
+    parentProfileId = Array.isArray(row) ? row[0]?.id : undefined
   }
   if (!parentProfileId) throw new Error("parent profile not created")
 
@@ -274,9 +267,13 @@ test("4. valid transition appends history atomically", async () => {
   })
   expect(res.status).toBe(200)
   expect(res.data.data?.status).toBe("in_progress")
+  // get_order_status_history_admin checks is_admin_or_super_admin(), which
+  // resolves auth.uid() from the caller's own session — the service-role key
+  // carries no such identity, so this must be called as the admin, not with
+  // HDR (which is the RPC's SECURITY DEFINER owner, not a session).
   const history = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_order_status_history_admin`, {
     method: "POST",
-    headers: HDR,
+    headers: { apikey: KEY, Authorization: `Bearer ${adminToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({ p_order_id: orderId }),
   })
   const rows = (await history.json()) as Array<Record<string, unknown>>
@@ -354,16 +351,30 @@ test("10. supersede hides an approved asset permanently", async () => {
 
 test("11. history is append-only (direct update refused)", async () => {
   const history = await fetch(
-    `${SUPABASE_URL}/rest/v1/order_status_history?select=id&order_id=eq.${orderId}&limit=1`,
+    `${SUPABASE_URL}/rest/v1/order_status_history?select=id,internal_note&order_id=eq.${orderId}&limit=1`,
     { headers: HDR },
   )
-  const rows = (await history.json()) as Array<{ id: string }>
+  const rows = (await history.json()) as Array<{ id: string; internal_note: string | null }>
   expect(rows.length).toBeGreaterThanOrEqual(1)
+  const originalNote = rows[0].internal_note
   const patch = await fetch(`${SUPABASE_URL}/rest/v1/order_status_history?id=eq.${rows[0].id}`, {
     method: "PATCH",
     headers: HDR,
     body: JSON.stringify({ internal_note: "بازنویسی" }),
   })
-  expect([403, 500, 404]).toContain(patch.status)
+  // 400: PostgREST's status for the trigger's raised P0001 exception (see
+  // 20260922120000_fix_order_status_history_append_only.sql — the prior
+  // trigger's pg_trigger_depth() = 0 guard never actually fired, so this
+  // assertion previously accepted only the statuses of a request that never
+  // happened to hit the real rejection path).
+  expect(patch.status).toBe(400)
+
+  // The row itself is untouched, not just the HTTP status.
+  const after = await fetch(
+    `${SUPABASE_URL}/rest/v1/order_status_history?select=internal_note&id=eq.${rows[0].id}`,
+    { headers: HDR },
+  )
+  const afterRows = (await after.json()) as Array<{ internal_note: string | null }>
+  expect(afterRows[0].internal_note).toBe(originalNote)
 })
 

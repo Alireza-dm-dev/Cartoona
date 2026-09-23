@@ -6,7 +6,12 @@ import type {
   ParentOrderClosure,
   ParentSourceMedia,
 } from "@/lib/parent/orders/detail-types";
-import { CLOSURE_LABELS, closureReasonText } from "@/lib/parent/orders/timeline-mapping";
+import type { ParentOrderStatus } from "@/lib/parent/orders/types";
+import {
+  CLOSURE_LABELS,
+  closureReasonText,
+  TIMELINE_DESCRIPTIONS,
+} from "@/lib/parent/orders/timeline-mapping";
 
 /** Label/value rows describing the request itself. */
 export function OrderDetailRows({
@@ -77,6 +82,23 @@ export function OrderClosureBlock({ closure }: { closure: ParentOrderClosure }) 
           را ببینید.
         </p>
       )}
+    </Card>
+  );
+}
+
+/**
+ * Neutral holding state shown before an approved final deliverable exists.
+ *
+ * Reuses the same per-status wording the timeline already shows for this
+ * exact step, so this line and the matching timeline entry never disagree.
+ * Never claims a specific finish time.
+ */
+export function OrderFulfilmentPending({ status }: { status: ParentOrderStatus }) {
+  if (status === "closed") return null;
+  return (
+    <Card>
+      <h2 className="mb-1 font-semibold text-parent-navy">سفارش شما در حال آماده‌سازی است</h2>
+      <p className="text-sm text-text-dark/60">{TIMELINE_DESCRIPTIONS[status]}</p>
     </Card>
   );
 }

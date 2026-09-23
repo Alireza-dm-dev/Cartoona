@@ -115,3 +115,30 @@ export function toParentClosure(rows: readonly RawHistoryRow[]): ParentOrderClos
 export function closureReasonText(closure: ParentOrderClosure): string {
   return closure.reason ?? CLOSURE_FALLBACK_REASON[closure.kind];
 }
+
+/**
+ * The real moment the order transitioned to `delivered`, from history rather
+ * than from `orders.updated_at`.
+ *
+ * `updated_at` is touched by every status transition, not just this one, so
+ * it only happens to match the delivery time while `delivered` remains the
+ * order's last transition ever (true today, but not a rule this module
+ * should depend on). `new_status` here is the raw internal status — history
+ * rows are never translated before this check — so this looks for the
+ * literal `delivered` value, not the parent-facing `ready` label it maps to.
+ *
+ * Returns null when the order was never delivered, and the earliest
+ * `delivered` row when it was, matching "the moment it first became ready"
+ * rather than the most recent one.
+ */
+export function deliveredAt(rows: readonly RawHistoryRow[]): string | null {
+  let earliest: string | null = null
+
+  for (const row of rows) {
+    if (row.new_status !== "delivered") continue
+    if (typeof row.created_at !== "string") continue
+    if (earliest === null || row.created_at < earliest) earliest = row.created_at
+  }
+
+  return earliest;
+}

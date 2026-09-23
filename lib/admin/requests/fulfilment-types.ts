@@ -245,7 +245,16 @@ export function parseAdminStatusUpdateInput(raw: unknown): ParseStatusUpdateResu
     ok: true,
     input: {
       status,
-      expectedUpdatedAt: new Date(expectedUpdatedAt).toISOString(),
+      // The original string, not a round-trip through `Date`: JS `Date` only
+      // carries millisecond precision, while Postgres `timestamptz` (what
+      // orders.updated_at actually is) carries microseconds. Round-tripping
+      // silently truncated the value to the millisecond, so the RPC's exact
+      // `IS DISTINCT FROM` comparison against the true stored value spuriously
+      // failed — a 409 the admin could never resolve by reloading, since the
+      // freshly reloaded value would be truncated the same way and fail again.
+      // The NaN check above already proves this parses as a real date; nothing
+      // downstream needs it reformatted.
+      expectedUpdatedAt,
       internalNote: internalNote.value,
       parentVisibleNote: parentVisibleNote.value,
     },

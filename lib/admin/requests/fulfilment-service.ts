@@ -108,7 +108,11 @@ export async function updateOrderStatusViaTrustedRpc(
   if (
     !row ||
     typeof row.order_id !== "string" ||
-    typeof row.status !== "string" ||
+    // The RPC's RETURNS TABLE names this column new_status, not status — this
+    // used to check the wrong key, which meant every transition fell into
+    // this branch and reported a 500 even when the RPC had already committed
+    // the change (see 20260801120000_request_fulfilment_workflow.sql §5).
+    typeof row.new_status !== "string" ||
     typeof row.updated_at !== "string" ||
     typeof row.history_id !== "string"
   ) {
@@ -120,7 +124,7 @@ export async function updateOrderStatusViaTrustedRpc(
     result: {
       orderId: row.order_id,
       previousStatus: (typeof row.previous_status === "string" ? row.previous_status : null) as AdminStatusUpdateResult["previousStatus"],
-      status: row.status as AdminStatusUpdateResult["status"],
+      status: row.new_status as AdminStatusUpdateResult["status"],
       updatedAt: row.updated_at,
       historyId: row.history_id,
     },
