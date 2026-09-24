@@ -400,7 +400,7 @@ test("Part 2d — code tab active by default, password offered as secondary", as
 
 const unsafeRender = [
   ["/admin", "from=/admin"],
-  ["/admin/users", "from=/admin/users"],
+  ["/admin/requests", "from=/admin/requests"],
   ["/admin-login", "from=/admin-login"],
   ["/login", "from=/login"],
   ["/signup", "from=/signup"],
