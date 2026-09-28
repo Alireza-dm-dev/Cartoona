@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback } from "react"
 import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/neu-button"
 import type { ReferralBindSuccess, ReferralApiErrorCode } from "@/lib/referrals/types"
 
 interface Props {
@@ -118,7 +118,7 @@ export function ReferralBindingForm({ onBound }: Props) {
         onChange={handleInputChange}
         maxLength={14}
         disabled={isSubmitting}
-        className="w-full rounded-xl border border-soft-border bg-white px-4 py-2.5 text-sm text-text-dark placeholder:text-text-dark/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy disabled:opacity-50"
+        className="neu-recessed w-full rounded-xl px-4 py-2.5 text-sm text-text-dark placeholder:text-text-dark/30 outline-none transition-shadow disabled:opacity-50"
         aria-describedby="referral-helper"
       />
       <p id="referral-helper" className="mt-1 text-xs text-text-dark/40">
@@ -172,7 +172,7 @@ function ConfirmationDialog({
       aria-modal="true"
       aria-labelledby="confirm-title"
     >
-      <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-lg">
+      <div className="neu-raised w-full max-w-md rounded-xl p-6">
         <h3 id="confirm-title" className="text-lg font-semibold text-text-dark">
           ثبت دائمی کد معرف
         </h3>

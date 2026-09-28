@@ -1,6 +1,6 @@
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/neu-button";
 
 const sections = [
   {

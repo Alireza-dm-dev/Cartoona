@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/neu-button"
 import type { OrderStatus } from "@/types/app"
 import { mapOrderStatusLabel, STATUS_REQUIRES_REASON } from "@/lib/admin/requests/workflow"
 
@@ -15,7 +15,7 @@ interface StatusUpdateFormProps {
 }
 
 const FIELD_CLASS =
-  "w-full rounded-xl border border-soft-border bg-white px-3.5 py-2.5 text-sm text-text-dark transition-colors focus:border-parent-navy focus:outline-none"
+  "neu-recessed w-full rounded-xl px-3.5 py-2.5 text-sm text-text-dark outline-none transition-shadow"
 
 /**
  * Controlled status change. The browser only sends the target status plus the
@@ -120,7 +120,7 @@ export function StatusUpdateForm({
                     className={`inline-flex items-center justify-center rounded-xl border px-4 py-2 text-sm font-medium transition-all focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy ${
                       selected
                         ? "border-candy-pink bg-candy-pink text-white"
-                        : "border-soft-border bg-white text-text-dark hover:bg-soft-border/30"
+                        : "neu-raised neu-interactive border-transparent text-text-dark/70"
                     }`}
                   >
                     {mapOrderStatusLabel(s)}

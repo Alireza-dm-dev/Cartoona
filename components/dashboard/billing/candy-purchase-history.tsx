@@ -2,7 +2,7 @@
 
 import type { ParentCandyPurchaseSummary, PurchaseStatusLabel } from "@/lib/candy-purchases/types"
 import { Card } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
+import { Badge } from "@/components/ui/neu-badge"
 import { EmptyState } from "@/components/ui/empty-state"
 
 interface CandyPurchaseHistoryProps {

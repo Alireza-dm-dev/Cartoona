@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/neu-button";
 import type { ParentFinalMedia } from "@/lib/parent/orders/detail-types";
 
 interface OrderFinalMediaProps {
@@ -113,7 +113,7 @@ export function OrderFinalMedia({ orderId, finalMedia }: OrderFinalMediaProps) {
         می‌توانید نتیجه نهایی را مشاهده یا دانلود کنید.
       </p>
 
-      <div className="mb-4 overflow-hidden rounded-xl border border-soft-border bg-soft-border/10">
+      <div className="mb-4 neu-recessed overflow-hidden rounded-xl">
         {preview.kind === "loading" && (
           <div className="flex aspect-video w-full items-center justify-center text-xs text-text-dark/50">
             در حال بارگذاری پیش‌نمایش…

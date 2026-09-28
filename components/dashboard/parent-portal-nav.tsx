@@ -25,7 +25,7 @@ export function ParentPortalNav({ children }: { children?: React.ReactNode }) {
     <>
       <nav
         aria-label="منوی پنل والدین"
-        className="hidden items-center gap-5 text-sm font-medium text-text-dark/70 sm:flex"
+        className="hidden items-center gap-1.5 rounded-2xl bg-transparent p-1.5 text-sm font-medium text-text-dark/70 sm:flex neu-raised"
       >
         {PARENT_NAV_ITEMS.map((item) => {
           const active = isParentNavItemActive(item, pathname);
@@ -34,11 +34,11 @@ export function ParentPortalNav({ children }: { children?: React.ReactNode }) {
               key={item.label}
               href={item.href}
               aria-current={active ? "page" : undefined}
-              className={
+              className={`min-h-[38px] rounded-xl px-3 flex items-center transition-all focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-candy-pink ${
                 active
-                  ? "text-candy-pink"
-                  : "hover:text-text-dark transition-colors"
-              }
+                  ? "neu-pressed-pink font-semibold"
+                  : "neu-interactive text-text-dark/70 hover:text-text-dark"
+              }`}
             >
               {item.label}
             </Link>
@@ -51,7 +51,7 @@ export function ParentPortalNav({ children }: { children?: React.ReactNode }) {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-controls="parent-mobile-nav"
-        className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-soft-border px-3 text-sm font-medium text-text-dark sm:hidden"
+        className="neu-raised neu-interactive flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg px-3 text-sm font-medium text-text-dark sm:hidden"
       >
         <span className="sr-only">منوی پنل والدین</span>
         <span aria-hidden="true">{open ? "✕" : "☰"}</span>
@@ -60,9 +60,9 @@ export function ParentPortalNav({ children }: { children?: React.ReactNode }) {
       {open && (
         <div
           id="parent-mobile-nav"
-          className="absolute inset-x-0 top-full z-50 border-b border-soft-border bg-white shadow-sm sm:hidden"
+          className="neu-raised absolute inset-x-2 top-full z-50 mt-2 sm:hidden"
         >
-          <nav aria-label="منوی پنل والدین" className="flex flex-col px-6 py-2">
+          <nav aria-label="منوی پنل والدین" className="flex flex-col px-4 py-2">
             {PARENT_NAV_ITEMS.map((item) => {
               const active = isParentNavItemActive(item, pathname);
               return (
@@ -71,8 +71,8 @@ export function ParentPortalNav({ children }: { children?: React.ReactNode }) {
                   href={item.href}
                   aria-current={active ? "page" : undefined}
                   onClick={() => setOpen(false)}
-                  className={`flex min-h-[44px] items-center border-b border-soft-border/40 text-sm font-medium ${
-                    active ? "text-candy-pink" : "text-text-dark/80"
+                  className={`flex min-h-[44px] items-center rounded-lg px-2 border-b border-soft-border/40 last:border-b-0 text-sm font-medium ${
+                    active ? "text-candy-pink font-semibold" : "text-text-dark/80"
                   }`}
                 >
                   {item.label}

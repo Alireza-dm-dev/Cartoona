@@ -49,10 +49,10 @@ export function PresetChips({
               // them being pressed is a normal, valid state.
               aria-pressed={selected}
               onClick={() => onSelect(preset.value)}
-              className={`flex min-h-[44px] items-center gap-1.5 rounded-lg border px-3 py-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-candy-pink ${
+              className={`flex min-h-[44px] items-center gap-1.5 rounded-full px-3 py-2 text-sm transition-all focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-candy-pink ${
                 selected
-                  ? "border-candy-pink bg-candy-pink/15 font-semibold text-parent-navy"
-                  : "border-soft-border bg-soft-border/5 text-text-dark/70 hover:border-text-dark/30"
+                  ? "neu-pressed-pink font-semibold"
+                  : "neu-raised neu-interactive text-text-dark/70"
               }`}
             >
               {/* A tick as well as colour: with twenty-odd chips on a page, a

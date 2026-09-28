@@ -78,7 +78,7 @@ export function ParentAccountDrawer({ account }: { account: ParentAccountSummary
         aria-expanded={open}
         aria-controls={drawerId}
         aria-haspopup="dialog"
-        className="flex min-h-[44px] items-center gap-2 rounded-full border border-soft-border bg-white px-2 py-1 text-sm font-bold text-parent-navy transition-colors hover:border-candy-pink/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-candy-pink sm:pe-3"
+        className="neu-raised neu-interactive flex min-h-[44px] items-center gap-2 rounded-full px-2 py-1 text-sm font-bold text-parent-navy focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-candy-pink sm:pe-3"
       >
         <span
           aria-hidden="true"
@@ -117,7 +117,7 @@ export function ParentAccountDrawer({ account }: { account: ParentAccountSummary
             aria-modal="true"
             aria-label="منوی حساب والد"
             tabIndex={-1}
-            className="absolute inset-y-0 right-0 flex w-[min(20rem,86vw)] flex-col overflow-y-auto bg-white shadow-[0_0_40px_rgba(80,120,150,0.25)] focus:outline-none"
+            className="absolute inset-y-0 right-0 flex w-[min(20rem,86vw)] flex-col overflow-y-auto bg-[var(--neu-surface)] shadow-[-10px_0_40px_rgba(80,120,150,0.25)] focus:outline-none"
           >
             <div className="flex items-start justify-between gap-3 border-b border-soft-border px-5 py-4">
               <div className="flex min-w-0 items-center gap-3">
@@ -150,7 +150,7 @@ export function ParentAccountDrawer({ account }: { account: ParentAccountSummary
                   key={item.label}
                   href={item.href}
                   onClick={() => setOpen(false)}
-                  className="flex min-h-[44px] items-center rounded-lg px-2 text-sm font-medium text-text-dark hover:bg-soft-border/30 hover:text-candy-pink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-candy-pink"
+                  className="neu-interactive flex min-h-[44px] items-center rounded-lg px-2 text-sm font-medium text-text-dark hover:text-candy-pink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-candy-pink"
                 >
                   {item.label}
                 </Link>

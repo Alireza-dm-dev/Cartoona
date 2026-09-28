@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react"
 import { PageHeader } from "@/components/ui/page-header"
 import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/neu-button"
 import { SafetyNotice } from "@/components/ui/safety-notice"
 import type { ParentReferralSummary } from "@/lib/referrals/types"
 import { ReferralCodeCard } from "./referral-code-card"
@@ -54,7 +54,7 @@ export function ReferralDashboard() {
       {phase === "loading" && <LoadingSkeleton />}
 
       {phase === "error" && (
-        <div className="flex flex-col items-center gap-4 rounded-xl border border-soft-border bg-white p-12 text-center">
+        <div className="neu-raised flex flex-col items-center gap-4 rounded-xl p-12 text-center">
           <p className="text-sm text-text-dark/60">اطلاعات معرفی در حال حاضر در دسترس نیست.</p>
           <Button variant="secondary" onClick={handleRetry}>تلاش دوباره</Button>
         </div>
@@ -123,8 +123,8 @@ async function doLoad(
 function LoadingSkeleton() {
   return (
     <div className="grid gap-6 lg:grid-cols-2">
-      <div className="h-48 animate-pulse rounded-xl border border-soft-border bg-white p-6" />
-      <div className="h-48 animate-pulse rounded-xl border border-soft-border bg-white p-6" />
+      <div className="h-48 animate-pulse neu-raised rounded-xl p-6" />
+      <div className="h-48 animate-pulse neu-raised rounded-xl p-6" />
     </div>
   )
 }

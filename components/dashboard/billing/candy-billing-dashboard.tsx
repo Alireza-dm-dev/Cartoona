@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react"
 import { PageHeader } from "@/components/ui/page-header"
 import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/neu-button"
 import { CandyBalanceCard } from "./candy-balance-card"
 import { CandyPackageCard } from "./candy-package-card"
 import { CandyPurchaseConfirmation } from "./candy-purchase-confirmation"
@@ -20,10 +20,10 @@ import type {
 function LoadingSkeleton() {
   return (
     <div>
-      <div className="mb-6 h-32 animate-pulse rounded-[24px] border border-soft-border bg-white p-6" />
+      <div className="mb-6 h-32 animate-pulse neu-raised rounded-[24px] p-6" />
       <div className="mb-6 grid gap-6 md:grid-cols-3">
         {[1, 2, 3].map((i) => (
-          <div key={i} className="h-48 animate-pulse rounded-[24px] border border-soft-border bg-white p-6" />
+          <div key={i} className="h-48 animate-pulse neu-raised rounded-[24px] p-6" />
         ))}
       </div>
     </div>
@@ -47,7 +47,7 @@ function DevNotice() {
 
 function ErrorCard({ onRetry }: { onRetry: () => void }) {
   return (
-    <div className="flex flex-col items-center gap-4 rounded-[24px] border border-soft-border bg-white p-12 text-center">
+    <div className="neu-raised flex flex-col items-center gap-4 rounded-[24px] p-12 text-center">
       <p className="text-sm text-text-dark/60">دریافت اطلاعات انجام نشد.</p>
       <Button variant="secondary" onClick={onRetry}>تلاش دوباره</Button>
     </div>
@@ -301,7 +301,7 @@ export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBilli
               <h3 className="mb-3 text-sm font-semibold text-text-dark/60">تکمیل آزمایشی پرداخت</h3>
               <div className="space-y-3">
                 {pendingPurchases.map((p) => (
-                  <div key={p.id} className="flex items-center justify-between rounded-lg border border-soft-border bg-soft-border/20 p-3">
+                  <div key={p.id} className="neu-recessed flex items-center justify-between rounded-lg p-3">
                     <div>
                       <p className="text-sm font-medium text-text-dark">{p.packageName}</p>
                       <p className="text-xs text-text-dark/50">
@@ -344,7 +344,7 @@ export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBilli
           aria-modal="true"
           aria-labelledby="dev-complete-title"
         >
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-lg">
+          <div className="neu-raised w-full max-w-md rounded-xl p-6">
             <h3 id="dev-complete-title" className="text-lg font-semibold text-text-dark">
               تکمیل آزمایشی پرداخت
             </h3>

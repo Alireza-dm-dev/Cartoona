@@ -30,7 +30,7 @@ export function GalleryMediaCard({ media }: { media: ParentGalleryMedia }) {
   const caption = media.label ?? "فایل بدون نام";
 
   return (
-    <figure className="overflow-hidden rounded-xl border border-soft-border bg-white">
+    <figure className="neu-raised overflow-hidden rounded-xl">
       <div className="flex aspect-square items-center justify-center bg-soft-border/20">
         {signedUrl === null ? (
           <span className="px-3 text-center text-xs text-text-dark/50">

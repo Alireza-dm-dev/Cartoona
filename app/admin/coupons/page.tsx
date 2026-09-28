@@ -4,8 +4,8 @@ import { useState, useRef, useEffect } from "react"
 import Link from "next/link"
 import { PageHeader } from "@/components/ui/page-header"
 import { Card } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/neu-badge"
+import { Button } from "@/components/ui/neu-button"
 import { EmptyState } from "@/components/ui/empty-state"
 import { CouponStatusBadge } from "@/components/admin/coupons/coupon-status-badge"
 import { useAdminCoupons } from "@/lib/admin/coupons/use-admin-coupons"
@@ -106,7 +106,7 @@ export default function AdminCouponsPage() {
               value={searchInput}
               onChange={(e) => handleSearchChange(e.target.value)}
               aria-label="جستجوی کدهای تخفیف"
-              className="w-full rounded-xl border border-soft-border bg-white px-4 py-2.5 text-sm text-text-dark placeholder:text-text-dark/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy"
+              className="neu-recessed w-full rounded-xl px-4 py-2.5 text-sm text-text-dark placeholder:text-text-dark/30 outline-none transition-shadow"
             />
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -117,7 +117,7 @@ export default function AdminCouponsPage() {
               id="coupon-status-filter"
               value={status}
               onChange={(e) => setStatus(e.target.value)}
-              className="rounded-xl border border-soft-border bg-white px-3 py-2.5 text-sm text-text-dark focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy"
+              className="neu-recessed rounded-xl px-3 py-2.5 text-sm text-text-dark outline-none transition-shadow"
             >
               {Object.entries(statusFilterLabels).map(([value, label]) => (
                 <option key={value} value={value}>
@@ -132,7 +132,7 @@ export default function AdminCouponsPage() {
               id="coupon-type-filter"
               value={discountType}
               onChange={(e) => setDiscountType(e.target.value)}
-              className="rounded-xl border border-soft-border bg-white px-3 py-2.5 text-sm text-text-dark focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy"
+              className="neu-recessed rounded-xl px-3 py-2.5 text-sm text-text-dark outline-none transition-shadow"
             >
               {Object.entries(discountFilterLabels).map(([value, label]) => (
                 <option key={value} value={value}>
@@ -147,13 +147,13 @@ export default function AdminCouponsPage() {
       {loading && (
         <div className="flex flex-col gap-4" aria-label="در حال بارگذاری">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="h-24 animate-pulse rounded-xl border border-soft-border bg-white p-6" />
+            <div key={i} className="h-24 animate-pulse neu-raised rounded-xl p-6" />
           ))}
         </div>
       )}
 
       {error && !loading && (
-        <div className="flex flex-col items-center gap-4 rounded-xl border border-soft-border bg-white p-12 text-center">
+        <div className="neu-raised flex flex-col items-center gap-4 rounded-xl p-12 text-center">
           <p role="alert" className="text-sm text-text-dark/60">
             {error}
           </p>
@@ -189,7 +189,7 @@ export default function AdminCouponsPage() {
       {!loading && !error && coupons.length > 0 && (
         <>
           {/* ── Desktop table ─────────────────────────────────────────────── */}
-          <div className="hidden overflow-hidden rounded-2xl border border-soft-border bg-white md:block">
+          <div className="neu-raised hidden overflow-hidden rounded-2xl md:block">
             <table className="w-full text-right text-sm">
               <thead>
                 <tr className="border-b border-soft-border bg-soft-border/20 text-xs text-text-dark/60">
@@ -282,7 +282,7 @@ function CouponTableRow({ coupon }: { coupon: AdminCouponListItem }) {
       <td className="px-4 py-3">
         <Link
           href={`/admin/coupons/${coupon.id}`}
-          className="inline-flex items-center justify-center rounded-lg border border-soft-border bg-white px-3 py-1.5 text-xs font-medium text-text-dark transition-all hover:bg-soft-border/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy"
+          className="neu-raised neu-interactive inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium text-text-dark focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy"
         >
           ویرایش
         </Link>
@@ -339,7 +339,7 @@ function CouponMobileCard({ coupon }: { coupon: AdminCouponListItem }) {
       <div className="mt-3">
         <Link
           href={`/admin/coupons/${coupon.id}`}
-          className="inline-flex items-center justify-center rounded-lg border border-soft-border bg-white px-3 py-1.5 text-xs font-medium text-text-dark transition-all hover:bg-soft-border/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy"
+          className="neu-raised neu-interactive inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium text-text-dark focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy"
         >
           ویرایش کد تخفیف
         </Link>

@@ -85,7 +85,7 @@ export function ConfirmDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={descId}
-        className="relative w-full max-w-md rounded-2xl border border-soft-border bg-white p-6 shadow-xl"
+        className="relative w-full max-w-md neu-raised rounded-2xl p-6"
       >
         <h2 id={titleId} className="text-lg font-semibold text-parent-navy">
           {title}
@@ -99,7 +99,7 @@ export function ConfirmDialog({
             type="button"
             onClick={onCancel}
             disabled={loading}
-            className="inline-flex items-center justify-center rounded-xl border border-soft-border bg-white px-5 py-2.5 text-sm font-medium text-text-dark transition-all hover:bg-soft-border/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy disabled:opacity-50 disabled:cursor-not-allowed"
+            className="neu-raised neu-interactive inline-flex items-center justify-center rounded-xl px-5 py-2.5 text-sm font-medium text-text-dark focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {cancelLabel}
           </button>

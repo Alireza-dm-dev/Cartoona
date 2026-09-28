@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/neu-button";
 import PendingCreationDraftCard from "@/components/creation/pending-creation-draft-card";
 import { readCreationDraft } from "@/lib/creation/creation-draft";
 
@@ -54,7 +54,7 @@ export default function ParentConsentPage() {
       </p>
 
       <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-        <div className="rounded-xl border border-soft-border bg-cream/50 p-4 text-sm text-text-dark/70 space-y-3">
+        <div className="neu-recessed rounded-xl p-4 text-sm text-text-dark/70 space-y-3">
           <ul className="space-y-2">
             <li className="flex items-start gap-2">
               <span className="mt-0.5 shrink-0 text-candy-pink">✓</span>

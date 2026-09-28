@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/neu-button";
 import type { HomepageMediaSlot } from "@/lib/homepage/media-slots";
 import type { AdminMediaSlotView } from "@/lib/admin/homepage/media-service";
 import {

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ParentAccountDrawer } from "@/components/layout/parent-account-drawer";
 import { getPublicHeaderAccount } from "@/lib/auth/public-header-account";
+import { AppBackground } from "@/components/ui/app-background";
 
 /**
  * Reading the session cookie here opts the creation routes out of static
@@ -16,8 +17,9 @@ export default async function CreationLayout({
   const account = await getPublicHeaderAccount();
 
   return (
-    <div className="flex flex-col min-h-full">
-      <header className="border-b border-soft-border bg-white">
+    <div className="relative flex flex-col min-h-full">
+      <AppBackground />
+      <header className="relative z-10 neu-raised m-3 rounded-2xl sm:m-4">
         <div className="mx-auto flex max-w-[1200px] items-center justify-between px-6 py-4">
           <Link href="/" className="text-xl font-bold text-candy-pink">
             کارتونا
@@ -29,13 +31,13 @@ export default async function CreationLayout({
               <>
                 <Link
                   href="/login"
-                  className="rounded-full px-4 py-2 text-sm font-medium text-parent-navy hover:bg-soft-border/50 transition-colors"
+                  className="neu-interactive rounded-full px-4 py-2 text-sm font-medium text-parent-navy"
                 >
                   ورود
                 </Link>
                 <Link
                   href="/signup"
-                  className="rounded-full bg-candy-pink px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity"
+                  className="neu-cta neu-interactive rounded-full px-4 py-2 text-sm font-medium text-white"
                 >
                   ساخت حساب
                 </Link>
@@ -44,12 +46,12 @@ export default async function CreationLayout({
           </div>
         </div>
       </header>
-      <main className="flex-1 bg-cream">
+      <main className="relative z-10 flex-1">
         <div className="mx-auto max-w-[880px] px-6 py-8">
           {children}
         </div>
       </main>
-      <footer className="border-t border-soft-border bg-white">
+      <footer className="relative z-10 mx-3 mb-3 neu-raised rounded-2xl sm:mx-4 sm:mb-4">
         <div className="mx-auto max-w-[1200px] px-6 py-6 text-center text-xs text-text-dark/50">
           تمام اطلاعات و درخواست‌های شما در کارتونا خصوصی و تحت کنترل والدین است.
         </div>

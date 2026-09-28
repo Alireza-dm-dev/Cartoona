@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, type FormEvent } from "react"
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/neu-button"
 
 /**
  * Set or change the optional parent password.
@@ -82,7 +82,7 @@ export function ParentPasswordForm({ passwordSet = false }: { passwordSet?: bool
           required
           minLength={8}
           maxLength={72}
-          className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+          className="neu-recessed w-full min-h-[44px] rounded-xl px-3 py-2 text-sm outline-none transition-shadow"
         />
       </div>
 
@@ -100,7 +100,7 @@ export function ParentPasswordForm({ passwordSet = false }: { passwordSet?: bool
           required
           minLength={8}
           maxLength={72}
-          className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+          className="neu-recessed w-full min-h-[44px] rounded-xl px-3 py-2 text-sm outline-none transition-shadow"
         />
       </div>
 

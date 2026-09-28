@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import type { CandyPackageSummary } from "@/lib/candy-purchases/types"
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/neu-button"
 
 interface CandyPurchaseConfirmationProps {
   pkg: CandyPackageSummary
@@ -30,7 +30,7 @@ export function CandyPurchaseConfirmation({ pkg, onConfirm, onCancel }: CandyPur
       aria-modal="true"
       aria-labelledby="purchase-confirm-title"
     >
-      <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-lg">
+      <div className="neu-raised w-full max-w-md rounded-xl p-6">
         <h3 id="purchase-confirm-title" className="text-lg font-semibold text-text-dark">
           تأیید خرید بسته آبنبات
         </h3>

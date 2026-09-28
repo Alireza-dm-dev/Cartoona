@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/neu-button";
 import type { HomepageContent } from "@/lib/homepage/types";
 import { DEFAULT_TV_RECT } from "@/lib/homepage/hero-layout";
 import { useAdminHomepageMedia } from "@/lib/admin/homepage/use-admin-homepage-media";

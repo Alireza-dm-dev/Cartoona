@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/neu-button";
 import { DEFAULT_TV_RECT } from "@/lib/homepage/hero-layout";
 import type { AdminMediaSlotView } from "@/lib/admin/homepage/media-service";
 import {

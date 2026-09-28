@@ -127,7 +127,7 @@ function GalleryLoadingState() {
     <div className="grid grid-cols-2 gap-4 sm:grid-cols-3" aria-busy="true" aria-live="polite">
       <span className="sr-only">در حال بارگذاری گالری…</span>
       {[0, 1, 2].map((i) => (
-        <div key={i} className="overflow-hidden rounded-xl border border-soft-border bg-white">
+        <div key={i} className="neu-raised overflow-hidden rounded-xl">
           <div className="aspect-square animate-pulse bg-soft-border/40" />
           <div className="px-3 py-2">
             <div className="h-3 w-2/3 animate-pulse rounded bg-soft-border/40" />

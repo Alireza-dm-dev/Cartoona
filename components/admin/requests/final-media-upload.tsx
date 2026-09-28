@@ -3,8 +3,8 @@
 import { useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Card } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/neu-badge"
+import { Button } from "@/components/ui/neu-button"
 import { ConfirmDialog } from "@/components/admin/coupons/confirm-dialog"
 import type { AdminFinalMediaInfo } from "@/lib/admin/requests/fulfilment-types"
 import {
@@ -170,7 +170,7 @@ export function FinalMediaUpload({ requestId, canUpload, assets }: FinalMediaUpl
             type="file"
             multiple
             accept="image/png,image/jpeg,image/webp,video/mp4,video/webm"
-            className="block w-full cursor-pointer rounded-xl border border-dashed border-soft-border bg-white px-3 py-4 text-sm text-text-dark/70 file:mr-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-candy-pink file:px-4 file:py-2 file:text-sm file:font-medium file:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy"
+            className="neu-recessed block w-full cursor-pointer rounded-xl border-dashed px-3 py-4 text-sm text-text-dark/70 file:mr-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-candy-pink file:px-4 file:py-2 file:text-sm file:font-medium file:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy"
             onChange={(e) => onPick(e.target.files)}
             disabled={uploading}
           />

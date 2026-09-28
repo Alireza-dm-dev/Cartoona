@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@/components/ui/neu-badge";
 import { Card } from "@/components/ui/card";
 import type {
   ParentDetailRow,
@@ -64,7 +64,7 @@ export function OrderClosureBlock({ closure }: { closure: ParentOrderClosure }) 
   const isRejected = closure.kind === "rejected";
   return (
     <Card
-      className={isRejected ? "border-coral/30 bg-coral/5" : "border-soft-border bg-soft-border/10"}
+      className={isRejected ? "border-coral/30 bg-coral/10" : "neu-recessed"}
     >
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <h2 className="font-semibold text-parent-navy">وضعیت نهایی</h2>
@@ -123,7 +123,7 @@ export function OrderSourceMedia({ media }: { media: ParentSourceMedia[] }) {
         {media.map((item) => (
           <div
             key={item.id}
-            className="overflow-hidden rounded-xl border border-soft-border bg-soft-border/10"
+            className="neu-recessed overflow-hidden rounded-xl"
           >
             {item.signedUrl && item.isImage ? (
               /* A plain <img> on purpose: the URL expires in minutes, so it

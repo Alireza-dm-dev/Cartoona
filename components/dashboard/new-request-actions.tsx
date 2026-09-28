@@ -19,7 +19,7 @@ export function NewRequestActions() {
           <Link
             key={choice.type}
             href={choice.href}
-            className="flex min-h-[44px] items-center gap-2 rounded-lg border border-soft-border bg-white px-3 text-sm font-medium text-text-dark transition-colors hover:border-candy-pink/40 hover:text-candy-pink"
+            className="neu-raised neu-interactive flex min-h-[44px] items-center gap-2 rounded-lg px-3 text-sm font-medium text-text-dark hover:text-candy-pink"
           >
             <span aria-hidden="true">{choice.icon}</span>
             <span>{choice.label}</span>

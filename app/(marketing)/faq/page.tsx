@@ -1,10 +1,13 @@
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
 import { faqs } from "@/config/faqs";
+import { AppBackground } from "@/components/ui/app-background";
 
 export default function FAQPage() {
   return (
-    <div className="mx-auto max-w-[800px] px-6 py-16">
+    <>
+    <AppBackground />
+    <div className="relative z-10 mx-auto max-w-[800px] px-6 py-16">
       <PageHeader
         title="سوالات متداول"
         description="پاسخ سوال‌های رایج والدین درباره ساخت کارتون‌های اختصاصی، آبنبات‌ها، حریم خصوصی و روند سفارش در کارتونا."
@@ -18,5 +21,6 @@ export default function FAQPage() {
         ))}
       </div>
     </div>
+    </>
   );
 }

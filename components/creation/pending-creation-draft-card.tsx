@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@/components/ui/neu-badge";
 import { readCreationDraft } from "@/lib/creation/creation-draft";
 import type { CreationDraft } from "@/lib/creation/creation-draft";
 import { characters } from "@/config/characters";

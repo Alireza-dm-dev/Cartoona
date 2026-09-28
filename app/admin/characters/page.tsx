@@ -1,7 +1,7 @@
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/neu-badge";
+import { Button } from "@/components/ui/neu-button";
 import { characters } from "@/config/characters";
 
 const categoryLabels: Record<string, string> = {

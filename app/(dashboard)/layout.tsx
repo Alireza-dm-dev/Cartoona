@@ -4,13 +4,14 @@ import {
   PARENT_PORTAL_BRAND_HREF,
   PARENT_PORTAL_BRAND_LABEL,
 } from "@/lib/parent/navigation/parent-nav";
+import { AppBackground } from "@/components/ui/app-background";
 
 function LogoutButton({ className }: { className?: string }) {
   return (
     <form action="/api/logout" method="post" className={className}>
       <button
         type="submit"
-        className="min-h-[44px] w-full rounded-lg bg-soft-border/30 px-4 text-sm font-medium text-text-dark hover:bg-soft-border/50"
+        className="neu-interactive min-h-[44px] w-full rounded-lg bg-coral/15 px-4 text-sm font-medium text-rose-800"
       >
         خروج
       </button>
@@ -24,9 +25,10 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col min-h-full bg-cream">
+    <div className="relative flex flex-col min-h-full">
+      <AppBackground />
       {/* `relative` anchors the mobile navigation panel to the header. */}
-      <header className="relative border-b border-soft-border bg-white">
+      <header className="relative z-10 neu-raised m-3 rounded-2xl sm:m-4">
         <div className="mx-auto flex max-w-[1280px] items-center gap-4 px-6 py-3">
           {/* Leaving the portal must not end the session: this is an ordinary
               link to the public site, not a logout. */}
@@ -41,11 +43,11 @@ export default function DashboardLayout({
             <ParentPortalNav>
               <LogoutButton className="py-3" />
             </ParentPortalNav>
-            <LogoutButton className="hidden sm:block" />
+            <LogoutButton className="hidden w-auto sm:block" />
           </div>
         </div>
       </header>
-      <main className="flex-1 mx-auto w-full max-w-[1280px] px-6 py-8">
+      <main className="relative z-10 flex-1 mx-auto w-full max-w-[1280px] px-6 py-8">
         {children}
       </main>
     </div>

@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/neu-badge";
+import { Button } from "@/components/ui/neu-button";
 import { Card } from "@/components/ui/card";
 import type { ParentOrderSummary } from "@/lib/parent/orders/types";
 import { PARENT_STATUS_LABELS, PARENT_STATUS_VARIANTS } from "@/lib/parent/orders/status-mapping";

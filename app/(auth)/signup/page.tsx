@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/neu-button";
 import { createBrowserSupabaseClient } from "@/lib/supabase/client";
 import PendingCreationDraftCard from "@/components/creation/pending-creation-draft-card";
 import {
@@ -46,6 +46,15 @@ function isDevEnvironment(): boolean {
   return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
 }
 
+// The hostname never changes during the component's lifetime, so this store
+// never needs to notify subscribers - it only exists to give
+// useSyncExternalStore a server snapshot ("false") that matches SSR, so the
+// dev-only label can't hydration-mismatch. The real value applies right
+// after hydration, without a manual setState-in-effect.
+function subscribeToNothing() {
+  return () => {};
+}
+
 /**
  * Parent signup: a phone number, a code, and the upload permission checkbox.
  *
@@ -61,7 +70,10 @@ export default function SignupPage() {
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [normalizedPhone, setNormalizedPhone] = useState("");
-  const [isDev] = useState(isDevEnvironment);
+  // getServerSnapshot ("false") matches SSR's `typeof window === "undefined"`
+  // result, so the client's first render is identical to the server's; React
+  // then swaps in the real getSnapshot value right after hydration.
+  const isDev = useSyncExternalStore(subscribeToNothing, isDevEnvironment, () => false);
   const [challengeToken, setChallengeToken] = useState("");
   const [devCode, setDevCode] = useState("");
 
@@ -242,7 +254,7 @@ export default function SignupPage() {
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder="مثال: 09123456789"
-                  className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+                  className="neu-recessed w-full min-h-[44px] rounded-xl px-3 py-2 text-sm outline-none transition-shadow"
                 />
                 <p className="text-xs text-text-dark/40">
                   کد ورود به همین شماره ارسال می‌شود. تنظیم رمز عبور اختیاری است و بعداً از بخش تنظیمات انجام می‌شود.
@@ -255,7 +267,7 @@ export default function SignupPage() {
                   type="checkbox"
                   checked={agreed}
                   onChange={(e) => setAgreed(e.target.checked)}
-                  className="mt-1 h-4 w-4 shrink-0 rounded border-soft-border text-candy-pink focus:ring-2 focus:ring-candy-pink/30"
+                  className="mt-1 h-4 w-4 shrink-0 rounded border-soft-border text-candy-pink accent-[var(--candy-pink)] focus:ring-2 focus:ring-candy-pink/30"
                 />
                 <label htmlFor="permission-check" className="text-xs leading-relaxed text-text-dark/70 cursor-pointer select-none">
                   من تأیید می‌کنم که اجازه استفاده از تصاویر و فایل‌هایی را که در کارتونا بارگذاری می‌کنم دارم و مسئولیت استفاده از آن‌ها بر عهده من است.
@@ -274,7 +286,7 @@ export default function SignupPage() {
           ) : (
             <form onSubmit={handleCodeSubmit} className="space-y-4">
               {isDev && devCode && (
-                <div className="rounded-xl border border-soft-border bg-cream/50 p-4 text-center">
+                <div className="neu-pressed p-4 text-center">
                   <p className="text-xs text-text-dark/60">کد آزمایشی شما:</p>
                   <p className="mt-1 text-2xl font-bold tracking-widest text-parent-navy" dir="ltr">
                     {toPersianDigits(devCode)}
@@ -302,7 +314,7 @@ export default function SignupPage() {
                   value={code}
                   onChange={(e) => setCode(e.target.value)}
                   placeholder="کد ۶ رقمی"
-                  className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+                  className="neu-recessed w-full min-h-[44px] rounded-xl px-3 py-2 text-sm text-center text-lg tracking-widest outline-none transition-shadow"
                 />
               </div>
 

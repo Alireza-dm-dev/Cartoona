@@ -1,7 +1,7 @@
 import Link from "next/link"
 import { PageHeader } from "@/components/ui/page-header"
 import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/neu-button"
 import { EmptyState } from "@/components/ui/empty-state"
 import { ExampleList } from "@/components/admin/examples/example-list"
 import { createServerSupabaseClient } from "@/lib/supabase/server"

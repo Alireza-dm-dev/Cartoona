@@ -40,7 +40,7 @@ export default async function AdminEditCouponPage({
         action={
           <Link
             href="/admin/coupons"
-            className="inline-flex items-center justify-center rounded-xl border border-soft-border bg-white px-5 py-2.5 text-sm font-medium text-text-dark transition-all hover:bg-soft-border/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy"
+            className="neu-raised neu-interactive inline-flex items-center justify-center rounded-xl border-transparent px-5 py-2.5 text-sm font-medium text-text-dark transition-all focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy"
           >
             بازگشت به لیست
           </Link>

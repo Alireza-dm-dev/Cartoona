@@ -22,10 +22,10 @@ export function CreationTypeSwitcher({ activeType }: CreationTypeSwitcherProps) 
             key={item.type}
             href={isActive ? "#" : item.href}
             aria-current={isActive ? "page" : undefined}
-            className={`rounded-xl border p-4 text-center text-sm font-medium transition-colors ${
+            className={`min-h-[44px] rounded-xl p-4 text-center text-sm font-medium transition-all ${
               isActive
-                ? "border-candy-pink bg-candy-pink/5 text-parent-navy"
-                : "border-soft-border bg-white text-text-dark/60 hover:border-text-dark/30 hover:text-text-dark"
+                ? "neu-pressed-pink font-semibold"
+                : "neu-raised neu-interactive text-text-dark/60 hover:text-text-dark"
             }`}
           >
             <span>{item.label}</span>

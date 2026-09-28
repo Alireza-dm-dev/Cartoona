@@ -117,10 +117,10 @@ export function PrivateGalleryPicker({
                 role="option"
                 aria-selected={selected}
                 onClick={() => onSelect(item)}
-                className={`w-full overflow-hidden rounded-lg border text-right transition-colors ${
+                className={`w-full overflow-hidden rounded-xl text-right transition-all ${
                   selected
-                    ? "border-candy-pink ring-2 ring-candy-pink/30"
-                    : "border-soft-border hover:border-candy-pink/40"
+                    ? "neu-pressed-pink"
+                    : "neu-raised neu-interactive"
                 }`}
               >
                 <span className="flex aspect-square items-center justify-center bg-soft-border/20">

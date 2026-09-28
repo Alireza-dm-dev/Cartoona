@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/neu-button";
 import { PageHeader } from "@/components/ui/page-header";
 import {
   BUILD_OPTION_BADGE_VARIANTS,

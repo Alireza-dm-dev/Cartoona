@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@/components/ui/neu-badge";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { OrderTimeline } from "@/components/dashboard/orders/order-timeline";

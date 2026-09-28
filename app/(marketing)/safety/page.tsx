@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/neu-button";
 import { SafetyNotice } from "@/components/ui/safety-notice";
+import { AppBackground } from "@/components/ui/app-background";
 
 const principles = [
   {
@@ -39,7 +40,9 @@ const principles = [
 
 export default function SafetyPage() {
   return (
-    <div className="mx-auto max-w-[1200px] px-6 py-16">
+    <>
+    <AppBackground />
+    <div className="relative z-10 mx-auto max-w-[1200px] px-6 py-16">
       <PageHeader
         title="امنیت و حریم خصوصی"
         description="کارتونا برای والدین طراحی شده است؛ جایی که ساخت، بارگذاری، پرداخت، دانلود و حذف محتوا فقط تحت کنترل والدین انجام می‌شود."
@@ -101,5 +104,6 @@ export default function SafetyPage() {
         </div>
       </div>
     </div>
+    </>
   );
 }

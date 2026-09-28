@@ -1,5 +1,5 @@
 import type { OrderStatus } from "@/types/app";
-import { Badge } from "./badge";
+import { Badge } from "./neu-badge";
 
 const statusConfig: Record<OrderStatus, { label: string; variant: "default" | "success" | "warning" | "danger" | "info" }> = {
   draft: { label: "پیش‌نویس", variant: "default" },

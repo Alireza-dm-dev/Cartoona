@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/neu-button";
 import { createBrowserSupabaseClient } from "@/lib/supabase/client";
 import {
   normalizeIranPhone,
@@ -328,7 +328,7 @@ export default function LoginPage() {
       </p>
 
       {expiredNotice === "session_expired" && (
-        <div className="mt-4 rounded-xl border border-soft-border bg-cream/50 p-4 text-center">
+        <div className="mt-4 neu-recessed rounded-xl p-4 text-center">
           <p className="text-sm text-text-dark">
             برای حفظ امنیت حساب، پس از ۳۰ روز باید دوباره وارد شوید.
           </p>
@@ -337,14 +337,14 @@ export default function LoginPage() {
 
       {/* Code login comes first in the order as well as in the default: it is
           the method that works for every parent. */}
-      <div className="mt-6 flex flex-wrap gap-2 border-b border-soft-border pb-0">
+      <div className="mt-6 flex gap-1.5 rounded-2xl p-1.5 neu-raised">
         <button
           type="button"
           aria-pressed={mode === "sms"}
-          className={`min-h-[44px] pb-2 px-4 text-sm font-medium transition-colors border-b-2 ${
+          className={`flex-1 min-h-[44px] rounded-xl px-4 text-sm font-medium transition-all ${
             mode === "sms"
-              ? "border-candy-pink text-candy-pink"
-              : "border-transparent text-text-dark/50 hover:text-text-dark/70"
+              ? "neu-pressed-pink font-semibold"
+              : "neu-interactive text-text-dark/60 hover:text-text-dark"
           }`}
           onClick={() => { setMode("sms"); setError(""); setSmsStep(1); setCode(""); }}
         >
@@ -353,10 +353,10 @@ export default function LoginPage() {
         <button
           type="button"
           aria-pressed={mode === "password"}
-          className={`min-h-[44px] pb-2 px-4 text-sm font-medium transition-colors border-b-2 ${
+          className={`flex-1 min-h-[44px] rounded-xl px-4 text-sm font-medium transition-all ${
             mode === "password"
-              ? "border-candy-pink text-candy-pink"
-              : "border-transparent text-text-dark/50 hover:text-text-dark/70"
+              ? "neu-pressed-pink font-semibold"
+              : "neu-interactive text-text-dark/60 hover:text-text-dark"
           }`}
           onClick={() => { setMode("password"); setError(""); }}
         >
@@ -373,7 +373,7 @@ export default function LoginPage() {
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
               placeholder="مثال: 09123456789"
-              className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+              className="neu-recessed w-full min-h-[44px] rounded-xl px-3 py-2 text-sm outline-none transition-shadow"
             />
           </div>
 
@@ -388,7 +388,7 @@ export default function LoginPage() {
       {mode === "sms" && smsStep === 2 && (
         <form onSubmit={handleSmsVerifyCode} className="mt-6 space-y-4">
           {isDev && devCode && (
-            <div className="rounded-xl border border-soft-border bg-cream/50 p-4 text-center">
+            <div className="neu-pressed p-4 text-center">
               <p className="text-xs text-text-dark/60">کد آزمایشی شما:</p>
               <p className="mt-1 text-2xl font-bold tracking-widest text-parent-navy" dir="ltr">
                 {toPersianDigits(devCode)}
@@ -413,7 +413,7 @@ export default function LoginPage() {
               value={code}
               onChange={(e) => setCode(e.target.value)}
               placeholder="کد ۶ رقمی"
-              className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm text-center text-lg tracking-widest focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+              className="neu-recessed w-full min-h-[44px] rounded-xl px-3 py-2 text-sm text-center text-lg tracking-widest outline-none transition-shadow"
             />
           </div>
 
@@ -449,7 +449,7 @@ export default function LoginPage() {
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
               placeholder="مثال: 09123456789"
-              className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+              className="neu-recessed w-full min-h-[44px] rounded-xl px-3 py-2 text-sm outline-none transition-shadow"
             />
           </div>
 
@@ -462,7 +462,7 @@ export default function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="رمز عبور"
-              className="w-full min-h-[44px] rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30"
+              className="neu-recessed w-full min-h-[44px] rounded-xl px-3 py-2 text-sm outline-none transition-shadow"
             />
             <p className="text-xs text-text-dark/40">
               رمز عبور اختیاری است. اگر برای حساب خود رمز عبور تنظیم نکرده‌اید، از «ورود با کد» استفاده کنید.

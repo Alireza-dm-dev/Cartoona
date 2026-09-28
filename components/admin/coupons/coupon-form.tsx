@@ -3,7 +3,7 @@
 import { useState, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/neu-button"
 import { ConfirmDialog } from "@/components/admin/coupons/confirm-dialog"
 import type { AdminCouponCreateInput, AdminCouponDetail } from "@/lib/admin/coupons/types"
 import { normalizeCouponCode } from "@/lib/coupons/rules"
@@ -332,7 +332,7 @@ export function CouponForm({ mode, packages, initial }: CouponFormProps) {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   const inputClass =
-    "w-full rounded-xl border border-soft-border bg-white px-4 py-2.5 text-sm text-text-dark outline-none focus:border-candy-pink/50 focus:ring-2 focus:ring-candy-pink/10 disabled:opacity-50"
+    "neu-recessed w-full rounded-xl px-4 py-2.5 text-sm text-text-dark outline-none focus:border-candy-pink/50 disabled:opacity-50"
 
   return (
     <>
@@ -633,7 +633,7 @@ export function CouponForm({ mode, packages, initial }: CouponFormProps) {
                   className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition-colors ${
                     selectedPackageIds.includes(pkg.id)
                       ? "border-candy-pink/50 bg-candy-pink/5"
-                      : "border-soft-border bg-white hover:bg-soft-border/20"
+                      : "neu-raised neu-interactive border-transparent"
                   }`}
                 >
                   <input

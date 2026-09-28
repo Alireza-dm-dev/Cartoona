@@ -5,8 +5,8 @@ import type { ParentCandyPurchaseSummary } from "@/lib/candy-purchases/types"
 import type { CouponValidationResult } from "@/lib/coupons/types"
 import { normalizeCouponCode, isValidRawCouponCode } from "@/lib/coupons/rules"
 import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/neu-button"
+import { Badge } from "@/components/ui/neu-badge"
 
 interface PendingPurchaseCardProps {
   purchase: ParentCandyPurchaseSummary
@@ -14,7 +14,7 @@ interface PendingPurchaseCardProps {
 }
 
 const inputClass =
-  "w-full rounded-xl border border-soft-border bg-white px-4 py-2.5 text-sm text-text-dark outline-none focus:border-candy-pink/50 focus:ring-2 focus:ring-candy-pink/10 disabled:opacity-50"
+  "neu-recessed w-full rounded-xl px-4 py-2.5 text-sm text-text-dark outline-none transition-shadow disabled:opacity-50"
 
 function formatRial(amount: number): string {
   return `${amount.toLocaleString("fa-IR")} ریال`

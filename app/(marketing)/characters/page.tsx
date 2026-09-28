@@ -1,6 +1,7 @@
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
 import { characters } from "@/config/characters";
+import { AppBackground } from "@/components/ui/app-background";
 
 const persianNames: Record<string, string> = {
   "Captain Candy": "کاپیتان آبنبات",
@@ -48,7 +49,9 @@ const persianDescriptions: Record<string, string> = {
 
 export default function CharactersPage() {
   return (
-    <div className="mx-auto max-w-[1200px] px-6 py-16">
+    <>
+    <AppBackground />
+    <div className="relative z-10 mx-auto max-w-[1200px] px-6 py-16">
       <PageHeader
         title="شخصیت‌های کارتونا"
         description="شخصیت‌های اصلی و اختصاصی کارتونا برای ساخت خاطره‌های کارتونی امن، گرم و خانوادگی طراحی شده‌اند."
@@ -72,5 +75,6 @@ export default function CharactersPage() {
         ))}
       </div>
     </div>
+    </>
   );
 }

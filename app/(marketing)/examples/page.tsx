@@ -1,11 +1,12 @@
 import Link from "next/link"
 import { PageHeader } from "@/components/ui/page-header"
 import { Card } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/neu-badge"
+import { Button } from "@/components/ui/neu-button"
 import { SafetyNotice } from "@/components/ui/safety-notice"
 import { EmptyState } from "@/components/ui/empty-state"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { AppBackground } from "@/components/ui/app-background"
 
 export const dynamic = "force-dynamic"
 
@@ -32,7 +33,9 @@ export default async function ExamplesPage() {
     .order("created_at", { ascending: false })
 
   return (
-    <div className="mx-auto max-w-[1200px] px-6 py-16">
+    <>
+    <AppBackground />
+    <div className="relative z-10 mx-auto max-w-[1200px] px-6 py-16">
       <PageHeader
         title="نمونه‌های کارتونی"
         description="چند نمونه از تجربه‌هایی که والدین می‌توانند در کارتونا درخواست کنند؛ امن، خصوصی و بدون استفاده از تصویر واقعی کودکان."
@@ -128,5 +131,6 @@ export default async function ExamplesPage() {
         </div>
       </div>
     </div>
+    </>
   )
 }

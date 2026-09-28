@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/neu-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { clearCreationDraft, readCreationDraft } from "@/lib/creation/creation-draft";
 import type { CreationDraft, ImageCreationDraft, VideoCreationDraft, DrawingCreationDraft } from "@/lib/creation/creation-draft";
@@ -356,7 +356,7 @@ export default function CompleteCreationRequest() {
             </div>
 
             {fileSelected ? (
-              <div className="rounded-lg border border-mint-green/30 bg-mint-green/10 px-3 py-3 text-sm">
+              <div className="neu-pressed border-mint-green/20 px-3 py-3 text-sm">
                 <div className="flex items-center gap-3">
                   <span className="shrink-0 font-medium text-mint-green">
                     انتخاب شده
@@ -390,10 +390,10 @@ export default function CompleteCreationRequest() {
                     type="button"
                     onClick={handleUseUpload}
                     aria-pressed={sourceMode === "upload"}
-                    className={`min-h-[44px] rounded-lg border px-3 text-sm font-medium transition-colors ${
+                    className={`min-h-[44px] rounded-xl px-3 text-sm font-medium transition-all ${
                       sourceMode === "upload"
-                        ? "border-candy-pink text-candy-pink"
-                        : "border-soft-border text-text-dark/70"
+                        ? "neu-pressed-pink font-semibold"
+                        : "neu-raised neu-interactive text-text-dark/70"
                     }`}
                   >
                     آپلود تصویر جدید
@@ -402,10 +402,10 @@ export default function CompleteCreationRequest() {
                     type="button"
                     onClick={() => setSourceMode("gallery")}
                     aria-pressed={sourceMode === "gallery"}
-                    className={`min-h-[44px] rounded-lg border px-3 text-sm font-medium transition-colors ${
+                    className={`min-h-[44px] rounded-xl px-3 text-sm font-medium transition-all ${
                       sourceMode === "gallery"
-                        ? "border-candy-pink text-candy-pink"
-                        : "border-soft-border text-text-dark/70"
+                        ? "neu-pressed-pink font-semibold"
+                        : "neu-raised neu-interactive text-text-dark/70"
                     }`}
                   >
                     انتخاب از گالری خصوصی
@@ -414,7 +414,7 @@ export default function CompleteCreationRequest() {
 
                 {sourceMode === "upload" ? (
                   <div className="flex flex-col gap-2">
-                    <div className="rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm text-text-dark/50">
+                    <div className="neu-recessed rounded-xl px-3 py-2 text-sm text-text-dark/50">
                       فایل فقط در حافظه همین صفحه نگه‌داری می‌شود و هنوز بارگذاری
                       نشده است.
                     </div>
@@ -482,7 +482,7 @@ export default function CompleteCreationRequest() {
         ) : null}
 
         {costResult?.available === true && (
-          <div className="mt-2 rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm">
+          <div className="mt-2 neu-recessed rounded-xl px-3 py-2 text-sm">
             <div className="flex items-center justify-between">
               <span className="text-text-dark/50">هزینه برآوردی</span>
               <span className="font-bold text-text-dark">{costResult.candyCost.toLocaleString("fa-IR")} آب‌نبات</span>
@@ -500,7 +500,7 @@ export default function CompleteCreationRequest() {
 
         {submitError && (
           <div
-            className="mt-4 rounded-lg border border-coral/30 bg-coral/5 px-3 py-3"
+            className="mt-4 rounded-xl border border-coral/30 bg-coral/10 px-3 py-3"
             role="alert"
             aria-live="assertive"
           >

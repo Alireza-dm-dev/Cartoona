@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import { PageHeader } from "@/components/ui/page-header"
 import { Card } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/neu-badge"
+import { Button } from "@/components/ui/neu-button"
 import { EmptyState } from "@/components/ui/empty-state"
 import { useAdminReferrals } from "@/lib/referrals/use-admin-referrals"
 import type {
@@ -166,19 +166,19 @@ export default function AdminReferralsPage() {
           <LoadingCard />
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="h-24 animate-pulse rounded-xl border border-soft-border bg-white p-6" />
+              <div key={i} className="neu-raised h-24 animate-pulse rounded-xl p-6" />
             ))}
           </div>
           <div className="flex flex-col gap-4">
             {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="h-32 animate-pulse rounded-xl border border-soft-border bg-white p-6" />
+              <div key={i} className="neu-raised h-32 animate-pulse rounded-xl p-6" />
             ))}
           </div>
         </div>
       )}
 
       {pagePhase === "error" && (
-        <div className="flex flex-col items-center gap-4 rounded-xl border border-soft-border bg-white p-12 text-center">
+        <div className="neu-raised flex flex-col items-center gap-4 rounded-xl p-12 text-center">
           <p className="text-sm text-text-dark/60">
             {error || "بارگذاری اطلاعات انجام نشد."}
           </p>
@@ -263,7 +263,7 @@ export default function AdminReferralsPage() {
                       value={editPercent}
                       onChange={(e) => setEditPercent(e.target.value)}
                       disabled={editPhase === "saving"}
-                      className="w-32 rounded-xl border border-soft-border bg-white px-4 py-2.5 text-sm text-text-dark placeholder:text-text-dark/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy disabled:opacity-50"
+                      className="neu-recessed w-32 rounded-xl px-4 py-2.5 text-sm text-text-dark placeholder:text-text-dark/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy disabled:opacity-50"
                     />
                     <span className="text-sm text-text-dark/60">%</span>
                     <span className="text-xs text-text-dark/40">
@@ -349,7 +349,7 @@ export default function AdminReferralsPage() {
                 placeholder="جستجوی کد، نام یا ایمیل..."
                 value={searchInput}
                 onChange={(e) => handleSearchChange(e.target.value)}
-                className="w-full rounded-xl border border-soft-border bg-white px-4 py-2.5 text-sm text-text-dark placeholder:text-text-dark/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy"
+                className="neu-recessed w-full rounded-xl px-4 py-2.5 text-sm text-text-dark placeholder:text-text-dark/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-parent-navy"
                 aria-label="جستجوی روابط معرفی"
               />
             </div>
@@ -445,6 +445,6 @@ export default function AdminReferralsPage() {
 
 function LoadingCard() {
   return (
-    <div className="h-32 animate-pulse rounded-xl border border-soft-border bg-white p-6" />
+    <div className="neu-raised h-32 animate-pulse rounded-xl p-6" />
   )
 }

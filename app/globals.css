@@ -66,6 +66,233 @@
   --color-card-foreground: var(--card-foreground);
 }
 
+/* ------------------------------------------------------------------ */
+/* Neumorphism design system — ADDITIVE ONLY.                          */
+/*                                                                      */
+/* Everything below is new tokens/utilities for non-homepage surfaces.  */
+/* No existing variable, class, or selector above this block is        */
+/* modified, so the homepage (which only relies on what's above) keeps  */
+/* rendering exactly as before. These utilities are opt-in: pages must  */
+/* apply them via className, they never target existing selectors.     */
+/* ------------------------------------------------------------------ */
+:root {
+  /* Base surface the neumorphic system sits on top of (a warm, slightly
+     translucent cream so the shared artwork wash reads through modals
+     and layered panels). */
+  --neu-surface: #FFFBF3;
+  --neu-surface-recessed: #FBF1E1;
+  --neu-border: rgba(43, 43, 53, 0.08);
+  --neu-border-strong: rgba(43, 43, 53, 0.14);
+  --neu-light: rgba(255, 255, 255, 0.85);
+  --neu-dark: rgba(150, 110, 70, 0.22);
+  --neu-dark-soft: rgba(150, 110, 70, 0.14);
+  --neu-pink-dark: rgba(214, 60, 120, 0.35);
+  --neu-pink-light: rgba(255, 205, 226, 0.9);
+  --neu-radius-lg: 24px;
+  --neu-radius-md: 16px;
+  --neu-radius-sm: 12px;
+
+  /* Raised: light highlight top-left, soft shadow bottom-right. */
+  --neu-shadow-raised: -6px -6px 14px var(--neu-light), 6px 6px 16px var(--neu-dark);
+  --neu-shadow-raised-sm: -3px -3px 8px var(--neu-light), 3px 3px 10px var(--neu-dark-soft);
+  /* Hover: slightly increased elevation. */
+  --neu-shadow-raised-hover: -8px -8px 18px var(--neu-light), 8px 8px 20px var(--neu-dark);
+  /* Pressed / selected / active: reduced elevation, tending toward inset. */
+  --neu-shadow-pressed: inset 3px 3px 8px var(--neu-dark-soft), inset -3px -3px 8px var(--neu-light);
+  /* Recessed: inputs, wells — soft inset light + soft inset dark. */
+  --neu-shadow-recessed: inset 2px 2px 6px var(--neu-dark-soft), inset -2px -2px 6px var(--neu-light);
+  --neu-shadow-recessed-focus: inset 2px 2px 6px var(--neu-dark-soft), inset -2px -2px 6px var(--neu-light), 0 0 0 3px rgba(255, 111, 177, 0.35);
+  /* Primary CTA (pink) raised / pressed. */
+  --neu-shadow-cta: -5px -5px 12px rgba(255, 200, 222, 0.7), 5px 5px 16px var(--neu-pink-dark);
+  --neu-shadow-cta-hover: -6px -6px 16px rgba(255, 200, 222, 0.8), 7px 7px 20px var(--neu-pink-dark);
+  --neu-shadow-cta-pressed: inset 3px 3px 8px rgba(179, 45, 96, 0.4), inset -2px -2px 6px rgba(255, 220, 233, 0.6);
+}
+
+/* Shared application background: the same homepage artwork file, kept
+   fixed behind the viewport with a translucent cream wash for
+   readability. Used by every non-homepage layout via <AppBackground>. */
+.app-bg-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.app-bg-layer img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+}
+
+.app-bg-layer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 247, 232, 0.62);
+}
+
+/* Raised surface: cards, panels, modals, auth containers.
+   Background/border-color live in `@layer components` below (not here)
+   so that a Tailwind utility class passed via `className` (e.g.
+   `bg-soft-purple/5 border-soft-purple/20` on a privacy/warning card)
+   naturally wins the cascade — Tailwind v4 emits utilities in a
+   higher-priority `utilities` layer than `components`. Elevation itself
+   (box-shadow/radius/border-style/width) stays unlayered on purpose so
+   it always applies regardless of which surface/tint variant is used. */
+.neu-raised {
+  border-style: solid;
+  border-width: 1px;
+  border-radius: var(--neu-radius-lg);
+  box-shadow: var(--neu-shadow-raised);
+}
+
+/* Recessed surface: inputs, textareas, upload zones, inactive wells. */
+.neu-recessed {
+  border-style: solid;
+  border-width: 1px;
+  border-radius: var(--neu-radius-md);
+  box-shadow: var(--neu-shadow-recessed);
+}
+
+.neu-recessed:focus-within,
+.neu-recessed:focus-visible {
+  box-shadow: var(--neu-shadow-recessed-focus);
+  border-color: var(--candy-pink);
+}
+
+/* Interactive raised surface: secondary buttons, tabs, nav items. */
+.neu-interactive {
+  transition: box-shadow 150ms ease, transform 150ms ease;
+}
+.neu-interactive:hover:not(:disabled) {
+  box-shadow: var(--neu-shadow-raised-hover);
+}
+.neu-interactive:active:not(:disabled) {
+  box-shadow: var(--neu-shadow-pressed);
+  transform: translateY(0.5px);
+}
+.neu-interactive:disabled {
+  box-shadow: none;
+  opacity: 0.55;
+}
+
+/* Pressed / selected surface: active request type, selected character,
+   preset, duration, tab. */
+.neu-pressed {
+  border-style: solid;
+  border-width: 1px;
+  border-radius: var(--neu-radius-md);
+  box-shadow: var(--neu-shadow-pressed);
+}
+
+.neu-pressed-pink {
+  border-style: solid;
+  border-width: 1px;
+  border-radius: var(--neu-radius-md);
+  box-shadow: var(--neu-shadow-pressed);
+  color: var(--candy-pink);
+}
+
+/* Primary CTA: pink, raised, pressed on interaction. */
+.neu-cta {
+  border-style: solid;
+  border-width: 1px;
+  border-radius: var(--neu-radius-md);
+  box-shadow: var(--neu-shadow-cta);
+  transition: box-shadow 150ms ease, transform 150ms ease;
+}
+.neu-cta:hover:not(:disabled) {
+  box-shadow: var(--neu-shadow-cta-hover);
+}
+.neu-cta:active:not(:disabled) {
+  box-shadow: var(--neu-shadow-cta-pressed);
+  transform: translateY(0.5px);
+}
+.neu-cta:disabled {
+  box-shadow: none;
+  opacity: 0.5;
+}
+
+/* Status chips: softened semantic surfaces, kept legible. */
+.neu-chip {
+  border-radius: 999px;
+  border: 1px solid transparent;
+  box-shadow: var(--neu-shadow-raised-sm);
+}
+
+/* Default backgrounds/border-colors for the neumorphic surfaces above,
+   deliberately placed in Tailwind's `components` layer (lower priority
+   than its `utilities` layer, per the `@layer theme, base, components,
+   utilities;` order Tailwind v4 declares). Any Tailwind utility class
+   passed through `className` — e.g. `bg-soft-purple/5
+   border-soft-purple/20` on a privacy notice or warning card — lives in
+   `utilities` and therefore overrides these defaults, so semantic tint
+   composes with the neumorphic elevation instead of being fought by it.
+   These declarations never carry `!important` and are defined once, not
+   duplicated per call site. */
+@layer components {
+  .neu-raised {
+    background: var(--neu-surface);
+    border-color: var(--neu-border);
+  }
+
+  .neu-recessed {
+    background: var(--neu-surface-recessed);
+    border-color: var(--neu-border-strong);
+  }
+
+  .neu-pressed {
+    background: var(--neu-surface-recessed);
+    border-color: var(--neu-border-strong);
+  }
+
+  .neu-pressed-pink {
+    background: rgba(255, 111, 177, 0.14);
+    border-color: rgba(255, 111, 177, 0.45);
+  }
+
+  .neu-cta {
+    background: var(--candy-pink);
+    border-color: rgba(214, 60, 120, 0.4);
+  }
+}
+
+/* Mobile neumorphism reduction — Tailwind's own smallest breakpoint
+   (`sm: 640px`, i.e. everything below it) is reused here so this tracks
+   whatever the project already treats as "mobile." Shadows get tighter
+   offsets/blur (softer, less desktop-card-shrunk-down), radii tighten a
+   touch, and `.neu-raised` (the shared `Card` surface) gets slightly
+   less padding — all through the shared tokens/utilities so every
+   consumer adapts together, no page-by-page overrides. Purely visual:
+   no layout/spacing/grid changes. The homepage never references any
+   `--neu-*` variable or `.neu-*` class (verified via grep/graphify), so
+   this media query cannot affect it. */
+@media (max-width: 640px) {
+  :root {
+    --neu-radius-lg: 18px;
+    --neu-radius-md: 14px;
+    --neu-radius-sm: 10px;
+
+    --neu-shadow-raised: -3px -3px 8px var(--neu-light), 3px 3px 10px var(--neu-dark);
+    --neu-shadow-raised-sm: -2px -2px 5px var(--neu-light), 2px 2px 6px var(--neu-dark-soft);
+    --neu-shadow-raised-hover: -4px -4px 10px var(--neu-light), 4px 4px 12px var(--neu-dark);
+    --neu-shadow-pressed: inset 2px 2px 5px var(--neu-dark-soft), inset -2px -2px 5px var(--neu-light);
+    --neu-shadow-recessed: inset 1.5px 1.5px 4px var(--neu-dark-soft), inset -1.5px -1.5px 4px var(--neu-light);
+    --neu-shadow-recessed-focus: inset 1.5px 1.5px 4px var(--neu-dark-soft), inset -1.5px -1.5px 4px var(--neu-light), 0 0 0 3px rgba(255, 111, 177, 0.35);
+    --neu-shadow-cta: -3px -3px 7px rgba(255, 200, 222, 0.7), 3px 3px 9px var(--neu-pink-dark);
+    --neu-shadow-cta-hover: -3px -3px 8px rgba(255, 200, 222, 0.8), 4px 4px 10px var(--neu-pink-dark);
+    --neu-shadow-cta-pressed: inset 2px 2px 5px rgba(179, 45, 96, 0.4), inset -1.5px -1.5px 4px rgba(255, 220, 233, 0.6);
+  }
+
+  .neu-raised {
+    padding: 1rem;
+  }
+}
+
 .font-brand {
   font-family: "DigiMadasi", "Vazir", system-ui, sans-serif;
 }

@@ -1,5 +1,5 @@
 import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@/components/ui/neu-badge";
 import type { AdminHistoryItem } from "@/lib/admin/requests/fulfilment-types";
 import { mapOrderStatusLabel } from "@/lib/admin/requests/workflow";
 

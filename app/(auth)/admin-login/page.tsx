@@ -3,7 +3,7 @@
 import { useState } from "react"
 import Link from "next/link"
 import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+import { Button } from "@/components/ui/neu-button"
 import { createBrowserSupabaseClient } from "@/lib/supabase/client"
 
 function mapLoginError(message: string): string {
@@ -92,7 +92,7 @@ export default function AdminLoginPage() {
             onChange={(e) => setEmail(e.target.value)}
             placeholder="admin@example.com"
             required
-            className="w-full rounded-lg border border-soft-border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-candy-pink/30"
+            className="neu-recessed w-full rounded-xl px-3 py-2 text-sm outline-none transition-shadow min-h-[44px]"
           />
         </div>
 
@@ -108,7 +108,7 @@ export default function AdminLoginPage() {
             onChange={(e) => setPassword(e.target.value)}
             placeholder="رمز عبور"
             required
-            className="w-full rounded-lg border border-soft-border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-candy-pink/30"
+            className="neu-recessed w-full rounded-xl px-3 py-2 text-sm outline-none transition-shadow min-h-[44px]"
           />
         </div>
 

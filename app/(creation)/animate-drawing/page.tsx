@@ -5,7 +5,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/neu-button";
 import { CreationTypeSwitcher } from "@/components/creation/creation-type-switcher";
 import { useCreationPricing } from "@/lib/pricing/use-creation-pricing";
 import { calculateCreationCost } from "@/lib/pricing/calculate-creation-cost";
@@ -128,7 +128,7 @@ export default function AnimateDrawingPage() {
   }
 
   const inputClass =
-    "w-full rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30";
+    "neu-recessed w-full rounded-xl px-3 py-2 text-sm outline-none transition-shadow";
 
   return (
     <div>
@@ -156,12 +156,12 @@ export default function AnimateDrawingPage() {
             return (
               <li key={label} className="flex items-center flex-1">
                 <div
-                  className={`flex items-center justify-center rounded-full w-8 h-8 text-sm font-medium shrink-0 ${
+                  className={`flex items-center justify-center rounded-full w-8 h-8 text-sm font-medium shrink-0 transition-all ${
                     isCurrent
-                      ? "bg-candy-pink text-white"
+                      ? "bg-candy-pink text-white shadow-[-2px_-2px_5px_rgba(255,255,255,0.6),2px_2px_7px_rgba(214,60,120,0.4)]"
                       : isPast
-                        ? "bg-mint-green/20 text-mint-green"
-                        : "bg-soft-border text-text-dark/50"
+                        ? "bg-mint-green/25 text-emerald-800 shadow-[-2px_-2px_5px_rgba(255,255,255,0.7),2px_2px_6px_rgba(150,110,70,0.15)]"
+                        : "bg-[var(--neu-surface-recessed)] text-text-dark/40 shadow-[inset_1px_1px_3px_rgba(150,110,70,0.18),inset_-1px_-1px_3px_rgba(255,255,255,0.7)]"
                   }`}
                   aria-current={isCurrent ? "step" : undefined}
                 >
@@ -195,7 +195,7 @@ export default function AnimateDrawingPage() {
             <p className="mb-3 text-sm text-coral" role="alert">{errors.drawing}</p>
           )}
           {drawingFileName ? (
-            <div className="flex items-center gap-3 rounded-lg border border-candy-pink bg-candy-pink/5 px-3 py-3 text-sm">
+            <div className="neu-pressed-pink flex items-center gap-3 rounded-xl px-3 py-3 text-sm">
               <span className="flex-1 text-text-dark font-medium truncate">{drawingFileName}</span>
               <span className="shrink-0 text-sm font-medium text-candy-pink">انتخاب شده</span>
               <button
@@ -208,7 +208,7 @@ export default function AnimateDrawingPage() {
             </div>
           ) : (
             <div className="flex flex-col gap-2">
-              <div className="rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm text-text-dark/50">
+              <div className="neu-recessed rounded-xl px-3 py-2 text-sm text-text-dark/50">
                 فایل در این مرحله ارسال یا ذخیره نمی‌شود.
               </div>
               <label className="inline-flex cursor-pointer items-center gap-2 text-sm font-medium text-candy-pink hover:opacity-80 self-start">
@@ -254,10 +254,10 @@ export default function AnimateDrawingPage() {
                   return (
                     <label
                       key={opt.value}
-                      className={`cursor-pointer rounded-lg border p-3 text-center text-xs transition-colors ${
+                      className={`cursor-pointer rounded-xl p-3 text-center text-xs transition-all ${
                         isSelected
-                          ? "border-candy-pink bg-candy-pink/5 font-medium text-parent-navy"
-                          : "border-soft-border bg-soft-border/5 text-text-dark/60 hover:border-text-dark/30"
+                          ? "neu-pressed-pink font-medium"
+                          : "neu-raised neu-interactive text-text-dark/60"
                       }`}
                     >
                       <input
@@ -319,10 +319,10 @@ export default function AnimateDrawingPage() {
                   {durationOptions.map((opt) => (
                     <label
                       key={opt.value}
-                      className={`flex-1 cursor-pointer rounded-lg border p-3 text-center text-sm transition-colors ${
+                      className={`flex-1 cursor-pointer rounded-xl p-3 text-center text-sm transition-all ${
                         duration === opt.value
-                          ? "border-candy-pink bg-candy-pink/5 text-parent-navy font-medium"
-                          : "border-soft-border bg-soft-border/5 text-text-dark/60 hover:border-text-dark/30"
+                          ? "neu-pressed-pink font-medium"
+                          : "neu-raised neu-interactive text-text-dark/60"
                       }`}
                     >
                       <input
@@ -360,7 +360,7 @@ export default function AnimateDrawingPage() {
               <label className="block text-sm font-medium text-text-dark">
                 نقاشی انتخاب‌شده
               </label>
-              <div className="rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm text-text-dark">
+              <div className="neu-recessed rounded-xl px-3 py-2 text-sm text-text-dark">
                 {drawingFileName}
               </div>
             </div>

@@ -5,8 +5,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/neu-button";
+import { Badge } from "@/components/ui/neu-badge";
 import { SafetyNotice } from "@/components/ui/safety-notice";
 import { CreationTypeSwitcher } from "@/components/creation/creation-type-switcher";
 import { useCreationPricing } from "@/lib/pricing/use-creation-pricing";
@@ -166,7 +166,7 @@ export default function RequestVideoPage() {
   }
 
   const inputClass =
-    "w-full rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-candy-pink/30";
+    "neu-recessed w-full rounded-xl px-3 py-2 text-sm outline-none transition-shadow";
 
   return (
     <div>
@@ -194,12 +194,12 @@ export default function RequestVideoPage() {
             return (
               <li key={label} className="flex items-center flex-1">
                 <div
-                  className={`flex items-center justify-center rounded-full w-8 h-8 text-sm font-medium shrink-0 ${
+                  className={`flex items-center justify-center rounded-full w-8 h-8 text-sm font-medium shrink-0 transition-all ${
                     isCurrent
-                      ? "bg-candy-pink text-white"
+                      ? "bg-candy-pink text-white shadow-[-2px_-2px_5px_rgba(255,255,255,0.6),2px_2px_7px_rgba(214,60,120,0.4)]"
                       : isPast
-                        ? "bg-mint-green/20 text-mint-green"
-                        : "bg-soft-border text-text-dark/50"
+                        ? "bg-mint-green/25 text-emerald-800 shadow-[-2px_-2px_5px_rgba(255,255,255,0.7),2px_2px_6px_rgba(150,110,70,0.15)]"
+                        : "bg-[var(--neu-surface-recessed)] text-text-dark/40 shadow-[inset_1px_1px_3px_rgba(150,110,70,0.18),inset_-1px_-1px_3px_rgba(255,255,255,0.7)]"
                   }`}
                   aria-current={isCurrent ? "step" : undefined}
                 >
@@ -238,10 +238,10 @@ export default function RequestVideoPage() {
               return (
                 <label
                   key={character.name}
-                  className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                  className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-all ${
                     isSelected
-                      ? "border-candy-pink bg-candy-pink/5"
-                      : "border-soft-border bg-soft-border/5 hover:border-text-dark/30"
+                      ? "neu-pressed-pink font-medium"
+                      : "neu-raised neu-interactive text-text-dark/80"
                   }`}
                 >
                   <input
@@ -310,10 +310,10 @@ export default function RequestVideoPage() {
                 {durationOptions.map((opt) => (
                   <label
                     key={opt.value}
-                    className={`cursor-pointer rounded-lg border p-3 text-center text-sm transition-colors ${
+                    className={`cursor-pointer rounded-xl p-3 text-center text-sm transition-all ${
                       duration === opt.value
-                        ? "border-candy-pink bg-candy-pink/5 text-parent-navy font-medium"
-                        : "border-soft-border bg-soft-border/5 text-text-dark/60 hover:border-text-dark/30"
+                        ? "neu-pressed-pink font-medium"
+                        : "neu-raised neu-interactive text-text-dark/60"
                     }`}
                   >
                     <input
@@ -343,10 +343,10 @@ export default function RequestVideoPage() {
                   return (
                     <label
                       key={opt.value}
-                      className={`cursor-pointer rounded-lg border p-3 text-center text-sm transition-colors ${
+                      className={`cursor-pointer rounded-xl p-3 text-center text-sm transition-all ${
                         isSelected
-                          ? "border-candy-pink bg-candy-pink/5 text-parent-navy font-medium"
-                          : "border-soft-border bg-soft-border/5 text-text-dark/60 hover:border-text-dark/30"
+                          ? "neu-pressed-pink font-medium"
+                          : "neu-raised neu-interactive text-text-dark/60"
                       }`}
                     >
                       <input
@@ -433,7 +433,7 @@ export default function RequestVideoPage() {
                 فایل مرجع / تصویر کمکی
               </label>
               {referenceFileName ? (
-                <div className="flex items-center gap-3 rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm">
+                <div className="neu-recessed flex items-center gap-3 rounded-xl px-3 py-2 text-sm">
                   <span className="flex-1 text-text-dark truncate">{referenceFileName}</span>
                   <button
                     type="button"
@@ -445,7 +445,7 @@ export default function RequestVideoPage() {
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
-                  <div className="rounded-lg border border-soft-border bg-soft-border/10 px-3 py-2 text-sm text-text-dark/50">
+                  <div className="neu-recessed rounded-xl px-3 py-2 text-sm text-text-dark/50">
                     فایل در این مرحله ارسال یا ذخیره نمی‌شود.
                   </div>
                   <label className="inline-flex cursor-pointer items-center gap-2 text-sm font-medium text-candy-pink hover:opacity-80 self-start">

@@ -1,14 +1,17 @@
 import Link from "next/link";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/neu-button";
+import { Badge } from "@/components/ui/neu-badge";
 import { plans } from "@/config/plans";
 import { formatPriceToman, formatCandies } from "@/lib/pricing/format-price";
+import { AppBackground } from "@/components/ui/app-background";
 
 export default function PricingPage() {
   return (
-    <div className="mx-auto max-w-[1200px] px-6 py-16">
+    <>
+    <AppBackground />
+    <div className="relative z-10 mx-auto max-w-[1200px] px-6 py-16">
       <PageHeader
         title="پلن‌های کارتونا"
         description="پلنی را انتخاب کنید که با تعداد و نوع کارتون‌هایی که می‌خواهید بسازید هماهنگ باشد. هر پلن شامل مقداری آب‌نبات برای ساخت تصویر، ویدیو و متحرک‌سازی نقاشی است."
@@ -87,5 +90,6 @@ export default function PricingPage() {
         </p>
       </div>
     </div>
+    </>
   );
 }

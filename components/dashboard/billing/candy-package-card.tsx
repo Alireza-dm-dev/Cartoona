@@ -2,8 +2,8 @@
 
 import type { CandyPackageSummary } from "@/lib/candy-purchases/types"
 import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/neu-button"
+import { Badge } from "@/components/ui/neu-badge"
 
 interface CandyPackageCardProps {
   pkg: CandyPackageSummary
