@@ -5,7 +5,11 @@ import {
   updateCouponViaTrustedRpc,
 } from "@/lib/admin/coupons/service";
 import { queryAdminCouponDetail } from "@/lib/admin/coupons/queries";
-import { validateCouponInput, isUuid } from "@/lib/admin/coupons/validation";
+import {
+  validateCouponInput,
+  isUuid,
+  parseExpectedUpdatedAt,
+} from "@/lib/admin/coupons/validation";
 import type { AdminCouponErrorResponse } from "@/lib/admin/coupons/types";
 
 export const dynamic = "force-dynamic";
@@ -89,12 +93,9 @@ export async function PATCH(
     return jsonError("فرمت JSON نامعتبر است.", 400);
   }
 
-  const expectedUpdatedAt = body.expectedUpdatedAt;
-  if (typeof expectedUpdatedAt !== "string") {
-    return jsonError("درخواست نامعتبر است.", 400);
-  }
-  const ts = new Date(expectedUpdatedAt);
-  if (isNaN(ts.getTime())) {
+  // Opaque concurrency token: validated, never re-serialized (microseconds).
+  const expectedUpdatedAt = parseExpectedUpdatedAt(body.expectedUpdatedAt);
+  if (expectedUpdatedAt === null) {
     return jsonError("درخواست نامعتبر است.", 400);
   }
 
@@ -108,7 +109,7 @@ export async function PATCH(
 
   const result = await updateCouponViaTrustedRpc(auth.adminUserId, id, {
     ...validated.input,
-    expectedUpdatedAt: ts.toISOString(),
+    expectedUpdatedAt,
   });
 
   if (!result.ok) {

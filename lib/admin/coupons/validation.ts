@@ -25,6 +25,20 @@ export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_REGEX.test(value.trim());
 }
 
+// Postgres timestamptz carries microseconds; a JS Date does not. The
+// optimistic-concurrency token must reach the RPC byte-for-byte, so it is
+// validated here but never parsed into a Date and re-serialized.
+const TIMESTAMP_TOKEN_REGEX =
+  /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}(:?\d{2})?)$/;
+
+/** Returns the original string if it is a well-formed timestamp, else null. */
+export function parseExpectedUpdatedAt(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 40) return null;
+  if (!TIMESTAMP_TOKEN_REGEX.test(value)) return null;
+  if (Number.isNaN(Date.parse(value))) return null;
+  return value;
+}
+
 // ── List query parameter parsing ─────────────────────────────────────────────
 
 export interface ParsedAdminCouponListParams {
