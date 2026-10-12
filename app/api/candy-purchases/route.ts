@@ -3,7 +3,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
 import { isParentRole } from "@/lib/auth/parent-access"
 import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
-import { createExpiredParentSessionResponse } from "@/lib/auth/expired-parent-session-response"
+import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 import {
   toParentCandyPurchaseSummary,
   type CouponAppliedStatus,
@@ -47,7 +47,7 @@ export async function GET() {
 
   const lifetime = await checkCurrentParentSessionLifetime(supabase)
   if (!lifetime.valid) {
-    return createExpiredParentSessionResponse(supabase)
+    return createParentSessionFailureResponse(supabase, lifetime)
   }
 
   const { data: parentProfile } = await supabase
@@ -227,7 +227,7 @@ export async function POST(request: Request) {
 
   const lifetime = await checkCurrentParentSessionLifetime(supabase)
   if (!lifetime.valid) {
-    return createExpiredParentSessionResponse(supabase)
+    return createParentSessionFailureResponse(supabase, lifetime)
   }
 
   // Parse and validate body

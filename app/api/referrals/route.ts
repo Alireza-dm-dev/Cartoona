@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
-import { createExpiredParentSessionResponse } from "@/lib/auth/expired-parent-session-response"
+import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 
 function jsonError(message: string, status: number, code?: string): NextResponse {
   return NextResponse.json(
@@ -37,7 +37,7 @@ export async function GET() {
 
   const lifetime = await checkCurrentParentSessionLifetime(supabase)
   if (!lifetime.valid) {
-    return createExpiredParentSessionResponse(supabase)
+    return createParentSessionFailureResponse(supabase, lifetime)
   }
 
   const { data: rpcData, error: rpcError } = await supabase

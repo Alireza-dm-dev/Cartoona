@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
-import { createExpiredParentSessionResponse } from "@/lib/auth/expired-parent-session-response"
+import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 import { isValidOrderId } from "@/lib/parent/orders/detail-queries"
 import {
   resolveParentOwnsOrder,
@@ -63,7 +63,7 @@ export async function POST(
 
   const lifetime = await checkCurrentParentSessionLifetime(supabase)
   if (!lifetime.valid) {
-    return createExpiredParentSessionResponse(supabase)
+    return createParentSessionFailureResponse(supabase, lifetime)
   }
 
   let body: unknown = null

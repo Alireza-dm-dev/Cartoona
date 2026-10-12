@@ -34,6 +34,20 @@ export default async function CompleteRequestPage() {
 
   const lifetime = await checkCurrentParentSessionLifetime(supabase);
   if (!lifetime.valid) {
+    // A failed lookup is not an expiry: do not send a valid session to the
+    // login page labelled "expired". Fail closed with a retry message.
+    if (lifetime.reason === "lookup_failed") {
+      return (
+        <div role="alert" className="mx-auto max-w-[560px] py-12 text-center">
+          <p className="mb-4 text-text-dark/80">
+            بررسی نشست موقتاً ممکن نیست. لطفاً چند لحظه بعد دوباره تلاش کنید.
+          </p>
+          <a href="/complete-request" className="font-semibold text-candy-pink">
+            تلاش دوباره
+          </a>
+        </div>
+      );
+    }
     redirect("/login?reason=session_expired&from=/complete-request");
   }
 

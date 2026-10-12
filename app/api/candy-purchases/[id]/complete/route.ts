@@ -3,7 +3,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
 import { isParentRole } from "@/lib/auth/parent-access"
 import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
-import { createExpiredParentSessionResponse } from "@/lib/auth/expired-parent-session-response"
+import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -77,7 +77,7 @@ export async function POST(
 
   const lifetime = await checkCurrentParentSessionLifetime(supabase)
   if (!lifetime.valid) {
-    return createExpiredParentSessionResponse(supabase)
+    return createParentSessionFailureResponse(supabase, lifetime)
   }
 
   // Parse optional body (payment_reference)

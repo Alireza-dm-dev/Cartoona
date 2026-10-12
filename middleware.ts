@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { isAuthRetryableFetchError } from '@supabase/supabase-js'
 import { getSupabaseEnv } from './lib/supabase/env'
 import { isAdminRole } from './lib/auth/admin-role'
 import { isParentRole } from './lib/auth/parent-access'
@@ -16,10 +17,38 @@ function redirectCookies(
   return response
 }
 
+/**
+ * Retryable answer for a protected request whose auth/session check could not
+ * be completed (network or backend failure). Fails closed - no protected
+ * content - but, unlike an expiry, never signs out or clears auth cookies, so
+ * the user's still-valid session survives and a plain reload works. Any cookie
+ * the Supabase client refreshed during this request is carried over.
+ */
+function sessionCheckUnavailable(supabaseResponse: NextResponse): NextResponse {
+  const response = new NextResponse(
+    'بررسی نشست موقتاً ممکن نیست. لطفاً چند لحظه بعد صفحه را دوباره بارگذاری کنید.',
+    {
+      status: 503,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Retry-After': '2',
+      },
+    },
+  )
+  for (const cookie of supabaseResponse.cookies.getAll()) {
+    response.cookies.set(cookie.name, cookie.value, cookie)
+  }
+  return response
+}
+
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request })
 
   let user = null
+  // True only when getUser() failed for an infrastructure reason (network /
+  // backend), as opposed to a definite "no valid user" answer.
+  let authTransientFailure = false
   let supabase: ReturnType<typeof createServerClient> | null = null
 
   try {
@@ -47,11 +76,16 @@ export async function middleware(request: NextRequest) {
 
     const {
       data: { user: verifiedUser },
+      error: getUserError,
     } = await supabase.auth.getUser()
     user = verifiedUser
+    if (!verifiedUser && getUserError && isAuthRetryableFetchError(getUserError)) {
+      authTransientFailure = true
+    }
   } catch {
     user = null
     supabase = null
+    authTransientFailure = true
   }
 
   const { pathname, search } = request.nextUrl
@@ -67,6 +101,10 @@ export async function middleware(request: NextRequest) {
 
   // ── Admin block (unchanged) ─────────────────────────────────────────────
   if (isAdminPath) {
+    if (!user && authTransientFailure) {
+      return sessionCheckUnavailable(supabaseResponse)
+    }
+
     if (!user) {
       const loginUrl = new URL('/admin-login', request.url)
       loginUrl.searchParams.set('from', pathname + search)
@@ -109,6 +147,10 @@ export async function middleware(request: NextRequest) {
 
   if (isParentProtectedPage) {
     // 1. Authentication check
+    if (!user && authTransientFailure) {
+      return sessionCheckUnavailable(supabaseResponse)
+    }
+
     if (!user) {
       const loginUrl = new URL('/login', request.url)
       loginUrl.searchParams.set('from', pathname + search)
@@ -168,6 +210,12 @@ export async function middleware(request: NextRequest) {
     const lifetime = await checkCurrentParentSessionLifetime(supabase)
 
     if (!lifetime.valid) {
+      // A lookup that could not complete is not an expiry: fail closed with a
+      // retryable response and keep the session. Only a definite expiry /
+      // missing session signs the user out.
+      if (lifetime.reason === 'lookup_failed') {
+        return sessionCheckUnavailable(supabaseResponse)
+      }
       return redirectExpiredParentSession()
     }
 

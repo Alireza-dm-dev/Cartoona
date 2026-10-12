@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
-import { createExpiredParentSessionResponse } from "@/lib/auth/expired-parent-session-response"
+import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 import { getParentGalleryMedia } from "@/lib/parent/gallery/queries"
 
 /**
@@ -27,7 +27,7 @@ export async function GET() {
 
   const lifetime = await checkCurrentParentSessionLifetime(supabase)
   if (!lifetime.valid) {
-    return createExpiredParentSessionResponse(supabase)
+    return createParentSessionFailureResponse(supabase, lifetime)
   }
 
   const result = await getParentGalleryMedia(supabase)

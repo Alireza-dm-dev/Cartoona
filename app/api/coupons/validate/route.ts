@@ -3,7 +3,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
 import { isParentRole } from "@/lib/auth/parent-access"
 import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
-import { createExpiredParentSessionResponse } from "@/lib/auth/expired-parent-session-response"
+import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 import { isValidRawCouponCode, normalizeCouponCode } from "@/lib/coupons/rules"
 import { toCouponValidationResult } from "@/lib/coupons/types"
 import { mapCouponRpcError } from "@/lib/coupons/errors"
@@ -65,7 +65,7 @@ export async function POST(request: Request) {
 
   const lifetime = await checkCurrentParentSessionLifetime(supabase)
   if (!lifetime.valid) {
-    return createExpiredParentSessionResponse(supabase)
+    return createParentSessionFailureResponse(supabase, lifetime)
   }
 
   // Parse and validate body

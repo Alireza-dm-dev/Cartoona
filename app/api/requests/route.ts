@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
 import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
-import { createExpiredParentSessionResponse } from "@/lib/auth/expired-parent-session-response"
+import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 import { parseAndValidateDraft } from "@/lib/requests/request-submission"
 import { mapRequestRpcError } from "@/lib/requests/request-rpc-error"
 import { toSubmissionSuccess } from "@/lib/requests/submission-response"
@@ -43,7 +43,7 @@ export async function POST(request: Request) {
 
   const lifetime = await checkCurrentParentSessionLifetime(supabase)
   if (!lifetime.valid) {
-    return createExpiredParentSessionResponse(supabase)
+    return createParentSessionFailureResponse(supabase, lifetime)
   }
 
   const { data: parentProfile } = await supabase
