@@ -2,34 +2,100 @@ import * as fs from "fs"
 import * as path from "path"
 
 /**
- * Load `.env.local` for a test run without overwriting what the caller set.
+ * Load `.env.local` for a test run exactly the way Next.js does, and refuse to
+ * guess when the file is ambiguous.
  *
- * The specs used to read the file and assign every key unconditionally, which
- * made the safety guard impossible to satisfy: `.env.local` points
- * NEXT_PUBLIC_SUPABASE_URL at the main project, so an operator who exported the
- * disposable target had it silently replaced by main before
- * `assertSafeDatabaseTarget()` ever looked. The guard then refused the run —
- * failing closed, correctly, but leaving no way to run a stateful spec at all.
+ * Why this exists. The specs used to read the file with three different rules:
+ * a first-wins loader here, and ~20 inline copies that assigned every key
+ * unconditionally (last wins, overwriting the caller's environment). Next.js
+ * itself is last-wins within a file but never overrides a variable the real
+ * environment already set. With a duplicated Supabase block those rules named
+ * different projects - the app could be talking to the disposable project
+ * while a test helper believed it was on production, or the reverse.
  *
- * Precedence here is the usual one: the real environment wins, and the file
- * only supplies what is missing. That is what lets a run be aimed at the
- * disposable project from the outside, and it is why the guard's verdict
- * describes the same target the requests will actually reach.
+ * One rule now, shared by every spec and identical to Next.js:
+ *   1. A variable already set in the real environment wins; the file only
+ *      supplies what is missing.
+ *   2. Within the file a repeated key resolves to its last value (what
+ *      `@next/env` / dotenv do).
+ *   3. A Supabase- or Cartoona-related key repeated with DIFFERENT values is
+ *      an error, not a tie-break: the run stops before anything is resolved.
+ *
+ * Rule 3 is what makes the failure loud. A repeated key that agrees with
+ * itself is harmless; one that disagrees means the file no longer says which
+ * project is meant, and the safe answer is to refuse.
  */
-export function loadTestEnv(): void {
+
+/** Keys whose ambiguity can change which database a run touches. */
+const GUARDED_KEY = /SUPABASE|CARTOONA_/
+
+export interface ParsedEnvFile {
+  /** Final value per key, last occurrence winning (Next.js behaviour). */
+  values: Record<string, string>
+  /** Guarded keys that appear more than once with differing values. */
+  conflicts: string[]
+}
+
+function unquote(raw: string): string {
+  const v = raw.trim()
+  const quote = v[0]
+  if ((quote === '"' || quote === "'" || quote === "`") && v.length >= 2 && v.endsWith(quote)) {
+    const inner = v.slice(1, -1)
+    return quote === '"' ? inner.replace(/\\n/g, "\n").replace(/\\r/g, "\r") : inner
+  }
+  // Unquoted: a trailing ` # comment` is not part of the value.
+  return v.replace(/\s+#.*$/, "").trim()
+}
+
+/** Parse dotenv text the way Next.js does, reporting guarded-key conflicts. */
+export function parseEnvFile(content: string): ParsedEnvFile {
+  const values: Record<string, string> = {}
+  const conflicts = new Set<string>()
+
+  for (const line of content.replace(/\r\n?/g, "\n").split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith("#")) continue
+    const match = trimmed.match(/^(?:export\s+)?([\w.-]+)\s*=\s*(.*)$/)
+    if (!match) continue
+    const key = match[1]
+    const value = unquote(match[2])
+    if (key in values && values[key] !== value && GUARDED_KEY.test(key)) conflicts.add(key)
+    values[key] = value
+  }
+
+  return { values, conflicts: [...conflicts].sort() }
+}
+
+export interface LoadTestEnvOptions {
+  /** Defaults to the repository's `.env.local`. */
+  file?: string
+  /** Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv
+}
+
+export function loadTestEnv(options: LoadTestEnvOptions = {}): void {
+  const file = options.file ?? path.resolve(__dirname, "../../.env.local")
+  const env = options.env ?? process.env
+
+  let content: string
   try {
-    const content = fs.readFileSync(path.resolve(__dirname, "../../.env.local"), "utf-8")
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith("#")) continue
-      const eq = trimmed.indexOf("=")
-      if (eq === -1) continue
-      const key = trimmed.slice(0, eq)
-      // Already set by the caller: leave it alone.
-      if (process.env[key] !== undefined && process.env[key] !== "") continue
-      process.env[key] = trimmed.slice(eq + 1)
-    }
+    content = fs.readFileSync(file, "utf-8")
   } catch {
     // No .env.local is fine; the environment may already carry everything.
+    return
+  }
+
+  const { values, conflicts } = parseEnvFile(content)
+  if (conflicts.length > 0) {
+    // Names only - never values.
+    throw new Error(
+      `Ambiguous environment file: ${conflicts.join(", ")} defined more than once with different values. ` +
+        "Keep a single active block so the target is unambiguous.",
+    )
+  }
+
+  for (const [key, value] of Object.entries(values)) {
+    if (env[key] !== undefined && env[key] !== "") continue
+    env[key] = value
   }
 }

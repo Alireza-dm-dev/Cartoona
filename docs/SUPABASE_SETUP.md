@@ -34,7 +34,7 @@
    |---|---|
    | `NEXT_PUBLIC_SUPABASE_URL` | **Project URL** — looks like `https://abc123.supabase.co` |
    | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | **anon public** key — starts with `eyJ...` |
-   | `SUPABASE_SERVICE_ROLE_KEY` | **service_role** key — starts with `eyJ...` (keep secret!) |
+   | `SUPABASE_SECRET_KEY` | **service_role** key — starts with `eyJ...` (keep secret!) |
 
 3. Copy these values into `.env.local` (based on `.env.local.example`).
 
@@ -170,6 +170,6 @@ These steps are **future work** — do not attempt them until guided.
 ## Security Notes
 
 - Never commit `.env.local` or real credentials to version control.
-- The `SUPABASE_SERVICE_ROLE_KEY` bypasses all RLS — use it only in server-only code.
+- The `SUPABASE_SECRET_KEY` bypasses all RLS — use it only in server-only code.
 - An admin/service-role client will be added later when API routes need it.
 - All anon-key clients enforce RLS — test RLS policies before considering them secure.

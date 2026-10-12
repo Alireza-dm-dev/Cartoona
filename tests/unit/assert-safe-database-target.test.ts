@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from "vitest"
+import { describe, test, expect, beforeEach, afterEach } from "vitest"
 
 const MAIN_REF = "oucyhmrnzahlhqjfqcge"
 const MIGRATION_TEST_REF = "guhhlshjvmiwwmixiulk"
@@ -15,10 +15,13 @@ beforeEach(() => {
     "SUPABASE_URL",
     "CARTOONA_ALLOW_DESTRUCTIVE_TESTS",
     "CARTOONA_TEST_SUPABASE_PROJECT_REF",
+    "CARTOONA_TEST_SUPABASE_URL",
   ]) {
     envBackup[key] = process.env[key]
   }
 })
+
+afterEach(() => cleanup())
 
 function cleanup() {
   for (const [key, val] of Object.entries(envBackup)) {
@@ -130,6 +133,7 @@ describe("assertSafeDatabaseTarget", () => {
     clearEnv(["SUPABASE_PROJECT_REF", "CARTOONA_ALLOW_DESTRUCTIVE_TESTS"])
     process.env.NEXT_PUBLIC_SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
     process.env.SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
+    process.env.CARTOONA_TEST_SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
     process.env.CARTOONA_TEST_SUPABASE_PROJECT_REF = DISPOSABLE_REF
     process.env.CARTOONA_ALLOW_DESTRUCTIVE_TESTS = "true"
     const { assertSafeDatabaseTarget } = await loadGuard()
@@ -276,6 +280,7 @@ describe("assertSafeDatabaseTarget", () => {
   test("19. Exact disposable hosted target with opt-in → accepted", async () => {
     clearEnv(["SUPABASE_PROJECT_REF", "SUPABASE_URL", "CARTOONA_ALLOW_DESTRUCTIVE_TESTS"])
     process.env.NEXT_PUBLIC_SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
+    process.env.CARTOONA_TEST_SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
     process.env.CARTOONA_TEST_SUPABASE_PROJECT_REF = DISPOSABLE_REF
     process.env.CARTOONA_ALLOW_DESTRUCTIVE_TESTS = "true"
     const { assertSafeDatabaseTarget } = await loadGuard()
@@ -288,6 +293,7 @@ describe("assertSafeDatabaseTarget", () => {
   test("20. Exact disposable target without opt-in → rejected", async () => {
     clearEnv(["SUPABASE_PROJECT_REF", "SUPABASE_URL", "CARTOONA_ALLOW_DESTRUCTIVE_TESTS"])
     process.env.NEXT_PUBLIC_SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
+    process.env.CARTOONA_TEST_SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
     process.env.CARTOONA_TEST_SUPABASE_PROJECT_REF = DISPOSABLE_REF
     const { assertSafeDatabaseTarget } = await loadGuard()
     const result = assertSafeDatabaseTarget()
@@ -302,6 +308,7 @@ describe("assertSafeDatabaseTarget", () => {
     clearEnv(["SUPABASE_PROJECT_REF", "SUPABASE_URL", "CARTOONA_ALLOW_DESTRUCTIVE_TESTS", "CARTOONA_TEST_SUPABASE_PROJECT_REF"])
     process.env.NEXT_PUBLIC_SUPABASE_URL = ""
     process.env.SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
+    process.env.CARTOONA_TEST_SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
     process.env.CARTOONA_TEST_SUPABASE_PROJECT_REF = DISPOSABLE_REF
     process.env.CARTOONA_ALLOW_DESTRUCTIVE_TESTS = "true"
     const { assertSafeDatabaseTarget } = await loadGuard()
@@ -315,6 +322,7 @@ describe("assertSafeDatabaseTarget", () => {
     clearEnv(["SUPABASE_PROJECT_REF", "SUPABASE_URL", "CARTOONA_ALLOW_DESTRUCTIVE_TESTS", "CARTOONA_TEST_SUPABASE_PROJECT_REF"])
     process.env.NEXT_PUBLIC_SUPABASE_URL = "   "
     process.env.SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
+    process.env.CARTOONA_TEST_SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
     process.env.CARTOONA_TEST_SUPABASE_PROJECT_REF = DISPOSABLE_REF
     process.env.CARTOONA_ALLOW_DESTRUCTIVE_TESTS = "true"
     const { assertSafeDatabaseTarget } = await loadGuard()
@@ -385,6 +393,7 @@ describe("assertSafeDatabaseTarget", () => {
   test("28. Uppercase hostname normalizes safely", async () => {
     clearEnv(["SUPABASE_PROJECT_REF", "SUPABASE_URL", "CARTOONA_ALLOW_DESTRUCTIVE_TESTS"])
     process.env.NEXT_PUBLIC_SUPABASE_URL = `HTTPS://${DISPOSABLE_REF.toUpperCase()}.SUPABASE.CO`
+    process.env.CARTOONA_TEST_SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
     process.env.CARTOONA_TEST_SUPABASE_PROJECT_REF = DISPOSABLE_REF
     process.env.CARTOONA_ALLOW_DESTRUCTIVE_TESTS = "true"
     const { assertSafeDatabaseTarget } = await loadGuard()
@@ -420,6 +429,7 @@ describe("assertSafeDatabaseTarget", () => {
     clearEnv(["SUPABASE_PROJECT_REF", "SUPABASE_URL", "CARTOONA_ALLOW_DESTRUCTIVE_TESTS"])
     process.env.NEXT_PUBLIC_SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
     process.env.SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co` // dup
+    process.env.CARTOONA_TEST_SUPABASE_URL = `https://${DISPOSABLE_REF}.supabase.co`
     process.env.CARTOONA_TEST_SUPABASE_PROJECT_REF = DISPOSABLE_REF
     process.env.CARTOONA_ALLOW_DESTRUCTIVE_TESTS = "true"
     const { assertSafeDatabaseTarget } = await loadGuard()

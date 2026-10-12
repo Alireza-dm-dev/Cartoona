@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test"
+import { loadTestEnv } from "../helpers/load-test-env"
 import * as fs from "fs"
 import * as path from "path"
 import { assertSafeDatabaseTarget, guardedProjectRef, guardedSupabaseUrl } from "../helpers/assert-safe-database-target"
@@ -23,16 +24,7 @@ import { assertSafeDatabaseTarget, guardedProjectRef, guardedSupabaseUrl } from 
 const BASE = process.env.CARTOONA_TEST_BASE_URL || "http://localhost:3000"
 
 function loadEnv(): void {
-  try {
-    const content = fs.readFileSync(path.resolve(__dirname, "../../.env.local"), "utf-8")
-    for (const line of content.split("\n")) {
-      const t = line.trim()
-      if (!t || t.startsWith("#")) continue
-      const eq = t.indexOf("=")
-      if (eq === -1) continue
-      process.env[t.slice(0, eq)] = t.slice(eq + 1)
-    }
-  } catch { /* ignore */ }
+  loadTestEnv()
 }
 
 loadEnv()

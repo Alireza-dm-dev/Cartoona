@@ -39,7 +39,7 @@ See `.env.example` for all required variables. You'll need:
 
 - `NEXT_PUBLIC_SUPABASE_URL` — Supabase project URL
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY` — Supabase anonymous key
-- `SUPABASE_SERVICE_ROLE_KEY` — Supabase service role key (server only)
+- `SUPABASE_SECRET_KEY` — Supabase service role key (server only)
 - `NEXT_PUBLIC_SITE_URL` — Production site URL
 
 Stripe variables are listed for future use.

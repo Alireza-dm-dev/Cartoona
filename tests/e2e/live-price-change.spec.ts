@@ -1,31 +1,19 @@
 import { test, expect } from "@playwright/test";
-import * as fs from "fs";
-import * as path from "path";
+import { loadTestEnv } from "../helpers/load-test-env"
 import { assertSafeDatabaseTarget, guardedSupabaseUrl } from "../helpers/assert-safe-database-target";
 
 // Load env from .env.local into process.env for guard compatibility
-try {
-  const content = fs.readFileSync(path.resolve(__dirname, "../../.env.local"), "utf-8");
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eqIdx = trimmed.indexOf("=");
-    if (eqIdx === -1) continue;
-    const key = trimmed.slice(0, eqIdx);
-    const val = trimmed.slice(eqIdx + 1);
-    process.env[key] = val;
-  }
-} catch { /* fallback */ }
+loadTestEnv();
 
 const BASE = "http://localhost:3000";
 // Derived from the guarded environment. There is deliberately no default:
 // falling back to a hardcoded project would send writes somewhere the guard
 // never inspected.
 const SUPABASE_URL = guardedSupabaseUrl();
-const SECRET_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const SECRET_KEY = process.env.SUPABASE_SECRET_KEY || "";
 if (!SECRET_KEY) {
   throw new Error(
-    `Missing SUPABASE_SERVICE_ROLE_KEY; stateful live-price-change test requires the service role key to run safely against the database-target guard.`,
+    `Missing SUPABASE_SECRET_KEY; stateful live-price-change test requires the service role key to run safely against the database-target guard.`,
   );
 }
 

@@ -1,23 +1,11 @@
 import { test, expect } from "@playwright/test"
-import * as fs from "fs"
-import * as path from "path"
+import { loadTestEnv } from "../helpers/load-test-env"
 import { assertSafeDatabaseTarget, guardedProjectRef, guardedSupabaseUrl } from "../helpers/assert-safe-database-target"
 
 const BASE = "http://localhost:3000"
 
 function loadEnv(): void {
-  try {
-    const content = fs.readFileSync(path.resolve(__dirname, "../../.env.local"), "utf-8")
-    for (const line of content.split("\n")) {
-      const t = line.trim()
-      if (!t || t.startsWith("#")) continue
-      const eq = t.indexOf("=")
-      if (eq === -1) continue
-      const key = t.slice(0, eq)
-      const val = t.slice(eq + 1)
-      process.env[key] = val
-    }
-  } catch { /* ignore */ }
+  loadTestEnv()
 }
 
 loadEnv()

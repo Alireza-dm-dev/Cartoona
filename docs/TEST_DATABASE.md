@@ -15,16 +15,50 @@
 
 Always forbidden, even with matching ref and opt-in.
 
-## Required Environment Variables
+## Environment: runtime vs stateful test target
+
+Two groups of variables, deliberately separate.
+
+**Runtime** - what the Next.js app uses (`next dev` / `next start`):
 
 | Variable | Purpose |
 |---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
-| `SUPABASE_URL` | Supabase project URL (alternative var) |
-| `SUPABASE_SECRET_KEY` | Service-role key for test setup/teardown |
-| `SUPABASE_PROJECT_REF` | Project ref (cross-checked against URLs) |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Public anon key |
+| `SUPABASE_SECRET_KEY` | Secret (service-role) key, server only |
+| `SUPABASE_PROJECT_REF` | Optional; cross-checked by the guard |
+
+**Stateful test target** - the only thing that can authorize a hosted stateful run:
+
+| Variable | Purpose |
+|---|---|
 | `CARTOONA_ALLOW_DESTRUCTIVE_TESTS` | Must be `"true"` to run stateful tests |
 | `CARTOONA_TEST_SUPABASE_PROJECT_REF` | Exact project ref of the approved disposable target |
+| `CARTOONA_TEST_SUPABASE_URL` | URL of that same project |
+| `CARTOONA_TEST_SUPABASE_ANON_KEY` | Anon key of that project |
+| `CARTOONA_TEST_SUPABASE_SECRET_KEY` | Secret key of that project |
+| `CARTOONA_TEST_DATABASE_URL` | Optional session-pooler URL (psql) |
+
+Generic runtime values never authorize a hosted stateful run. If
+`CARTOONA_TEST_SUPABASE_URL` or `CARTOONA_TEST_SUPABASE_PROJECT_REF` is missing,
+the guard refuses, even when `NEXT_PUBLIC_SUPABASE_URL` points somewhere harmless.
+The runtime variables are still read (the app under test uses them), but the guard
+requires them to name the same project as the test target.
+
+### How `.env.local` is resolved
+
+All specs load `.env.local` through `tests/helpers/load-test-env.ts`, which mirrors
+Next.js:
+
+1. A variable already set in the real environment wins; the file only fills gaps.
+2. Within the file a repeated key resolves to its **last** value (what `@next/env`
+   does).
+3. A `SUPABASE*` / `CARTOONA_*` key repeated with **different** values is an error
+   and stops the run. Keep each key defined once.
+
+Why: with two Supabase blocks in one file, the previous loaders disagreed with
+Next.js about which one was active, so the app could target the disposable project
+while a test helper believed it was on production.
 
 ## Destructive-Test Guard
 
@@ -34,10 +68,12 @@ The guard collects **every** non-empty, non-whitespace value from:
 
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `SUPABASE_URL`
+- `CARTOONA_TEST_SUPABASE_URL`
 - `SUPABASE_PROJECT_REF`
 - `CARTOONA_TEST_SUPABASE_PROJECT_REF`
 
-No variable receives priority. All must resolve to the same target. Any disagreement returns `kind = "unknown"` and is rejected.
+Refs are compared case-insensitively. A supplied URL that fails validation is never
+dropped in favour of a valid sibling - it rejects the run. No variable receives priority. All must resolve to the same target. Any disagreement returns `kind = "unknown"` and is rejected.
 
 ### URL Validation
 
@@ -85,8 +121,8 @@ Only these targets may pass:
 
 2. **Explicit disposable hosted project**
    - `CARTOONA_ALLOW_DESTRUCTIVE_TESTS=true`.
-   - `CARTOONA_TEST_SUPABASE_PROJECT_REF` is present.
-   - At least one valid hosted Supabase URL is present.
+   - `CARTOONA_TEST_SUPABASE_PROJECT_REF` **and** `CARTOONA_TEST_SUPABASE_URL` are present.
+   - `CARTOONA_TEST_SUPABASE_URL` is a valid hosted Supabase URL for that ref.
    - Every supplied hosted URL resolves to that exact ref.
    - `SUPABASE_PROJECT_REF`, when present, equals that ref.
    - Ref is neither the main project nor Migration Test project.
@@ -116,7 +152,7 @@ Only `local` and `explicit_disposable` may return `ok = true`, and only with `CA
 | 5 | Migration Test URL alone | Rejected | `forbidden_known_project` |
 | 6 | Migration Test URL + disposable secondary | Rejected | `forbidden_known_project` |
 | 7 | Migration Test ref + disposable URL | Rejected | `forbidden_known_project` |
-| 8 | Both URL vars same hosted ref + test ref + opt-in | Accepted | `explicit_disposable` |
+| 8 | Both URL vars + test URL same hosted ref + test ref + opt-in | Accepted | `explicit_disposable` |
 | 9 | Both URL vars different refs | Rejected | `unknown` |
 | 10 | URL and SUPABASE_PROJECT_REF disagree | Rejected | `unknown` |
 | 11 | URL and explicit test ref disagree | Rejected | `unknown` |

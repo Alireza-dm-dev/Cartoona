@@ -30,6 +30,10 @@ interface CollectedIdentifiers {
   rawRefs: string[]
   allowDestructive: boolean
   testRef: string | null
+  /** CARTOONA_TEST_SUPABASE_URL, parsed. The explicit stateful target. */
+  testUrl: ParsedUrl | null
+  /** True when any supplied URL variable is set but unusable. Fails closed. */
+  invalidUrlSupplied: boolean
 }
 
 interface ParsedRef {
@@ -101,10 +105,18 @@ export function assertSafeDatabaseTarget(): SafeTargetResult {
  * instead of silently falling back to a default project.
  */
 export function guardedSupabaseUrl(): string {
-  const raw = (process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "").trim()
+  // The explicit stateful target wins. The runtime variables are only the
+  // fallback for a local stack, where the guard needs no CARTOONA_TEST_* URL;
+  // for a hosted target the guard has already required them to agree.
+  const raw = (
+    process.env.CARTOONA_TEST_SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.SUPABASE_URL ||
+    ""
+  ).trim()
   if (!raw) {
     throw new Error(
-      "No Supabase URL configured. Set NEXT_PUBLIC_SUPABASE_URL (or SUPABASE_URL) to the disposable target before running stateful tests.",
+      "No Supabase URL configured. Set CARTOONA_TEST_SUPABASE_URL to the disposable target before running stateful tests.",
     )
   }
   const parsed = parseSupabaseUrl(raw)
@@ -127,36 +139,48 @@ export function guardedProjectRef(): string {
 
 function collectIdentifiers(): CollectedIdentifiers {
   const allowDestructive = process.env.CARTOONA_ALLOW_DESTRUCTIVE_TESTS?.trim() === "true"
-  const testRef = process.env.CARTOONA_TEST_SUPABASE_PROJECT_REF?.trim() || null
+  const testRef = normalizeRef(process.env.CARTOONA_TEST_SUPABASE_PROJECT_REF)
 
-  const urlStrings = [
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_URL,
-  ]
-    .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
-    .map((v) => v.trim())
+  const present = (v: string | undefined): string | null =>
+    typeof v === "string" && v.trim().length > 0 ? v.trim() : null
 
-  const seen = new Set<string>()
-  const uniqueUrlStrings = urlStrings.filter((v) => {
-    if (seen.has(v)) return false
-    seen.add(v)
-    return true
-  })
+  // Runtime URLs (what the app talks to) and the explicit stateful test URL.
+  // Every one that is supplied must be usable and must agree - a URL that
+  // fails validation is never silently dropped in favour of a valid sibling.
+  const runtimeStrings = [present(process.env.NEXT_PUBLIC_SUPABASE_URL), present(process.env.SUPABASE_URL)]
+  const testUrlString = present(process.env.CARTOONA_TEST_SUPABASE_URL)
 
+  let invalidUrlSupplied = false
   const urls: ParsedUrl[] = []
-  for (const s of uniqueUrlStrings) {
-    const parsed = parseSupabaseUrl(s)
-    if (parsed) urls.push(parsed)
+  const seen = new Set<string>()
+  for (const str of [...runtimeStrings, testUrlString]) {
+    if (!str) continue
+    const parsed = parseSupabaseUrl(str)
+    if (!parsed) {
+      invalidUrlSupplied = true
+      continue
+    }
+    const key = `${parsed.hostname}:${parsed.port ?? ""}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    urls.push(parsed)
   }
 
-  const rawRefs = [
-    process.env.SUPABASE_PROJECT_REF,
-    process.env.CARTOONA_TEST_SUPABASE_PROJECT_REF,
-  ]
-    .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
-    .map((v) => v.trim())
+  const testUrl = testUrlString ? parseSupabaseUrl(testUrlString) : null
 
-  return { urls, rawRefs, allowDestructive, testRef }
+  const rawRefs = [
+    normalizeRef(process.env.SUPABASE_PROJECT_REF),
+    testRef,
+  ].filter((v): v is string => v !== null)
+
+  return { urls, rawRefs, allowDestructive, testRef, testUrl, invalidUrlSupplied }
+}
+
+/** Trim and lower-case a project ref; null when absent. Refs are case-insensitive. */
+function normalizeRef(value: string | undefined): string | null {
+  if (typeof value !== "string") return null
+  const v = value.trim().toLowerCase()
+  return v.length > 0 ? v : null
 }
 
 function parseSupabaseUrl(urlStr: string): ParsedUrl | null {
@@ -174,7 +198,8 @@ function parseSupabaseUrl(urlStr: string): ParsedUrl | null {
   if (parsed.hash) return null
   if (parsed.pathname !== "" && parsed.pathname !== "/") return null
 
-  const hostname = parsed.hostname.toLowerCase()
+  // WHATWG URL reports an IPv6 literal with brackets ("[::1]").
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "")
   const port = parsed.port || null
 
   if (LOCAL_HOSTNAMES.has(hostname)) {
@@ -233,12 +258,13 @@ function identifyTarget(collected: CollectedIdentifiers): {
     return { kind: "unknown", ref: "no Supabase URL supplied" }
   }
 
-  if (urlStringsPresentButNoneParsed(collected)) {
-    return { kind: "unknown", ref: "all URLs failed validation" }
-  }
 
   const forbidden = checkForbiddenIdentifiers(urls, rawRefs)
   if (forbidden) return forbidden
+
+  if (collected.invalidUrlSupplied) {
+    return { kind: "unknown", ref: "a supplied URL failed validation" }
+  }
 
   const resolved = resolveToRefs(urls, rawRefs)
 
@@ -257,20 +283,21 @@ function identifyTarget(collected: CollectedIdentifiers): {
     return { kind: "local", ref: `localhost${portStr}` }
   }
 
-  if (collected.testRef && first.ref === collected.testRef) {
+  // Hosted: the stateful target must be named explicitly. Generic runtime
+  // values (NEXT_PUBLIC_SUPABASE_URL / SUPABASE_URL) never authorize a hosted
+  // run on their own, however plausible they look.
+  if (!collected.testUrl || !collected.testRef) {
+    return {
+      kind: "unknown",
+      ref: "hosted stateful tests require CARTOONA_TEST_SUPABASE_URL and CARTOONA_TEST_SUPABASE_PROJECT_REF",
+    }
+  }
+
+  if (first.ref === collected.testRef && collected.testUrl.projectRef === collected.testRef) {
     return { kind: "explicit_disposable", ref: first.ref }
   }
 
   return { kind: "unknown", ref: first.ref }
-}
-
-function urlStringsPresentButNoneParsed(collected: CollectedIdentifiers): boolean {
-  const rawUrlCount = [
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_URL,
-  ].filter((v): v is string => typeof v === "string" && v.trim().length > 0).length
-
-  return rawUrlCount > 0 && collected.urls.length === 0
 }
 
 function checkForbiddenIdentifiers(
