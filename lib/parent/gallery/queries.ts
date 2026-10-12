@@ -1,7 +1,13 @@
 import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createPrivateSignedUrl } from "@/lib/storage/private-signed-url";
+import { createPrivateSignedUrls } from "@/lib/storage/private-signed-url";
+import {
+  GALLERY_DEFAULT_PAGE_SIZE,
+  clampGalleryPageSize,
+  decodeGalleryCursor,
+  encodeGalleryCursor,
+} from "./pagination";
 import type { ParentGalleryMedia, ParentGalleryResult } from "./types";
 
 /**
@@ -56,17 +62,30 @@ export function toGalleryMedia(
 }
 
 /**
- * Every source asset the signed-in parent has uploaded, newest first.
+ * One page of the signed-in parent's source assets, newest first.
  *
  * Ownership is enforced twice over. The query joins `orders` and filters on
  * the resolved `parent_id`, so another parent's row never reaches this
  * process; row level security applies the same rule independently on the anon
  * key. `asset_role`/`type` restrict the result to parent-uploaded source
  * media, which is what keeps delivered output out of this library.
+ *
+ * Paginated by keyset on (created_at DESC, id DESC): one extra row is read to
+ * learn whether another page exists, and only the page itself is signed - in
+ * a single batched storage call rather than one call per asset.
  */
 export async function getParentGalleryMedia(
   supabase: SupabaseClient,
+  options: { cursor?: string | null; limit?: number } = {},
 ): Promise<ParentGalleryResult> {
+  const pageSize = clampGalleryPageSize(options.limit ?? GALLERY_DEFAULT_PAGE_SIZE);
+
+  let cursor = null;
+  if (options.cursor !== undefined && options.cursor !== null && options.cursor !== "") {
+    cursor = decodeGalleryCursor(options.cursor);
+    if (!cursor) return { ok: false, reason: "invalid_cursor" };
+  }
+
   const {
     data: { user },
     error: authError,
@@ -83,27 +102,55 @@ export async function getParentGalleryMedia(
   if (profileError) return { ok: false, reason: "read_failed" };
   if (!profile?.id) return { ok: false, reason: "no_parent_profile" };
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("media_assets")
     .select(`${GALLERY_COLUMNS}, orders!inner(parent_id)`)
     .eq("orders.parent_id", profile.id)
     .eq("type", "upload")
-    .eq("asset_role", "source")
-    .order("created_at", { ascending: false });
+    .eq("asset_role", "source");
+
+  if (cursor) {
+    // Strictly after the cursor row in (created_at DESC, id DESC) order. The
+    // cursor was validated above, so nothing unexpected reaches the filter.
+    query = query.or(
+      `created_at.lt.${cursor.createdAt},and(created_at.eq.${cursor.createdAt},id.lt.${cursor.id})`,
+    );
+  }
+
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(pageSize + 1);
 
   if (error) return { ok: false, reason: "read_failed" };
 
+  const rows = (Array.isArray(data) ? data : []) as unknown as RawGalleryRow[];
+  const hasMore = rows.length > pageSize;
+  const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
+
+  // One batched signing call for exactly this page.
+  const paths = pageRows
+    .map((r) => (typeof r.file_url === "string" ? r.file_url : ""))
+    .filter((p) => p.length > 0);
+  const signed = await createPrivateSignedUrls(supabase, paths);
+
   const media: ParentGalleryMedia[] = [];
-  for (const row of Array.isArray(data) ? data : []) {
-    const raw = row as unknown as RawGalleryRow;
+  for (const raw of pageRows) {
     const path = typeof raw.file_url === "string" ? raw.file_url : null;
     if (!path) continue;
-    // Signed per render and short-lived. The path it was built from never
-    // leaves this function.
-    const signedUrl = await createPrivateSignedUrl(supabase, path);
-    const item = toGalleryMedia(raw, signedUrl);
+    // Signed per request and short-lived. The path it was built from never
+    // leaves this function; a failed signature degrades only this item.
+    const item = toGalleryMedia(raw, signed.get(path) ?? null);
     if (item) media.push(item);
   }
 
-  return { ok: true, media };
+  let nextCursor: string | null = null;
+  if (hasMore) {
+    const last = pageRows[pageRows.length - 1];
+    if (typeof last.created_at === "string" && typeof last.id === "string") {
+      nextCursor = encodeGalleryCursor({ createdAt: last.created_at, id: last.id });
+    }
+  }
+
+  return { ok: true, media, nextCursor };
 }

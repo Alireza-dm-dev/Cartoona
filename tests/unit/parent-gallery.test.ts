@@ -46,10 +46,16 @@ function makeSupabase(options: {
     const api: Record<string, unknown> = {};
     const chain = () => api;
     api.select = chain;
-    api.order = () =>
-      options.assetError
-        ? { data: null, error: new Error("boom") }
-        : { data: options.assetRows ?? [], error: null };
+    api.order = chain;
+    api.limit = chain;
+    api.or = chain;
+    // The list query is awaited directly after .limit(), so the builder is thenable.
+    api.then = (resolve: (v: unknown) => unknown) =>
+      resolve(
+        options.assetError
+          ? { data: null, error: new Error("boom") }
+          : { data: options.assetRows ?? [], error: null },
+      );
     api.eq = (column: string, value: unknown) => {
       filters[table].push({ column, value });
       return api;
@@ -76,10 +82,17 @@ function makeSupabase(options: {
       from: (table: string) => builder(table),
       storage: {
         from: () => ({
-          createSignedUrl: async () =>
+          createSignedUrls: async (paths: string[]) =>
             options.signedUrl === null
               ? { data: null, error: new Error("sign failed") }
-              : { data: { signedUrl: options.signedUrl ?? "https://signed.example/x" }, error: null },
+              : {
+                  data: paths.map((path) => ({
+                    path,
+                    error: null,
+                    signedUrl: options.signedUrl ?? "https://signed.example/x",
+                  })),
+                  error: null,
+                },
         }),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -169,7 +182,7 @@ describe("gallery ownership filtering", () => {
   it("returns an empty library rather than failing when there is no media", async () => {
     const { client } = makeSupabase({ profile: { id: PARENT_A_PROFILE }, assetRows: [] });
     const result = await getParentGalleryMedia(client);
-    expect(result).toEqual({ ok: true, media: [] });
+    expect(result).toEqual({ ok: true, media: [], nextCursor: null });
   });
 });
 

@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SafetyNotice } from "@/components/ui/safety-notice";
 import { NewRequestActions } from "@/components/dashboard/new-request-actions";
-import { GalleryMediaCard } from "@/components/dashboard/gallery/gallery-media-card";
+import { GalleryGrid } from "@/components/dashboard/gallery/gallery-grid";
 import { getParentGalleryMedia } from "@/lib/parent/gallery/queries";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
@@ -67,11 +67,7 @@ async function GalleryContent() {
         برای استفاده دوباره از این فایل‌ها، هنگام ثبت درخواست جدید گزینه‌ی
         «انتخاب از گالری خصوصی» را انتخاب کنید.
       </p>
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-        {result.media.map((media) => (
-          <GalleryMediaCard key={media.id} media={media} />
-        ))}
-      </div>
+      <GalleryGrid initialMedia={result.media} initialCursor={result.nextCursor} />
       <div className="mt-8">
         <NewRequestActions />
       </div>

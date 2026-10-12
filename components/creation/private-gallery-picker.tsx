@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { appendUniqueById } from "@/lib/parent/gallery/pagination";
 import type { ParentGalleryMedia } from "@/lib/parent/gallery/types";
 
 type LoadPhase = "loading" | "ready" | "error";
@@ -28,6 +29,29 @@ export function PrivateGalleryPicker({
 }) {
   const [phase, setPhase] = useState<LoadPhase>("loading");
   const [media, setMedia] = useState<ParentGalleryMedia[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [moreFailed, setMoreFailed] = useState(false);
+
+  async function loadMore() {
+    if (!cursor || loadingMore) return;
+    setLoadingMore(true);
+    setMoreFailed(false);
+    try {
+      const res = await fetch(`/api/parent/gallery?cursor=${encodeURIComponent(cursor)}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) throw new Error("gallery page failed");
+      const body = await res.json();
+      const next: ParentGalleryMedia[] = Array.isArray(body?.media) ? body.media : [];
+      setMedia((prev) => appendUniqueById(prev, next));
+      setCursor(typeof body?.nextCursor === "string" ? body.nextCursor : null);
+    } catch {
+      setMoreFailed(true);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -43,6 +67,7 @@ export function PrivateGalleryPicker({
         const body = await res.json();
         if (!active) return;
         setMedia(Array.isArray(body?.media) ? body.media : []);
+        setCursor(typeof body?.nextCursor === "string" ? body.nextCursor : null);
         setPhase("ready");
       } catch {
         if (active) setPhase("error");
@@ -148,6 +173,22 @@ export function PrivateGalleryPicker({
           );
         })}
       </ul>
+      {moreFailed && (
+        <p className="text-sm text-coral" role="alert">
+          بارگذاری فایل‌های بیشتر ناموفق بود. دوباره تلاش کنید.
+        </p>
+      )}
+      {cursor && (
+        <button
+          type="button"
+          onClick={loadMore}
+          disabled={loadingMore}
+          aria-busy={loadingMore}
+          className="text-sm font-medium text-candy-pink hover:opacity-80 disabled:opacity-50"
+        >
+          {loadingMore ? "در حال بارگذاری…" : "نمایش فایل‌های بیشتر"}
+        </button>
+      )}
       <button
         type="button"
         onClick={onCancel}

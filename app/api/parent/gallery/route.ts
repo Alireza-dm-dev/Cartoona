@@ -17,7 +17,7 @@ import { getParentGalleryMedia } from "@/lib/parent/gallery/queries"
  */
 export const dynamic = "force-dynamic"
 
-export async function GET() {
+export async function GET(request: Request) {
   const supabase = await createServerSupabaseClient()
 
   const { data: { user }, error: authError } = await supabase.auth.getUser()
@@ -30,21 +30,30 @@ export async function GET() {
     return createParentSessionFailureResponse(supabase, lifetime)
   }
 
-  const result = await getParentGalleryMedia(supabase)
+  // Bounded paging: `limit` is clamped server-side, `cursor` is opaque and
+  // validated, and nothing here ever asks for the whole library.
+  const params = new URL(request.url).searchParams
+  const result = await getParentGalleryMedia(supabase, {
+    cursor: params.get("cursor"),
+    limit: params.has("limit") ? Number.parseInt(params.get("limit") ?? "", 10) : undefined,
+  })
 
   if (!result.ok) {
     if (result.reason === "unauthenticated") {
       return NextResponse.json({ error: "لطفاً ابتدا وارد حساب خود شوید" }, { status: 401 })
     }
+    if (result.reason === "invalid_cursor") {
+      return NextResponse.json({ error: "درخواست نامعتبر است." }, { status: 400 })
+    }
     if (result.reason === "no_parent_profile") {
       // Not an error for the picker: an account without a parent profile
       // simply has no media to offer.
-      return NextResponse.json({ media: [] })
+      return NextResponse.json({ media: [], nextCursor: null })
     }
     return NextResponse.json({
       error: "گالری خصوصی در دسترس نیست. لطفاً دوباره تلاش کنید.",
     }, { status: 500 })
   }
 
-  return NextResponse.json({ media: result.media })
+  return NextResponse.json({ media: result.media, nextCursor: result.nextCursor })
 }

@@ -26,5 +26,13 @@ export interface ParentGalleryMedia {
 }
 
 export type ParentGalleryResult =
-  | { ok: true; media: ParentGalleryMedia[] }
-  | { ok: false; reason: "unauthenticated" | "no_parent_profile" | "read_failed" };
+  | {
+      ok: true;
+      media: ParentGalleryMedia[];
+      /** Opaque cursor for the next page, or null when this is the last one. */
+      nextCursor: string | null;
+    }
+  | {
+      ok: false;
+      reason: "unauthenticated" | "no_parent_profile" | "read_failed" | "invalid_cursor";
+    };

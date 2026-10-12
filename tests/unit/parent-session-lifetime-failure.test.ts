@@ -117,14 +117,14 @@ describe("API route: lookup_failed fails closed, keeps session, retry works", ()
     const client = sessionClient([TRANSIENT, { data: [FUTURE], error: null }])
     galleryMocks.client = client
 
-    const first = await GET()
+    const first = await GET(new Request("http://x/api/parent/gallery"))
     expect(first.status).toBe(503)
     expect((await first.json()).code).toBe("SESSION_CHECK_UNAVAILABLE")
     expect(client.auth.signOut).not.toHaveBeenCalled()
     expect(galleryMocks.getParentGalleryMedia).not.toHaveBeenCalled() // fails closed
 
     // Backend healthy again; same client / same session, no re-login.
-    const second = await GET()
+    const second = await GET(new Request("http://x/api/parent/gallery"))
     expect(second.status).toBe(200)
     expect((await second.json()).media).toEqual([{ id: "m1" }])
     expect(client.auth.signOut).not.toHaveBeenCalled()
@@ -134,7 +134,7 @@ describe("API route: lookup_failed fails closed, keeps session, retry works", ()
     const { GET } = await import("@/app/api/parent/gallery/route")
     const client = sessionClient([{ data: [EXPIRED], error: null }])
     galleryMocks.client = client
-    const res = await GET()
+    const res = await GET(new Request("http://x/api/parent/gallery"))
     expect(res.status).toBe(401)
     expect((await res.json()).code).toBe("PARENT_SESSION_EXPIRED")
     expect(client.auth.signOut).toHaveBeenCalledWith({ scope: "local" })
@@ -145,7 +145,7 @@ describe("API route: lookup_failed fails closed, keeps session, retry works", ()
     const { GET } = await import("@/app/api/parent/gallery/route")
     galleryMocks.getParentGalleryMedia.mockResolvedValue({ ok: true, media: [] })
     galleryMocks.client = sessionClient([{ data: [FUTURE], error: null }])
-    expect((await GET()).status).toBe(200)
+    expect((await GET(new Request("http://x/api/parent/gallery"))).status).toBe(200)
   })
 
   test("no user -> 401 authentication failure (unchanged), no signOut", async () => {
@@ -153,7 +153,7 @@ describe("API route: lookup_failed fails closed, keeps session, retry works", ()
     const client = sessionClient([{ data: [FUTURE], error: null }])
     client.auth.getUser = vi.fn(async () => ({ data: { user: null }, error: { message: "no" } })) as never
     galleryMocks.client = client
-    expect((await GET()).status).toBe(401)
+    expect((await GET(new Request("http://x/api/parent/gallery"))).status).toBe(401)
     expect(client.auth.signOut).not.toHaveBeenCalled()
   })
 })
