@@ -1,7 +1,13 @@
 import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { ParentOrderListResult, ParentOrderSummary } from "./types";
+import type { ParentOrdersPageResult, ParentOrderSummary } from "./types";
+import {
+  ORDERS_DEFAULT_PAGE_SIZE,
+  clampOrdersPageSize,
+  decodeOrdersCursor,
+  encodeOrdersCursor,
+} from "./pagination";
 import { PARENT_VISIBLE_INTERNAL_STATUSES, toParentOrderStatus } from "./status-mapping";
 import { isKnownOrderType } from "./type-mapping";
 
@@ -76,48 +82,63 @@ export function toParentOrderSummary(
 }
 
 /**
- * Every submitted request belonging to the signed-in parent, newest first.
+ * One page of the signed-in parent's submitted requests, newest first.
  *
- * Ownership is enforced in the query itself. The parent profile id is resolved
- * from the authenticated user and applied as an `eq("parent_id", ...)` filter,
- * so the database never returns another parent's row to this process. Row
- * level security (`orders_select_own_parent`) independently enforces the same
- * rule on the anon key, which means an ownership mistake here would have to
- * defeat two layers rather than one. Nothing is filtered in React.
+ * The caller resolves identity once (see ParentRequestContext) and passes the
+ * parent profile id; this function makes no auth or profile round trips.
+ *
+ * Ownership is enforced in the query itself: `eq("parent_id", ...)` means the
+ * database never returns another parent's row to this process, and row level
+ * security (`orders_select_own_parent`) independently enforces the same rule on
+ * the anon key. Nothing is filtered in React.
+ *
+ * Keyset pagination on (created_at DESC, id DESC): one extra row is read to
+ * learn whether another page exists, so a first page loads pageSize + 1 rows
+ * and never the whole history. Stable while new orders arrive - a new order is
+ * newer than every cursor already issued, so it can neither repeat nor displace
+ * an older row the way an offset would.
  */
-export async function getParentOrders(
+export async function getParentOrdersPage(
   supabase: SupabaseClient,
-): Promise<ParentOrderListResult> {
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
+  context: { parentProfileId: string },
+  options: { cursor?: string | null; limit?: number } = {},
+): Promise<ParentOrdersPageResult> {
+  const pageSize = clampOrdersPageSize(options.limit ?? ORDERS_DEFAULT_PAGE_SIZE);
 
-  if (authError || !user) return { ok: false, reason: "unauthenticated" };
+  let cursor = null;
+  if (options.cursor !== undefined && options.cursor !== null && options.cursor !== "") {
+    cursor = decodeOrdersCursor(options.cursor);
+    if (!cursor) return { ok: false, reason: "invalid_cursor" };
+  }
 
-  const { data: profile, error: profileError } = await supabase
-    .from("parent_profiles")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle();
-
-  if (profileError) return { ok: false, reason: "read_failed" };
-  if (!profile?.id) return { ok: false, reason: "no_parent_profile" };
-
-  const { data, error } = await supabase
+  let query = supabase
     .from("orders")
     .select(PARENT_ORDER_COLUMNS)
-    .eq("parent_id", profile.id)
-    .in("status", PARENT_VISIBLE_INTERNAL_STATUSES as string[])
-    .order("created_at", { ascending: false });
+    .eq("parent_id", context.parentProfileId)
+    .in("status", PARENT_VISIBLE_INTERNAL_STATUSES as string[]);
+
+  if (cursor) {
+    // Strictly after the cursor row in (created_at DESC, id DESC) order. The
+    // cursor was validated above, so nothing unexpected reaches the filter.
+    query = query.or(
+      `created_at.lt.${cursor.createdAt},and(created_at.eq.${cursor.createdAt},id.lt.${cursor.id})`,
+    );
+  }
+
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(pageSize + 1);
 
   if (error) return { ok: false, reason: "read_failed" };
 
-  const rows = Array.isArray(data) ? (data as unknown as RawOrderRow[]) : [];
+  const fetched = Array.isArray(data) ? (data as unknown as RawOrderRow[]) : [];
+  const hasMore = fetched.length > pageSize;
+  const rows = hasMore ? fetched.slice(0, pageSize) : fetched;
 
-  // One batch call for every row's delivered timestamp, never one call per
-  // order (get_parent_order_status_history is single-order and would be
-  // N+1 here). Skipped entirely for an empty list.
+  // One batch call for THIS PAGE's delivered timestamps, never one call per
+  // order (get_parent_order_status_history is single-order and would be N+1)
+  // and never for the parent's whole history. Skipped for an empty page.
   const deliveredAtByOrderId = new Map<string, string>();
   const orderIds = rows
     .map((r) => r.id)
@@ -143,5 +164,15 @@ export async function getParentOrders(
     )
     .filter((o): o is ParentOrderSummary => o !== null);
 
-  return { ok: true, orders };
+  // The cursor follows the last row READ, not the last row shown: a row that
+  // toParentOrderSummary drops must not stall or repeat the walk.
+  let nextCursor: string | null = null;
+  if (hasMore) {
+    const last = rows[rows.length - 1];
+    if (typeof last?.created_at === "string" && typeof last.id === "string") {
+      nextCursor = encodeOrdersCursor({ createdAt: last.created_at, id: last.id });
+    }
+  }
+
+  return { ok: true, orders, nextCursor };
 }

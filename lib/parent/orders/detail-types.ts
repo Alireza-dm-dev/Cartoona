@@ -105,4 +105,4 @@ export interface ParentOrderDetail extends ParentOrderSummary {
 
 export type ParentOrderDetailResult =
   | { ok: true; detail: ParentOrderDetail }
-  | { ok: false; reason: "unauthenticated" | "no_parent_profile" | "not_found" | "read_failed" };
+  | { ok: false; reason: "not_found" | "read_failed" };

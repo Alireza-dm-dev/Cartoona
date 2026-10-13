@@ -15,6 +15,7 @@ import { OrdersErrorState, OrdersNoProfileState } from "@/components/dashboard/o
 import { getParentOrderDetail } from "@/lib/parent/orders/detail-queries";
 import { PARENT_STATUS_LABELS, PARENT_STATUS_VARIANTS } from "@/lib/parent/orders/status-mapping";
 import { parentTypeIcon, parentTypeLabel } from "@/lib/parent/orders/type-mapping";
+import { resolveParentRequestContext } from "@/lib/parent/parent-request-context";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 /**
@@ -44,16 +45,21 @@ export default async function OrderDetailPage({
 }) {
   const { orderId } = await params;
   const supabase = await createServerSupabaseClient();
-  const result = await getParentOrderDetail(supabase, orderId);
 
-  if (!result.ok) {
-    if (result.reason === "unauthenticated") {
-      redirect(`/login?from=/dashboard/orders/${encodeURIComponent(orderId)}`);
-    }
-    // Another parent's order and a non-existent id are deliberately
-    // indistinguishable from here.
-    if (result.reason === "not_found") notFound();
+  // Identity once, then reused by every query below (middleware has already
+  // enforced role and session lifetime for this request).
+  const identity = await resolveParentRequestContext(supabase, { verify: "identity" });
+  if (!identity.ok && identity.reason === "unauthenticated") {
+    redirect(`/login?from=/dashboard/orders/${encodeURIComponent(orderId)}`);
   }
+
+  const result = identity.ok
+    ? await getParentOrderDetail(supabase, orderId, identity.context)
+    : null;
+
+  // Another parent's order and a non-existent id are deliberately
+  // indistinguishable from here.
+  if (result && !result.ok && result.reason === "not_found") notFound();
 
   return (
     <div className="mx-auto max-w-[880px]">
@@ -67,10 +73,11 @@ export default async function OrderDetailPage({
         <span aria-hidden="true">→</span> بازگشت به سفارش‌های من
       </Link>
 
-      {!result.ok && result.reason === "no_parent_profile" && <OrdersNoProfileState />}
-      {!result.ok && result.reason === "read_failed" && <OrdersErrorState />}
+      {!identity.ok && identity.reason === "no_parent_profile" && <OrdersNoProfileState />}
+      {!identity.ok && identity.reason !== "no_parent_profile" && <OrdersErrorState />}
+      {result && !result.ok && <OrdersErrorState />}
 
-      {result.ok && (
+      {result?.ok && (
         <>
           <PageHeader title={result.detail.displayTitle} />
 

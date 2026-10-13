@@ -2,7 +2,6 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card } from "@/components/ui/card";
-import { ParentOrderCard } from "@/components/dashboard/orders/parent-order-card";
 import {
   OrdersEmptyState,
   OrdersErrorState,
@@ -10,7 +9,12 @@ import {
   OrdersNoProfileState,
 } from "@/components/dashboard/orders/orders-states";
 import { NewRequestActions } from "@/components/dashboard/new-request-actions";
-import { getParentOrders } from "@/lib/parent/orders/queries";
+import { OrdersLoadMore } from "@/components/dashboard/orders/orders-load-more";
+import { getParentOrdersPage } from "@/lib/parent/orders/queries";
+import {
+  resolveParentRequestContext,
+  type ParentContextResult,
+} from "@/lib/parent/parent-request-context";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 /**
@@ -30,13 +34,15 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 export const dynamic = "force-dynamic";
 
 export default async function OrdersPage() {
-  // Authentication is resolved before the boundary, so an expired session
-  // still produces a real redirect rather than a streamed 200.
+  // Identity is resolved ONCE, before the boundary, so an expired session
+  // still produces a real redirect rather than a streamed 200, and the list
+  // below reuses it instead of asking the auth backend again. "identity" level:
+  // middleware has already enforced role and session lifetime on this request.
   const supabase = await createServerSupabaseClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect("/login?from=/dashboard/orders");
+  const identity = await resolveParentRequestContext(supabase, { verify: "identity" });
+  if (!identity.ok && identity.reason === "unauthenticated") {
+    redirect("/login?from=/dashboard/orders");
+  }
 
   return (
     <div className="mx-auto max-w-[880px]">
@@ -55,29 +61,34 @@ export default async function OrdersPage() {
       </Card>
 
       <Suspense fallback={<OrdersLoadingState />}>
-        <OrdersList />
+        <OrdersList supabase={supabase} identity={identity} />
       </Suspense>
     </div>
   );
 }
 
 /** Streamed separately so the list can show a skeleton while it resolves. */
-async function OrdersList() {
-  const supabase = await createServerSupabaseClient();
-  const result = await getParentOrders(supabase);
-
-  if (!result.ok) {
-    if (result.reason === "no_parent_profile") return <OrdersNoProfileState />;
+async function OrdersList({
+  supabase,
+  identity,
+}: {
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>;
+  identity: ParentContextResult;
+}) {
+  if (!identity.ok) {
+    // A missing profile is a real, explainable state; anything else (including
+    // an auth backend that could not be reached) is a retryable error, never a
+    // false "logged out".
+    if (identity.reason === "no_parent_profile") return <OrdersNoProfileState />;
     return <OrdersErrorState />;
   }
 
-  if (result.orders.length === 0) return <OrdersEmptyState />;
+  // First page only: pageSize + 1 rows, never the parent's whole history.
+  const result = await getParentOrdersPage(supabase, identity.context);
 
-  return (
-    <div className="grid gap-6">
-      {result.orders.map((order) => (
-        <ParentOrderCard key={order.id} order={order} />
-      ))}
-    </div>
-  );
+  if (!result.ok) return <OrdersErrorState />;
+
+  if (result.orders.length === 0 && result.nextCursor === null) return <OrdersEmptyState />;
+
+  return <OrdersLoadMore initialOrders={result.orders} initialCursor={result.nextCursor} />;
 }

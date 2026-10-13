@@ -12,7 +12,7 @@ import type {
 import { toParentOrderStatus } from "./status-mapping";
 import { deliveredAt, toParentClosure, toParentTimeline, type RawHistoryRow } from "./timeline-mapping";
 import { isKnownOrderType } from "./type-mapping";
-import { createPrivateSignedUrl } from "@/lib/storage/private-signed-url";
+import { createPrivateSignedUrls } from "@/lib/storage/private-signed-url";
 import { mapVideoDurationLabel } from "@/lib/pricing/pricing-keys";
 import { resolveCurrentParentFinalMedia } from "./final-media-queries";
 
@@ -40,6 +40,14 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export function isValidOrderId(value: string): boolean {
   return UUID_RE.test(value.trim());
+}
+
+interface VideoExtension {
+  script?: unknown;
+  style?: unknown;
+  duration_seconds?: unknown;
+  duration_choice?: unknown;
+  characters_speak?: unknown;
 }
 
 interface RawDetailRow {
@@ -166,6 +174,9 @@ export function buildDetailRows(input: {
 /**
  * One request belonging to the signed-in parent, with its timeline.
  *
+ * Identity is resolved once by the caller (ParentRequestContext) and passed in
+ * as `context`; this function makes no auth or profile round trips of its own.
+ *
  * Ownership is enforced three times over. The order query filters on both the
  * order id and the resolved `parent_id`, so another parent's row is never
  * returned to this process. Row level security applies the same rule
@@ -179,30 +190,17 @@ export function buildDetailRows(input: {
 export async function getParentOrderDetail(
   supabase: SupabaseClient,
   orderId: string,
+  context: { parentProfileId: string },
 ): Promise<ParentOrderDetailResult> {
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) return { ok: false, reason: "unauthenticated" };
-
   if (!isValidOrderId(orderId)) return { ok: false, reason: "not_found" };
 
-  const { data: profile, error: profileError } = await supabase
-    .from("parent_profiles")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle();
-
-  if (profileError) return { ok: false, reason: "read_failed" };
-  if (!profile?.id) return { ok: false, reason: "no_parent_profile" };
-
+  // Ownership first, on its own: nothing else is read, and no signed URL is
+  // minted, until this row proves the order is the caller's.
   const { data, error } = await supabase
     .from("orders")
     .select(DETAIL_COLUMNS)
     .eq("id", orderId)
-    .eq("parent_id", profile.id)
+    .eq("parent_id", context.parentProfileId)
     .maybeSingle();
 
   if (error) return { ok: false, reason: "read_failed" };
@@ -221,74 +219,75 @@ export async function getParentOrderDetail(
   if (typeof row.id !== "string" || typeof row.created_at !== "string") {
     return { ok: false, reason: "read_failed" };
   }
+  const createdAt = row.created_at;
+  const id = row.id;
 
-  // Type-specific extension row. Both tables are scoped to the parent's own
-  // orders by row level security.
-  let video: {
-    script?: unknown;
-    style?: unknown;
-    duration_seconds?: unknown;
-    duration_choice?: unknown;
-    characters_speak?: unknown;
-  } | null = null;
-  let drawing: { animation_style?: unknown } | null = null;
+  // The four reads below depend only on the (now proven) order id, not on each
+  // other, so they run concurrently instead of one after another.
+  const [video, drawing, assets, historyRows, finalRow] = await Promise.all([
+    // Type-specific extension row. Both tables are scoped to the parent's own
+    // orders by row level security.
+    requestType === "video"
+      ? supabase
+          .from("video_requests")
+          .select("script, style, duration_seconds, duration_choice, characters_speak")
+          .eq("order_id", id)
+          .maybeSingle()
+          .then(({ data: v }) => (v ?? null) as VideoExtension | null)
+      : Promise.resolve(null),
+    requestType === "drawing_animation"
+      ? supabase
+          .from("drawing_animation_requests")
+          .select("animation_style")
+          .eq("order_id", id)
+          .maybeSingle()
+          .then(({ data: d }) => (d ?? null) as { animation_style?: unknown } | null)
+      : Promise.resolve(null),
+    // Parent-uploaded source media only. Generated assets are filtered out at
+    // the query, so a deliverable cannot reach this page even by accident.
+    supabase
+      .from("media_assets")
+      .select("id, type, file_url, mime_type, created_at")
+      .eq("order_id", id)
+      .eq("type", "upload")
+      .order("created_at", { ascending: true })
+      .then(({ data: a }) => a),
+    // Parent-safe history. The function raises when the order is not the
+    // caller's, which this treats as an empty timeline rather than an error:
+    // ownership was already proven above, so a raise here means the history is
+    // unavailable, not that the page should fail.
+    supabase
+      .rpc("get_parent_order_status_history", { p_order_id: id })
+      .then(({ data: h }) => h),
+    // Metadata only - never a signed URL here. The page decides which panel to
+    // render from this alone; the actual preview/download link is minted on
+    // demand by the dedicated endpoint, never persisted or embedded in SSR HTML.
+    resolveCurrentParentFinalMedia(supabase, id),
+  ]);
 
-  if (requestType === "video") {
-    const { data: v } = await supabase
-      .from("video_requests")
-      .select("script, style, duration_seconds, duration_choice, characters_speak")
-      .eq("order_id", row.id)
-      .maybeSingle();
-    video = v ?? null;
-  } else if (requestType === "drawing_animation") {
-    const { data: d } = await supabase
-      .from("drawing_animation_requests")
-      .select("animation_style")
-      .eq("order_id", row.id)
-      .maybeSingle();
-    drawing = d ?? null;
-  }
+  const history: RawHistoryRow[] = Array.isArray(historyRows) ? (historyRows as RawHistoryRow[]) : [];
 
-  // Parent-uploaded source media only. Generated assets are filtered out at
-  // the query, so a deliverable cannot reach this page even by accident.
-  const { data: assets } = await supabase
-    .from("media_assets")
-    .select("id, type, file_url, mime_type, created_at")
-    .eq("order_id", row.id)
-    .eq("type", "upload")
-    .order("created_at", { ascending: true });
-
-  const sourceMedia: ParentSourceMedia[] = [];
-  for (const asset of Array.isArray(assets) ? assets : []) {
-    const path = typeof asset.file_url === "string" ? asset.file_url : null;
-    if (!path) continue;
+  const sourceRows = (Array.isArray(assets) ? assets : []).filter(
+    (asset) => typeof asset.file_url === "string" && asset.file_url.length > 0,
+  );
+  // One batched storage call for every source file rather than one per file.
+  // The signed URL is short-lived and generated per render; the storage path
+  // it was built from never leaves this function.
+  const signed = await createPrivateSignedUrls(
+    supabase,
+    sourceRows.map((asset) => asset.file_url as string),
+  );
+  const sourceMedia: ParentSourceMedia[] = sourceRows.map((asset) => {
     const mimeType = typeof asset.mime_type === "string" ? asset.mime_type : null;
-    // The signed URL is short-lived and generated per render. The storage path
-    // it was built from never leaves this function.
-    const signedUrl = await createPrivateSignedUrl(supabase, path);
-    sourceMedia.push({
+    return {
       id: String(asset.id),
       mimeType,
-      uploadedAt: typeof asset.created_at === "string" ? asset.created_at : row.created_at,
-      signedUrl,
+      uploadedAt: typeof asset.created_at === "string" ? asset.created_at : createdAt,
+      signedUrl: signed.get(asset.file_url as string) ?? null,
       isImage: mimeType?.startsWith("image/") ?? false,
-    });
-  }
-
-  // Parent-safe history. The function raises when the order is not the
-  // caller's, which this treats as an empty timeline rather than an error:
-  // ownership was already proven above, so a raise here means the history is
-  // unavailable, not that the page should fail.
-  let history: RawHistoryRow[] = [];
-  const { data: historyRows } = await supabase.rpc("get_parent_order_status_history", {
-    p_order_id: row.id,
+    };
   });
-  if (Array.isArray(historyRows)) history = historyRows as RawHistoryRow[];
 
-  // Metadata only — never a signed URL here. The page decides which panel to
-  // render from this alone; the actual preview/download link is minted on
-  // demand by the dedicated endpoint, never persisted or embedded in SSR HTML.
-  const finalRow = await resolveCurrentParentFinalMedia(supabase, row.id);
   const finalMedia: ParentFinalMedia | null = finalRow
     ? { id: finalRow.id, mimeType: finalRow.mimeType, fileName: finalRow.fileName }
     : null;
@@ -297,9 +296,9 @@ export async function getParentOrderDetail(
   const candyCost = Number.isFinite(candyRaw) && candyRaw > 0 ? Math.trunc(candyRaw) : 0;
 
   const detail: ParentOrderDetail = {
-    id: row.id,
+    id,
     requestType,
-    createdAt: row.created_at,
+    createdAt,
     displayTitle: text(row.title) ?? "درخواست بدون عنوان",
     status,
     candyCost,

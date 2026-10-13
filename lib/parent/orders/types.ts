@@ -39,8 +39,9 @@ export interface ParentOrderSummary {
   completedAt: string | null;
 }
 
-/** Result shape for the list query, so the page can branch on failure
- *  without a thrown error crossing the server/client boundary. */
-export type ParentOrderListResult =
-  | { ok: true; orders: ParentOrderSummary[] }
-  | { ok: false; reason: "unauthenticated" | "no_parent_profile" | "read_failed" };
+/** Result shape for one page of the list, so the page can branch on failure
+ *  without a thrown error crossing the server/client boundary. Identity
+ *  failures (unauthenticated, no profile) are the request context's concern. */
+export type ParentOrdersPageResult =
+  | { ok: true; orders: ParentOrderSummary[]; nextCursor: string | null }
+  | { ok: false; reason: "invalid_cursor" | "read_failed" };
