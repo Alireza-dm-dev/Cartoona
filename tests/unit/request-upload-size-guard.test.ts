@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import { setRateLimitStore, InMemoryRateLimitStore } from "@/lib/rate-limit"
 
 // POST /api/requests must refuse an oversized body from Content-Length alone,
 // BEFORE request.formData() buffers it. No real large buffers are allocated:
@@ -70,6 +71,7 @@ async function route() {
 }
 
 beforeEach(() => {
+  setRateLimitStore(new InMemoryRateLimitStore()) // fresh counters per test
   m.createServerClient.mockReset().mockImplementation(async () => healthyClient())
   m.upload.mockReset().mockResolvedValue({ error: null })
   m.rpc.mockReset().mockResolvedValue({ data: [{ id: "o1", type: "image", status: "pending", candy_cost: 1 }], error: null })

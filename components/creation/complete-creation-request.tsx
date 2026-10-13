@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { RATE_LIMITED_MESSAGE } from "@/lib/rate-limit/messages";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/card";
@@ -291,7 +292,9 @@ export default function CompleteCreationRequest() {
         fail({
           kind: classifySubmissionError(res.status, body?.code),
           message:
-            typeof body?.error === "string" && body.error.length > 0
+            res.status === 429
+              ? RATE_LIMITED_MESSAGE
+              : typeof body?.error === "string" && body.error.length > 0
               ? body.error
               : "ثبت درخواست با خطا مواجه شد. لطفاً دوباره تلاش کنید.",
         });

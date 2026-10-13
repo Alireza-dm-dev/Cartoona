@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
+import { RATE_LIMITED_MESSAGE } from "@/lib/rate-limit/messages";
 import { PageHeader } from "@/components/ui/page-header"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/neu-button"
@@ -157,6 +158,8 @@ export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBilli
         const errBody = await resp.json().catch(() => ({}))
         if (resp.status === 404) {
           setPurchaseError("این بسته در حال حاضر در دسترس نیست.")
+        } else if (resp.status === 429) {
+          setPurchaseError(RATE_LIMITED_MESSAGE)
         } else {
           setPurchaseError(errBody.error || "ایجاد سفارش پرداخت انجام نشد. دوباره امتحان کنید.")
         }
@@ -206,6 +209,8 @@ export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBilli
         const errBody = await resp.json().catch(() => ({}))
         if (resp.status === 409) {
           setPurchaseError("این سفارش قبلاً پرداخت شده است.")
+        } else if (resp.status === 429) {
+          setPurchaseError(RATE_LIMITED_MESSAGE)
         } else {
           setPurchaseError(errBody.error || "تکمیل پرداخت آزمایشی انجام نشد.")
         }

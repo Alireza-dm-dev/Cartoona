@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useRef } from "react"
+import { RATE_LIMITED_MESSAGE } from "@/lib/rate-limit/messages";
 import type { ParentCandyPurchaseSummary } from "@/lib/candy-purchases/types"
 import type { CouponValidationResult } from "@/lib/coupons/types"
 import { normalizeCouponCode, isValidRawCouponCode } from "@/lib/coupons/rules"
@@ -64,7 +65,7 @@ export function PendingPurchaseCard({ purchase, onCouponApplied }: PendingPurcha
       }
       const body = await resp.json().catch(() => ({}))
       if (!resp.ok) {
-        setError(body?.error?.message || "بررسی کد تخفیف انجام نشد. دوباره امتحان کنید.")
+        setError(resp.status === 429 ? RATE_LIMITED_MESSAGE : body?.error?.message || "بررسی کد تخفیف انجام نشد. دوباره امتحان کنید.")
         return
       }
       setPreview(body.coupon as CouponValidationResult)
@@ -103,7 +104,7 @@ export function PendingPurchaseCard({ purchase, onCouponApplied }: PendingPurcha
       }
       const body = await resp.json().catch(() => ({}))
       if (!resp.ok) {
-        setError(body?.error?.message || "اعمال کد تخفیف انجام نشد. دوباره امتحان کنید.")
+        setError(resp.status === 429 ? RATE_LIMITED_MESSAGE : body?.error?.message || "اعمال کد تخفیف انجام نشد. دوباره امتحان کنید.")
         return
       }
       setJustApplied(true)

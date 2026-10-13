@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { withObservability } from "@/lib/observability/request-context"
 import { logAuthLookup } from "@/lib/observability/auth-events"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
@@ -222,6 +223,10 @@ async function handlePost(request: Request) {
     logAuthLookup(authError)
     return jsonError("لطفاً ابتدا وارد حساب خود شوید.", 401)
   }
+
+  // Per parent, after identity is known and before any purchase work.
+  const limited = await enforceRateLimit(user.id, RATE_LIMIT_POLICIES.candyPurchaseMutation)
+  if (limited) return limited
 
   const { data: userRow, error: roleError } = await supabase
     .from("users")

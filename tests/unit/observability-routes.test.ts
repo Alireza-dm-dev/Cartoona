@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { setRateLimitStore, InMemoryRateLimitStore } from "@/lib/rate-limit"
 import { setLogSink, type LogRecord } from "@/lib/observability/logger"
 import { REQUEST_ID_HEADER } from "@/lib/observability/request-id"
 
@@ -63,6 +64,7 @@ const png = { size: 100, type: "image/png", name: "sara-birthday.png" }
 const events = () => records.map((r) => r.event)
 
 beforeEach(() => {
+  setRateLimitStore(new InMemoryRateLimitStore()) // fresh counters per test
   records = []
   restore = setLogSink((r) => records.push(r))
   m.existingOrder = null
@@ -195,7 +197,7 @@ describe("final-media audit decision: awaited, failures logged", () => {
     vi.resetModules()
     await reattachSink()
     vi.doMock("@/lib/parent/orders/final-media-queries", () => ({
-      resolveParentOwnsOrder: async () => ({ ok: true }),
+      resolveParentOwnsOrder: async () => ({ ok: true, userId: "u1" }),
       resolveCurrentParentFinalMedia: async () => final,
     }))
     vi.doMock("@/lib/storage/private-signed-url", () => ({

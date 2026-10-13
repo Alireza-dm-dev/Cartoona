@@ -37,6 +37,8 @@ export interface LogFields {
   replayed?: boolean
   itemCount?: number
   failedCount?: number
+  policy?: string
+  retryAfterSeconds?: number
 }
 
 export interface LogRecord extends LogFields {
@@ -78,6 +80,8 @@ const VALIDATORS: { [K in keyof LogFields]-?: (v: unknown) => LogFields[K] | und
   replayed: (v) => (typeof v === "boolean" ? v : undefined),
   itemCount: count,
   failedCount: count,
+  policy: str(CODE),
+  retryAfterSeconds: count,
 }
 
 // Fixed order -> stable, greppable output.

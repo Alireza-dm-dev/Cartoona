@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { withObservability } from "@/lib/observability/request-context"
 import { logAuthLookup } from "@/lib/observability/auth-events"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
@@ -59,6 +60,10 @@ async function handlePost(
     logAuthLookup(authError)
     return jsonError("UNAUTHENTICATED", "لطفاً ابتدا وارد حساب خود شوید.", 401)
   }
+
+  // Per parent, before the coupon RPC mutates the purchase.
+  const limited = await enforceRateLimit(user.id, RATE_LIMIT_POLICIES.couponApply)
+  if (limited) return limited
 
   const { data: userRow, error: roleError } = await supabase
     .from("users")

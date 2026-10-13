@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
 import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
@@ -92,6 +93,19 @@ async function handlePost(request: Request) {
     logAuthLookup(authError)
     return NextResponse.json({ error: "لطفاً ابتدا وارد حساب خود شوید" }, { status: 401 })
   }
+
+  // Keyed by the authenticated parent (never IP). Runs before the role/profile
+  // lookups, the idempotency check, and above all any upload, storage copy or
+  // RPC, so a limited request does no expensive work and creates no order. It
+  // does not weaken idempotency: a retry that is allowed still hits the same
+  // submission-key fast path / unique constraint, and a rejected one never
+  // reaches them. Nothing here retries.
+  const limited = await enforceRateLimit(
+    user.id,
+    RATE_LIMIT_POLICIES.requestSubmitBurst,
+    RATE_LIMIT_POLICIES.requestSubmitHourly,
+  )
+  if (limited) return limited
 
   const { data: userRow, error: roleError } = await supabase
     .from("users")

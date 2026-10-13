@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
 import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
@@ -76,6 +77,10 @@ export async function POST(request: Request) {
   if (userError || !user) {
     return jsonError("لطفاً ابتدا وارد حساب خود شوید.", 401)
   }
+
+  // Per parent, before the (expensive) password update.
+  const limited = await enforceRateLimit(user.id, RATE_LIMIT_POLICIES.passwordChange)
+  if (limited) return limited
 
   const { data: roleRow, error: roleError } = await supabase
     .from("users")

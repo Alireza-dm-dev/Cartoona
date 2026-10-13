@@ -22,7 +22,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
  */
 
 export type ResolveParentOrderResult =
-  | { ok: true }
+  | { ok: true; /** Verified user id, so callers need not look it up again to key per-user limits. */ userId: string }
   | { ok: false; reason: "unauthenticated" | "not_parent" | "no_parent_profile" | "not_found" }
 
 /**
@@ -64,7 +64,7 @@ export async function resolveParentOwnsOrder(
     .maybeSingle()
   if (!order) return { ok: false, reason: "not_found" }
 
-  return { ok: true }
+  return { ok: true, userId: user.id }
 }
 
 export interface ParentFinalMediaRow {

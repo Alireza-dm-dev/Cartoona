@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
 import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
@@ -71,6 +72,13 @@ async function handlePost(
   if (!lifetime.valid) {
     return createParentSessionFailureResponse(supabase, lifetime)
   }
+
+  // Per parent, AFTER ownership and session checks (so the limiter learns nothing
+  // about orders the caller does not own) and BEFORE the body parse, the
+  // eligibility query, URL signing and the audit write. A limited request mints
+  // no URL.
+  const limited = await enforceRateLimit(ownership.userId, RATE_LIMIT_POLICIES.finalMediaSign)
+  if (limited) return limited
 
   let body: unknown = null
   const contentType = request.headers.get("content-type") || ""
