@@ -38,6 +38,7 @@ export interface LogFields {
   itemCount?: number
   failedCount?: number
   policy?: string
+  paymentSource?: string
   retryAfterSeconds?: number
 }
 
@@ -81,6 +82,7 @@ const VALIDATORS: { [K in keyof LogFields]-?: (v: unknown) => LogFields[K] | und
   itemCount: count,
   failedCount: count,
   policy: str(CODE),
+  paymentSource: (v) => (v === "candy" || v === "welcome_image_credit" ? v : undefined),
   retryAfterSeconds: count,
 }
 

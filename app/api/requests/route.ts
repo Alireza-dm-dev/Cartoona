@@ -182,7 +182,7 @@ async function handlePost(request: Request) {
   // submissions (see 20260922100000_idempotent_order_submission.sql).
   const { data: existingOrder } = await supabase
     .from("orders")
-    .select("id, type, status, candy_cost")
+    .select("id, type, status, candy_cost, payment_source")
     .eq("parent_id", parentProfile.id)
     .eq("submission_key", submissionKey)
     .maybeSingle()
@@ -190,7 +190,7 @@ async function handlePost(request: Request) {
   if (existingOrder) {
     const replayed = toSubmissionSuccess(existingOrder)
     if (replayed) {
-      log("info", "SUBMISSION_REPLAYED", { orderId: replayed.orderId, replayed: true, reason: "idempotency_fast_path" })
+      log("info", "SUBMISSION_REPLAYED", { orderId: replayed.orderId, replayed: true, reason: "idempotency_fast_path", paymentSource: replayed.paymentSource })
       return NextResponse.json(
         { ...replayed, replayed: true },
         { headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } },
@@ -420,6 +420,8 @@ async function handlePost(request: Request) {
     replayed: success.replayed,
     ...(success.replayed ? { reason: "idempotency_race" } : {}),
     operation: hasUpload ? "upload" : hasGalleryChoice ? "gallery_copy" : "no_file",
+    // Which source paid (welcome image credit or candy). No balances, no key.
+    paymentSource: success.paymentSource,
   })
 
   return NextResponse.json(success, {

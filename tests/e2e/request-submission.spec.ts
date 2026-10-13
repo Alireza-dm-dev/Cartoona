@@ -97,6 +97,21 @@ async function createParent(tag: string): Promise<Parent> {
     { headers: HDR },
   )).json()
 
+  // Every new parent now starts with 3 welcome IMAGE credits, which image orders
+  // spend before candy. These specs pin the CANDY debit/ledger path, so the
+  // credits are spent up front. The credit path itself is covered by the real-SQL
+  // suite (tests/unit/welcome-image-credits-db.test.ts).
+  const exhaust = await fetch(
+    `${SUPABASE_URL}/rest/v1/parent_welcome_credits?parent_id=eq.${profiles[0].id}`,
+    {
+      method: "PATCH",
+      headers: { ...HDR, Prefer: "return=minimal" },
+      // used_count = granted_count (3); the table's CHECK forbids exceeding it.
+      body: JSON.stringify({ used_count: 3 }),
+    },
+  )
+  if (!exhaust.ok) throw new Error(`could not exhaust welcome credits: ${await exhaust.text()}`)
+
   return { userId: user.id, profileId: profiles[0].id, cookie }
 }
 

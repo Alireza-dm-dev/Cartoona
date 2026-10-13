@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { creditNoticeFor } from "@/lib/credits/welcome-image-credits";
 import { RATE_LIMITED_MESSAGE } from "@/lib/rate-limit/messages";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -77,6 +78,31 @@ export default function CompleteCreationRequest() {
 
   const { catalog, loading: pricingLoading, error: pricingError, refresh: refreshPricing } = useCreationPricing();
 
+  /**
+   * Remaining welcome image credits, fetched only for an image draft. Display
+   * only: the server decides what actually pays. `null` = unknown, which falls
+   * back to the ordinary candy display rather than claiming anything.
+   */
+  const [welcomeRemaining, setWelcomeRemaining] = useState<number | null>(null);
+  const isImageDraft = draft?.type === "image";
+  useEffect(() => {
+    if (!isImageDraft) return;
+    let cancelled = false;
+    fetch("/api/parent/welcome-credits", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (cancelled) return;
+        const n = body?.welcomeImageCreditsRemaining;
+        setWelcomeRemaining(typeof n === "number" && Number.isInteger(n) && n >= 0 ? n : null);
+      })
+      .catch(() => {
+        if (!cancelled) setWelcomeRemaining(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isImageDraft]);
+
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
       setDraft(readCreationDraft());
@@ -107,6 +133,12 @@ export default function CompleteCreationRequest() {
     }
     return null
   })()
+
+  // Image drafts only; video and drawing animation never claim eligibility.
+  const creditNotice = creditNoticeFor(
+    draft?.type === "image" ? "image" : draft?.type === "video" ? "video" : "drawing_animation",
+    welcomeRemaining,
+  );
 
   if (!hasFinishedLoading) {
     return (
@@ -484,7 +516,18 @@ export default function CompleteCreationRequest() {
           </div>
         ) : null}
 
-        {costResult?.available === true && (
+        {creditNotice.show && (
+          <div className="mt-2 neu-recessed rounded-xl px-3 py-2 text-sm" data-testid="welcome-credit-notice">
+            <p className="font-medium text-text-dark">
+              این سفارش از اعتبار رایگان تصویر شما استفاده می‌کند.
+            </p>
+            <p className="mt-1 text-xs text-text-dark/50">
+              اعتبار رایگان ساخت تصویر: {creditNotice.remaining.toLocaleString("fa-IR")}
+            </p>
+          </div>
+        )}
+
+        {!creditNotice.show && costResult?.available === true && (
           <div className="mt-2 neu-recessed rounded-xl px-3 py-2 text-sm">
             <div className="flex items-center justify-between">
               <span className="text-text-dark/50">هزینه برآوردی</span>

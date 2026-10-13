@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
+import { WelcomeCreditsNote } from "./welcome-credits-note"
 import { RATE_LIMITED_MESSAGE } from "@/lib/rate-limit/messages";
 import { PageHeader } from "@/components/ui/page-header"
 import { Card } from "@/components/ui/card"
@@ -248,6 +249,13 @@ export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBilli
           <div className="mb-6">
             <CandyBalanceCard balance={billingData.wallet.balance} />
           </div>
+
+          {typeof billingData.welcomeImageCreditsRemaining === "number" &&
+            billingData.welcomeImageCreditsRemaining > 0 && (
+              <div className="mb-6">
+                <WelcomeCreditsNote remaining={billingData.welcomeImageCreditsRemaining} />
+              </div>
+            )}
 
           {packages.length > 0 && (
             <div className="mb-6">

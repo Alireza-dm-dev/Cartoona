@@ -55,7 +55,7 @@ export function ParentOrderCard({ order }: { order: ParentOrderSummary }) {
 
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-dark/60">
             <span>ثبت شده در: {formatSubmittedAt(order.createdAt)}</span>
-            <span>{formatCandy(order.candyCost)} آبنبات</span>
+            <span>{order.candyCost > 0 ? `${formatCandy(order.candyCost)} آبنبات` : "رایگان"}</span>
             {order.completedAt && (
               <span>تحویل شده در: {formatSubmittedAt(order.completedAt)}</span>
             )}

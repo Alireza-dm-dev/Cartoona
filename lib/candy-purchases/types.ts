@@ -88,6 +88,11 @@ export interface ParentCandyBillingResponse {
   wallet: {
     balance: number
   }
+  /**
+   * One-time welcome IMAGE credits left. Not candy and not part of the wallet:
+   * usable for image requests only. Absent when it could not be read.
+   */
+  welcomeImageCreditsRemaining?: number
   purchases: ParentCandyPurchaseSummary[]
 }
 

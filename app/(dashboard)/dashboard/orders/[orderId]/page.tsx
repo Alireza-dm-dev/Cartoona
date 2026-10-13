@@ -101,7 +101,9 @@ export default async function OrderDetailPage({
               <div>
                 <dt className="text-text-dark/60">هزینه</dt>
                 <dd className="text-text-dark">
-                  {new Intl.NumberFormat("fa-IR").format(result.detail.candyCost)} آبنبات
+                  {result.detail.candyCost > 0
+                    ? `${new Intl.NumberFormat("fa-IR").format(result.detail.candyCost)} آبنبات`
+                    : "رایگان"}
                 </dd>
               </div>
               {result.detail.completedAt && (

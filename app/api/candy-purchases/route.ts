@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { readWelcomeImageCredits } from "@/lib/credits/welcome-image-credits"
 import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { withObservability } from "@/lib/observability/request-context"
 import { logAuthLookup } from "@/lib/observability/auth-events"
@@ -65,6 +66,10 @@ async function handleGet() {
   if (!parentProfile) {
     return jsonError("پروفایل والد یافت نشد.", 400)
   }
+
+  // Welcome image credits are NOT candy: a separate, display-only count. A failed
+  // read omits the field (null) instead of breaking billing or claiming a number.
+  const welcomeImageCreditsRemaining = await readWelcomeImageCredits(supabase, parentProfile.id)
 
   const { data: wallet } = await supabase
     .from("candy_wallets")
@@ -165,6 +170,7 @@ async function handleGet() {
 
   const result = {
     wallet: { balance: wallet?.balance ?? 0 },
+    ...(welcomeImageCreditsRemaining !== null ? { welcomeImageCreditsRemaining } : {}),
     purchases: (purchases || []).map((p) => {
       const redemption = redemptionByPurchase.get(p.id)
       const row: PurchaseReadModelRow = {

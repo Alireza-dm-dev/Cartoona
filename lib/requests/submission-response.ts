@@ -1,3 +1,5 @@
+import { toPaymentSource, type PaymentSource } from "@/lib/credits/welcome-image-credits"
+
 /**
  * What a successful request submission is allowed to tell the browser.
  *
@@ -29,6 +31,12 @@ export interface SubmissionSuccess {
    * need to branch on it.
    */
   replayed: boolean
+  /**
+   * What paid for the order: a welcome image credit or candy. On a replay this
+   * is the ORIGINAL order's source. Always present; an RPC/row that predates
+   * the column is reported as "candy", which is what it was.
+   */
+  paymentSource: PaymentSource
 }
 
 /** Unknown shape of the single row `create_parent_request_trusted` returns. */
@@ -38,6 +46,7 @@ export interface RawCreatedOrderRow {
   status?: unknown
   candy_cost?: unknown
   replayed?: unknown
+  payment_source?: unknown
 }
 
 function text(value: unknown): string | null {
@@ -69,5 +78,6 @@ export function toSubmissionSuccess(row: unknown): SubmissionSuccess | null {
         ? candidate.candy_cost
         : null,
     replayed: candidate.replayed === true,
+    paymentSource: toPaymentSource(candidate.payment_source),
   }
 }

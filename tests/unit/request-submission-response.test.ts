@@ -27,6 +27,8 @@ describe("submission success serializer", () => {
       status: "pending_review",
       candyCost: 12,
       replayed: false,
+      // Added in V0.1.34. A row with no payment_source (predates the column) is candy.
+      paymentSource: "candy",
     })
   })
 
@@ -46,7 +48,7 @@ describe("submission success serializer", () => {
     const serialized = JSON.stringify(result)
 
     expect(Object.keys(result!).sort()).toEqual(
-      ["candyCost", "orderId", "replayed", "status", "success", "type"].sort(),
+      ["candyCost", "orderId", "paymentSource", "replayed", "status", "success", "type"].sort(),
     )
     for (const leak of ["file_url", "secret-child-photo", "parent_id", "assigned_admin", "internal_note", "parent-uploads"]) {
       expect(serialized).not.toContain(leak)
