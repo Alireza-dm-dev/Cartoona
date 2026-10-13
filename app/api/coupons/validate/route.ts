@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server"
+import { withObservability } from "@/lib/observability/request-context"
+import { logAuthLookup } from "@/lib/observability/auth-events"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
 import { isParentRole } from "@/lib/auth/parent-access"
@@ -28,7 +30,9 @@ function jsonError(code: string, message: string, status: number): NextResponse 
  * The server resolves the parent profile and calls the trusted service-role
  * validation RPC. The browser never supplies a parent ID, package, or amount.
  */
-export async function POST(request: Request) {
+export const POST = withObservability("POST /api/coupons/validate", handlePost)
+
+async function handlePost(request: Request) {
   const contentType = request.headers.get("content-type") || ""
   if (!contentType.startsWith("application/json")) {
     return jsonError("INVALID_FORMAT", "فرمت درخواست باید JSON باشد.", 415)
@@ -50,6 +54,7 @@ export async function POST(request: Request) {
 
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) {
+    logAuthLookup(authError)
     return jsonError("UNAUTHENTICATED", "لطفاً ابتدا وارد حساب خود شوید.", 401)
   }
 

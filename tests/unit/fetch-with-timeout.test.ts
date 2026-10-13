@@ -105,9 +105,9 @@ describe("fetchWithTimeout", () => {
   })
 
   it("preserves method, headers and body for the underlying call", async () => {
-    const impl = vi.fn(async () => new Response(null, { status: 204 }))
+    const impl = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }))
     await fetchWithTimeout("http://x/a", { method: "POST", headers: { a: "b" }, body: "z" }, 1000, impl)
-    const init = impl.mock.calls[0][1] as RequestInit
+    const init = impl.mock.calls[0][1]!
     expect(init.method).toBe("POST")
     expect(init.body).toBe("z")
     expect(init.signal).toBeInstanceOf(AbortSignal)

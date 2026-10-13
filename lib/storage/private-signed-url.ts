@@ -1,4 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { log } from "@/lib/observability/request-context"
+import { categorizeError } from "@/lib/observability/errors"
 
 export const PRIVATE_UPLOADS_BUCKET = "parent-uploads"
 
@@ -24,7 +26,16 @@ export async function createPrivateSignedUrl(
   const { data, error } = await supabase.storage
     .from(bucket)
     .createSignedUrl(path, ttlSeconds, download !== undefined ? { download } : undefined)
-  if (error || !data?.signedUrl) return null
+  if (error || !data?.signedUrl) {
+    // Bucket and error category only - never the object path or any URL.
+    log("warn", "STORAGE_SIGNED_URL_FAILED", {
+      subsystem: "storage",
+      operation: "sign_url",
+      bucket,
+      errorCode: categorizeError(error, "storage"),
+    })
+    return null
+  }
   return data.signedUrl
 }
 
@@ -50,14 +61,43 @@ export async function createPrivateSignedUrls(
 
   try {
     const { data, error } = await supabase.storage.from(bucket).createSignedUrls(unique, ttlSeconds)
-    if (error || !Array.isArray(data)) return result
+    if (error || !Array.isArray(data)) {
+      log("warn", "STORAGE_SIGNED_URL_BATCH_FAILED", {
+        subsystem: "storage",
+        operation: "sign_url_batch",
+        bucket,
+        itemCount: unique.length,
+        failedCount: unique.length,
+        errorCode: categorizeError(error, "storage"),
+      })
+      return result
+    }
     for (const entry of data) {
       if (entry && typeof entry.path === "string" && !entry.error && typeof entry.signedUrl === "string" && entry.signedUrl) {
         result.set(entry.path, entry.signedUrl)
       }
     }
-  } catch {
+    const failedCount = unique.filter((p) => result.get(p) === null).length
+    if (failedCount > 0) {
+      log("warn", "STORAGE_SIGNED_URL_BATCH_PARTIAL", {
+        subsystem: "storage",
+        operation: "sign_url_batch",
+        bucket,
+        itemCount: unique.length,
+        failedCount,
+        errorCode: "STORAGE_UNAVAILABLE",
+      })
+    }
+  } catch (error) {
     // Whole batch failed: every item stays null (unavailable preview).
+    log("warn", "STORAGE_SIGNED_URL_BATCH_FAILED", {
+      subsystem: "storage",
+      operation: "sign_url_batch",
+      bucket,
+      itemCount: unique.length,
+      failedCount: unique.length,
+      errorCode: categorizeError(error, "storage"),
+    })
   }
   return result
 }

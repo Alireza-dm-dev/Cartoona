@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server'
+import { withObservability } from "@/lib/observability/request-context"
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 
-export async function POST(request: Request) {
+export const POST = withObservability("POST /api/logout", handlePost)
+
+async function handlePost(request: Request) {
   try {
     const supabase = await createServerSupabaseClient()
     await supabase.auth.signOut()

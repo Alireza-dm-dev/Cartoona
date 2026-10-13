@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server"
+import { withObservability } from "@/lib/observability/request-context"
+import { logAuthLookup } from "@/lib/observability/auth-events"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
 import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
@@ -17,11 +19,14 @@ import { getParentGalleryMedia } from "@/lib/parent/gallery/queries"
  */
 export const dynamic = "force-dynamic"
 
-export async function GET(request: Request) {
+export const GET = withObservability("GET /api/parent/gallery", handleGet)
+
+async function handleGet(request: Request) {
   const supabase = await createServerSupabaseClient()
 
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) {
+    logAuthLookup(authError)
     return NextResponse.json({ error: "لطفاً ابتدا وارد حساب خود شوید" }, { status: 401 })
   }
 

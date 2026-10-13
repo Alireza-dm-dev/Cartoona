@@ -19,6 +19,7 @@ import {
 import { createPrivateSignedUrl, PRIVATE_MEDIA_SIGNED_URL_TTL_SECONDS } from "@/lib/storage/private-signed-url"
 import { FINAL_DELIVERABLES_BUCKET } from "@/lib/admin/requests/media-validation"
 import { recordFinalMediaAudit } from "@/lib/audit/final-media-audit"
+import { withObservability, log } from "@/lib/observability/request-context"
 
 /**
  * POST /api/parent/orders/[orderId]/final-media
@@ -42,7 +43,12 @@ function errorResponse(err: ParentFinalMediaError): NextResponse {
   return NextResponse.json({ error: err.error, code: err.code }, { status: err.status, headers: JSON_HEADERS })
 }
 
-export async function POST(
+export const POST = withObservability(
+  "POST /api/parent/orders/[orderId]/final-media",
+  handlePost,
+)
+
+async function handlePost(
   request: Request,
   { params }: { params: Promise<{ orderId: string }> },
 ) {
@@ -97,6 +103,15 @@ export async function POST(
   )
 
   if (!url) {
+    log("error", "FINAL_MEDIA_SIGN_FAILED", {
+      subsystem: "storage",
+      operation: action === "download" ? "final_media_download" : "final_media_view",
+      bucket: FINAL_DELIVERABLES_BUCKET,
+      orderId,
+      mediaAssetId: final.id,
+      mediaType: final.mimeType ?? undefined,
+      errorCode: "STORAGE_UNAVAILABLE",
+    })
     return errorResponse(SIGNING_FAILED_ERROR)
   }
 
@@ -104,8 +119,10 @@ export async function POST(
     data: { user },
   } = await supabase.auth.getUser()
   if (user) {
-    // Best-effort, never blocks the response.
-    void recordFinalMediaAudit({
+    // Awaited: a fire-and-forget write can be lost when a serverless instance
+    // freezes after the response. A failed write is logged and never fails the
+    // response (see recordFinalMediaAudit).
+    await recordFinalMediaAudit({
       actorUserId: user.id,
       orderId,
       mediaAssetId: final.id,

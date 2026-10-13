@@ -6,6 +6,9 @@ import { supabaseTimeoutFetch } from './lib/supabase/timeout-fetch'
 import { isAdminRole } from './lib/auth/admin-role'
 import { isParentRole } from './lib/auth/parent-access'
 import { checkCurrentParentSessionLifetime } from './lib/auth/parent-session-lifetime'
+import { logEvent } from './lib/observability/logger'
+import { REQUEST_ID_HEADER, resolveRequestId } from './lib/observability/request-id'
+import { categorizeError } from './lib/observability/errors'
 
 function redirectCookies(
   url: string | URL,
@@ -25,7 +28,7 @@ function redirectCookies(
  * the user's still-valid session survives and a plain reload works. Any cookie
  * the Supabase client refreshed during this request is carried over.
  */
-function sessionCheckUnavailable(supabaseResponse: NextResponse): NextResponse {
+function sessionCheckUnavailable(supabaseResponse: NextResponse, requestId: string): NextResponse {
   const response = new NextResponse(
     'بررسی نشست موقتاً ممکن نیست. لطفاً چند لحظه بعد صفحه را دوباره بارگذاری کنید.',
     {
@@ -34,6 +37,7 @@ function sessionCheckUnavailable(supabaseResponse: NextResponse): NextResponse {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'no-store',
         'Retry-After': '2',
+        [REQUEST_ID_HEADER]: requestId,
       },
     },
   )
@@ -44,6 +48,7 @@ function sessionCheckUnavailable(supabaseResponse: NextResponse): NextResponse {
 }
 
 export async function middleware(request: NextRequest) {
+  const requestId = resolveRequestId(request.headers)
   let supabaseResponse = NextResponse.next({ request })
 
   let user = null
@@ -83,11 +88,25 @@ export async function middleware(request: NextRequest) {
     user = verifiedUser
     if (!verifiedUser && getUserError && isAuthRetryableFetchError(getUserError)) {
       authTransientFailure = true
+      logEvent('warn', 'AUTH_USER_LOOKUP_FAILED', {
+        requestId,
+        method: request.method,
+        operation: 'middleware',
+        subsystem: 'auth',
+        errorCode: categorizeError(getUserError, 'auth'),
+      })
     }
-  } catch {
+  } catch (error) {
     user = null
     supabase = null
     authTransientFailure = true
+    logEvent('warn', 'AUTH_USER_LOOKUP_FAILED', {
+      requestId,
+      method: request.method,
+      operation: 'middleware',
+      subsystem: 'auth',
+      errorCode: categorizeError(error, 'auth'),
+    })
   }
 
   const { pathname, search } = request.nextUrl
@@ -104,7 +123,7 @@ export async function middleware(request: NextRequest) {
   // ── Admin block (unchanged) ─────────────────────────────────────────────
   if (isAdminPath) {
     if (!user && authTransientFailure) {
-      return sessionCheckUnavailable(supabaseResponse)
+      return sessionCheckUnavailable(supabaseResponse, requestId)
     }
 
     if (!user) {
@@ -141,6 +160,12 @@ export async function middleware(request: NextRequest) {
     } catch {
       // Fail closed — continue redirecting
     }
+    logEvent('info', 'SESSION_EXPIRED', {
+      requestId,
+      method: request.method,
+      operation: 'middleware',
+      subsystem: 'auth',
+    })
     const loginUrl = new URL('/login', request.url)
     loginUrl.searchParams.set('reason', 'session_expired')
     loginUrl.searchParams.set('from', pathname)
@@ -150,7 +175,7 @@ export async function middleware(request: NextRequest) {
   if (isParentProtectedPage) {
     // 1. Authentication check
     if (!user && authTransientFailure) {
-      return sessionCheckUnavailable(supabaseResponse)
+      return sessionCheckUnavailable(supabaseResponse, requestId)
     }
 
     if (!user) {
@@ -216,7 +241,15 @@ export async function middleware(request: NextRequest) {
       // retryable response and keep the session. Only a definite expiry /
       // missing session signs the user out.
       if (lifetime.reason === 'lookup_failed') {
-        return sessionCheckUnavailable(supabaseResponse)
+        logEvent('warn', 'SESSION_LOOKUP_FAILED', {
+          requestId,
+          method: request.method,
+          operation: 'middleware',
+          subsystem: 'auth',
+          errorCode: 'AUTH_UNAVAILABLE',
+          reason: lifetime.reason,
+        })
+        return sessionCheckUnavailable(supabaseResponse, requestId)
       }
       return redirectExpiredParentSession()
     }

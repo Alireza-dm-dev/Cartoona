@@ -9,6 +9,9 @@ import { toSubmissionSuccess } from "@/lib/requests/submission-response"
 import { resolveCharacterId } from "@/lib/requests/resolve-character"
 import { isValidSubmissionKey } from "@/lib/requests/submission-key"
 import { sanitizeFileName } from "@/lib/requests/sanitize-file-name"
+import { withObservability, log } from "@/lib/observability/request-context"
+import { logAuthLookup } from "@/lib/observability/auth-events"
+import { categorizeError } from "@/lib/observability/errors"
 import {
   resolveOwnedSourceAsset,
   sourceAssetCopyName,
@@ -31,7 +34,30 @@ const MAX_REQUEST_BODY_SIZE = MAX_FILE_SIZE + MULTIPART_OVERHEAD_ALLOWANCE
 
 const NO_STORE = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }
 
-export async function POST(request: Request) {
+export const POST = withObservability("POST /api/requests", handlePost)
+
+// Orphan-file cleanup. Behaviour is unchanged (best effort, never throws), but a
+// failed removal is now visible instead of silently leaving a stray object.
+async function removeOrphanedUpload(
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+  path: string,
+  reason: string,
+): Promise<void> {
+  try {
+    const { error } = await supabase.storage.from("parent-uploads").remove([path])
+    if (error) throw error
+  } catch (error) {
+    log("warn", "SUBMISSION_CLEANUP_FAILED", {
+      subsystem: "storage",
+      operation: "remove",
+      bucket: "parent-uploads",
+      reason,
+      errorCode: categorizeError(error, "storage"),
+    })
+  }
+}
+
+async function handlePost(request: Request) {
   const contentType = request.headers.get("content-type") || ""
   if (!contentType.startsWith("multipart/form-data")) {
     return NextResponse.json({ error: "فرمت درخواست باید multipart/form-data باشد." }, { status: 415 })
@@ -44,12 +70,14 @@ export async function POST(request: Request) {
     const trimmed = contentLengthRaw.trim()
     const contentLength = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN
     if (!Number.isSafeInteger(contentLength)) {
+      log("info", "SUBMISSION_UPLOAD_REJECTED", { reason: "invalid_content_length" })
       return NextResponse.json(
         { error: "خطا در خواندن داده‌های ارسالی", code: "invalid_content_length" },
         { status: 400, headers: NO_STORE },
       )
     }
     if (contentLength > MAX_REQUEST_BODY_SIZE) {
+      log("info", "SUBMISSION_UPLOAD_REJECTED", { reason: "request_too_large" })
       return NextResponse.json(
         { error: "حجم درخواست بیش از حد مجاز است. فایل کوچک‌تری انتخاب کنید.", code: "request_too_large" },
         { status: 413, headers: NO_STORE },
@@ -61,6 +89,7 @@ export async function POST(request: Request) {
 
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) {
+    logAuthLookup(authError)
     return NextResponse.json({ error: "لطفاً ابتدا وارد حساب خود شوید" }, { status: 401 })
   }
 
@@ -147,6 +176,7 @@ export async function POST(request: Request) {
   if (existingOrder) {
     const replayed = toSubmissionSuccess(existingOrder)
     if (replayed) {
+      log("info", "SUBMISSION_REPLAYED", { orderId: replayed.orderId, replayed: true, reason: "idempotency_fast_path" })
       return NextResponse.json(
         { ...replayed, replayed: true },
         { headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } },
@@ -158,6 +188,9 @@ export async function POST(request: Request) {
   // anything is uploaded, so an unknown character costs no storage write.
   const character = await resolveCharacterId(supabase, normalized.characterId)
   if (!character.ok) {
+    if (character.reason === "read_failed") {
+      log("error", "SUBMISSION_CHARACTER_LOOKUP_FAILED", { subsystem: "database", errorCode: "DATABASE_UNAVAILABLE" })
+    }
     return NextResponse.json(
       character.reason === "not_found"
         ? {
@@ -193,6 +226,7 @@ export async function POST(request: Request) {
   // the request disagree with what the parent chose on screen, so an ambiguous
   // submission is refused instead of resolved.
   if (hasUpload && hasGalleryChoice) {
+    log("info", "SUBMISSION_UPLOAD_REJECTED", { reason: "ambiguous_source" })
     return NextResponse.json({
       error: "برای هر درخواست فقط یک فایل مجاز است: یا بارگذاری جدید، یا انتخاب از گالری.",
       code: "ambiguous_source",
@@ -203,6 +237,7 @@ export async function POST(request: Request) {
     const uploadedFile = file as File
 
     if (!ALLOWED_MIME_TYPES.includes(uploadedFile.type)) {
+      log("info", "SUBMISSION_UPLOAD_REJECTED", { reason: "invalid_file_type" })
       return NextResponse.json({
         error: "فرمت فایل پشتیبانی نمی‌شود. فقط JPEG، PNG و WebP مجاز هستند.",
         code: "invalid_file_type",
@@ -210,6 +245,7 @@ export async function POST(request: Request) {
     }
 
     if (uploadedFile.size > MAX_FILE_SIZE) {
+      log("info", "SUBMISSION_UPLOAD_REJECTED", { reason: "file_too_large" })
       return NextResponse.json({
         error: "حجم فایل نباید بیشتر از ۱۰ مگابایت باشد.",
         code: "file_too_large",
@@ -228,6 +264,13 @@ export async function POST(request: Request) {
       })
 
     if (uploadError) {
+      log("error", "SUBMISSION_STORAGE_FAILED", {
+        subsystem: "storage",
+        operation: "upload",
+        bucket: "parent-uploads",
+        mediaType: uploadedFile.type,
+        errorCode: categorizeError(uploadError, "storage"),
+      })
       if (uploadError.message?.includes("row-level security")) {
         return NextResponse.json({
           error: "خطای دسترسی در بارگذاری فایل. لطفاً دوباره وارد شوید.",
@@ -271,6 +314,12 @@ export async function POST(request: Request) {
         .copy(resolved.asset.path, storagePath)
 
       if (copyError) {
+        log("error", "SUBMISSION_STORAGE_FAILED", {
+          subsystem: "storage",
+          operation: "copy",
+          bucket: PRIVATE_UPLOADS_BUCKET,
+          errorCode: categorizeError(copyError, "storage"),
+        })
         return NextResponse.json({
           error: "استفاده از فایل قبلی با خطا مواجه شد. لطفاً دوباره تلاش کنید.",
           code: "source_asset_copy_failed",
@@ -306,13 +355,20 @@ export async function POST(request: Request) {
 
   if (rpcError) {
     if (fileUploaded && storagePath) {
-      await supabase.storage
-        .from("parent-uploads")
-        .remove([storagePath])
-        .catch(() => {})
+      await removeOrphanedUpload(supabase, storagePath, "rpc_failed")
     }
 
     const mapped = mapRequestRpcError(rpcError.message)
+    if (mapped.code === "INSUFFICIENT_CANDIES") {
+      log("info", "SUBMISSION_INSUFFICIENT_CANDIES", { reason: mapped.code })
+    } else {
+      // Only our own mapped code is logged; the raw database message is not.
+      log(mapped.status >= 500 ? "error" : "warn", "SUBMISSION_RPC_FAILED", {
+        subsystem: "database",
+        reason: mapped.code,
+        errorCode: categorizeError(rpcError, "database"),
+      })
+    }
     return NextResponse.json(
       { error: mapped.error, code: mapped.code },
       {
@@ -329,6 +385,7 @@ export async function POST(request: Request) {
   // row simply could not be read back in a usable shape. Removing the file
   // here would strip a real order of its source, so the storage object stays.
   if (!success) {
+    log("error", "SUBMISSION_RESPONSE_UNREADABLE", { subsystem: "database", errorCode: "INTERNAL_ERROR" })
     return NextResponse.json(
       { error: "ثبت درخواست با خطا مواجه شد. لطفاً سفارش‌های خود را بررسی کنید." },
       { status: 500, headers: { "Cache-Control": "no-store" } },
@@ -341,11 +398,15 @@ export async function POST(request: Request) {
   // no order and never will, so it is removed exactly like a rollback — the
   // same cleanup the error branch above already performs.
   if (success.replayed && fileUploaded && storagePath && success.orderId !== orderId) {
-    await supabase.storage
-      .from("parent-uploads")
-      .remove([storagePath])
-      .catch(() => {})
+    await removeOrphanedUpload(supabase, storagePath, "replay_lost_race")
   }
+
+  log("info", success.replayed ? "SUBMISSION_REPLAYED" : "SUBMISSION_ACCEPTED", {
+    orderId: success.orderId,
+    replayed: success.replayed,
+    ...(success.replayed ? { reason: "idempotency_race" } : {}),
+    operation: hasUpload ? "upload" : hasGalleryChoice ? "gallery_copy" : "no_file",
+  })
 
   return NextResponse.json(success, {
     headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },

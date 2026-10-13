@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server"
+import { withObservability } from "@/lib/observability/request-context"
+import { logAuthLookup } from "@/lib/observability/auth-events"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
 import { isParentRole } from "@/lib/auth/parent-access"
@@ -27,7 +29,9 @@ function jsonError(code: string, message: string, status: number): NextResponse 
  * via the trusted service-role RPC. No direct table writes in this route.
  * Body: { code, idempotency_key }.
  */
-export async function POST(
+export const POST = withObservability("POST /api/candy-purchases/[id]/coupon", handlePost)
+
+async function handlePost(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -52,6 +56,7 @@ export async function POST(
 
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) {
+    logAuthLookup(authError)
     return jsonError("UNAUTHENTICATED", "لطفاً ابتدا وارد حساب خود شوید.", 401)
   }
 

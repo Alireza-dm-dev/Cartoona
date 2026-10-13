@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { NextRequest } from "next/server"
 import { AuthRetryableFetchError } from "@supabase/supabase-js"
+import { setLogSink, type LogRecord } from "@/lib/observability/logger"
 
 // Middleware + a timed-out auth/session check: must be a retryable 503 and must
 // never sign the user out or clear auth cookies.
@@ -63,5 +64,25 @@ describe("middleware with timed-out Supabase calls", () => {
     await middleware(new NextRequest("http://x/dashboard"))
     const { supabaseTimeoutFetch } = await import("@/lib/supabase/timeout-fetch")
     expect((m.options as { global: { fetch: unknown } }).global.fetch).toBe(supabaseTimeoutFetch)
+  })
+})
+
+describe("middleware observability", () => {
+  it("transient failures log safe warn events and the 503 carries X-Request-Id; no cookies/tokens logged", async () => {
+    const records: LogRecord[] = []
+    const restore = setLogSink((r) => records.push(r))
+    m.client = client({
+      getUser: async () => ({ data: { user: { id: "u1" } }, error: null }),
+      rpc: vi.fn(async () => ({ data: null, error: { message: "Request timed out after 10000ms" } })),
+    })
+    const { middleware } = await import("@/middleware")
+    const req = new NextRequest("http://x/dashboard", { headers: { cookie: "sb-access-token=SECRETJWT", "x-request-id": "edge-req-00001" } })
+    const res = await middleware(req)
+    restore()
+    expect(res.status).toBe(503)
+    expect(res.headers.get("X-Request-Id")).toBe("edge-req-00001")
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ level: "warn", event: "SESSION_LOOKUP_FAILED", requestId: "edge-req-00001", errorCode: "AUTH_UNAVAILABLE" })
+    expect(JSON.stringify(records)).not.toMatch(/SECRETJWT|cookie|dashboard/)
   })
 })

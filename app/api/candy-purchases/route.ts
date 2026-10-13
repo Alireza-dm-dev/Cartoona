@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server"
+import { withObservability } from "@/lib/observability/request-context"
+import { logAuthLookup } from "@/lib/observability/auth-events"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
 import { isParentRole } from "@/lib/auth/parent-access"
@@ -22,7 +24,9 @@ function jsonError(message: string, status: number): NextResponse {
   )
 }
 
-export async function GET() {
+export const GET = withObservability("GET /api/candy-purchases", handleGet)
+
+async function handleGet() {
   let supabase
   try {
     supabase = await createServerSupabaseClient()
@@ -32,6 +36,7 @@ export async function GET() {
 
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) {
+    logAuthLookup(authError)
     return jsonError("لطفاً ابتدا وارد حساب خود شوید.", 401)
   }
 
@@ -186,7 +191,9 @@ export async function GET() {
   })
 }
 
-export async function POST(request: Request) {
+export const POST = withObservability("POST /api/candy-purchases", handlePost)
+
+async function handlePost(request: Request) {
   const contentType = request.headers.get("content-type") || ""
   if (!contentType.startsWith("application/json")) {
     return jsonError("فرمت درخواست باید JSON باشد.", 415)
@@ -212,6 +219,7 @@ export async function POST(request: Request) {
 
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) {
+    logAuthLookup(authError)
     return jsonError("لطفاً ابتدا وارد حساب خود شوید.", 401)
   }
 

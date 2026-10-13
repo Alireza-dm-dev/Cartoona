@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server"
+import { withObservability } from "@/lib/observability/request-context"
+import { logAuthLookup } from "@/lib/observability/auth-events"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
 import { isParentRole } from "@/lib/auth/parent-access"
@@ -24,7 +26,9 @@ function isSimulationEnabled(): boolean {
   return process.env.CARTOONA_ENABLE_DEV_PAYMENT_SIMULATION === "true"
 }
 
-export async function POST(
+export const POST = withObservability("POST /api/candy-purchases/[id]/complete", handlePost)
+
+async function handlePost(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -62,6 +66,7 @@ export async function POST(
 
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) {
+    logAuthLookup(authError)
     return jsonError("UNAUTHENTICATED", "لطفاً ابتدا وارد حساب خود شوید.", 401)
   }
 
