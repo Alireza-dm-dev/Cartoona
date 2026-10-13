@@ -1,5 +1,6 @@
 import "server-only"
 import { createClient } from "@supabase/supabase-js"
+import { supabaseTimeoutFetch } from "./timeout-fetch"
 
 export function createAdminSupabaseClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -9,6 +10,7 @@ export function createAdminSupabaseClient() {
   if (!secret) throw new Error("Missing SUPABASE_SECRET_KEY")
 
   return createClient(url, secret, {
+    global: { fetch: supabaseTimeoutFetch },
     auth: {
       autoRefreshToken: false,
       persistSession: false,

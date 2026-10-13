@@ -2,6 +2,7 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import { isAuthRetryableFetchError } from '@supabase/supabase-js'
 import { getSupabaseEnv } from './lib/supabase/env'
+import { supabaseTimeoutFetch } from './lib/supabase/timeout-fetch'
 import { isAdminRole } from './lib/auth/admin-role'
 import { isParentRole } from './lib/auth/parent-access'
 import { checkCurrentParentSessionLifetime } from './lib/auth/parent-session-lifetime'
@@ -57,6 +58,7 @@ export async function middleware(request: NextRequest) {
       env.NEXT_PUBLIC_SUPABASE_URL,
       env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
       {
+        global: { fetch: supabaseTimeoutFetch },
         cookies: {
           getAll() {
             return request.cookies.getAll()

@@ -127,7 +127,7 @@ describe("classifying a failure", () => {
   })
 
   it("separates upload failures from gallery failures", () => {
-    for (const code of ["invalid_file_type", "file_too_large", "upload_failed", "storage_permission_denied"]) {
+    for (const code of ["invalid_file_type", "file_too_large", "request_too_large", "upload_failed", "storage_permission_denied"]) {
       expect(classifySubmissionError(422, code), code).toBe("upload")
     }
     for (const code of ["source_asset_unavailable", "source_asset_copy_failed"]) {

@@ -18,10 +18,43 @@ import {
 const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"]
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MiB
 
+// Total request-body cap used to refuse an oversized POST BEFORE the multipart
+// body is buffered. The file limit alone is too tight: the body also carries
+// the draft JSON, the submission key, a gallery id and multipart boundaries /
+// part headers, so a legitimate 10 MiB file always produces a slightly larger
+// body. 256 KiB of headroom is far above that overhead (a few KiB) yet keeps
+// the worst accepted buffer near 10.25 MiB. This is a fast rejection only -
+// Content-Length is client-supplied, and the real file-size check below stays
+// authoritative.
+const MULTIPART_OVERHEAD_ALLOWANCE = 256 * 1024
+const MAX_REQUEST_BODY_SIZE = MAX_FILE_SIZE + MULTIPART_OVERHEAD_ALLOWANCE
+
+const NO_STORE = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }
+
 export async function POST(request: Request) {
   const contentType = request.headers.get("content-type") || ""
   if (!contentType.startsWith("multipart/form-data")) {
     return NextResponse.json({ error: "فرمت درخواست باید multipart/form-data باشد." }, { status: 415 })
+  }
+
+  // Absent Content-Length (e.g. chunked) is not rejected here; it falls through
+  // to the parser and the post-parse file-size check.
+  const contentLengthRaw = request.headers.get("content-length")
+  if (contentLengthRaw !== null) {
+    const trimmed = contentLengthRaw.trim()
+    const contentLength = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN
+    if (!Number.isSafeInteger(contentLength)) {
+      return NextResponse.json(
+        { error: "خطا در خواندن داده‌های ارسالی", code: "invalid_content_length" },
+        { status: 400, headers: NO_STORE },
+      )
+    }
+    if (contentLength > MAX_REQUEST_BODY_SIZE) {
+      return NextResponse.json(
+        { error: "حجم درخواست بیش از حد مجاز است. فایل کوچک‌تری انتخاب کنید.", code: "request_too_large" },
+        { status: 413, headers: NO_STORE },
+      )
+    }
   }
 
   const supabase = await createServerSupabaseClient()

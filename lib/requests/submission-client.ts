@@ -38,6 +38,7 @@ export function classifySubmissionError(status: number, code: unknown): SubmitEr
   switch (code) {
     case "invalid_file_type":
     case "file_too_large":
+    case "request_too_large":
     case "upload_failed":
     case "storage_permission_denied":
       return "upload"
