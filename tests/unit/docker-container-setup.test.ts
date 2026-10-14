@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import fs from "node:fs"
 import path from "node:path"
+import { composeService, composeServiceNames } from "../helpers/compose-text"
 
 /**
  * Static guards for the V0.1.35 container setup.
@@ -134,8 +135,11 @@ describe(".dockerignore", () => {
   })
 })
 
-describe("compose.yml", () => {
+describe("compose.yml — app service", () => {
   const compose = read("compose.yml")
+  // Scoped to the app block: the postgres service (V0.1.37) has its own
+  // healthcheck/restart/ports and must not satisfy these by accident.
+  const app = composeService(compose, "app")
 
   it("uses the modern format with no obsolete version key", () => {
     expect(compose).toMatch(/^services:/m)
@@ -143,27 +147,28 @@ describe("compose.yml", () => {
   })
 
   it("defines one app service built from the project Dockerfile", () => {
-    expect(compose).toMatch(/^\s{2}app:/m)
-    expect(compose).toMatch(/dockerfile: Dockerfile/)
+    expect(app).not.toBe("")
+    expect(app).toMatch(/dockerfile: Dockerfile/)
+    expect(app).toMatch(/image: cartoona-app:local/)
   })
 
   it("publishes port 3000 and binds the container to all interfaces", () => {
-    expect(compose).toMatch(/-\s*"3000:3000"/)
-    expect(compose).toMatch(/HOSTNAME: 0\.0\.0\.0/)
+    expect(app).toMatch(/-\s*"3000:3000"/)
+    expect(app).toMatch(/HOSTNAME: 0\.0\.0\.0/)
   })
 
   it("has a restart policy and a healthcheck with sane timings", () => {
-    expect(compose).toMatch(/restart: unless-stopped/)
-    expect(compose).toMatch(/test: \["CMD", "node", "healthcheck\.mjs"\]/)
-    expect(compose).toMatch(/interval: 30s/)
-    expect(compose).toMatch(/timeout: 5s/)
-    expect(compose).toMatch(/retries: 3/)
-    expect(compose).toMatch(/start_period: \d+s/)
+    expect(app).toMatch(/restart: unless-stopped/)
+    expect(app).toMatch(/test: \["CMD", "node", "healthcheck\.mjs"\]/)
+    expect(app).toMatch(/interval: 30s/)
+    expect(app).toMatch(/timeout: 5s/)
+    expect(app).toMatch(/retries: 3/)
+    expect(app).toMatch(/start_period: \d+s/)
   })
 
   it("supplies runtime configuration from an operator-provided env file", () => {
-    expect(compose).toMatch(/env_file:/)
-    expect(compose).toMatch(/\.env\.docker\b/)
+    expect(app).toMatch(/env_file:/)
+    expect(app).toMatch(/\.env\.docker\b/)
     expect(compose).not.toMatch(/\.env\.local/)
   })
 
@@ -178,10 +183,12 @@ describe("compose.yml", () => {
     expect(compose).not.toMatch(/[a-z0-9-]+\.supabase\.co/)
   })
 
-  it("runs no database or backend emulator container", () => {
-    const services = [...compose.matchAll(/^\s{2}([a-z][\w-]*):$/gm)].map((m) => m[1])
-    expect(services).toEqual(["app"])
-    expect(compose).not.toMatch(/postgres|supabase\/|pgbouncer|gotrue/)
+  it("runs no backend emulator — the only services are app and postgres", () => {
+    // V0.1.37 deliberately adds a plain PostgreSQL (see
+    // docker-postgres-foundation.test.ts); Supabase emulators stay out.
+    const services = composeServiceNames(compose)
+    expect(services).toEqual(["app", "postgres"])
+    expect(compose).not.toMatch(/supabase\/|pgbouncer|gotrue|postgrest\/postgrest/)
   })
 })
 
@@ -190,9 +197,15 @@ describe(".env.docker.example", () => {
 
   it("is a placeholder-only template", () => {
     expect(template).not.toMatch(/eyJ[A-Za-z0-9_-]{10,}/)
+    // Non-secret identifiers with a fixed recommended value (V0.1.37).
+    const fixedNames: Record<string, string> = { POSTGRES_DB: "cartoona", POSTGRES_USER: "cartoona" }
     for (const [, name, value] of template.matchAll(/^([A-Z_]+)=(.*)$/gm)) {
       expect(name).toMatch(/^[A-Z_]+$/)
       if (value.trim() === "") continue
+      if (name in fixedNames) {
+        expect(value).toBe(fixedNames[name])
+        continue
+      }
       expect(value).toMatch(/your-|localhost/)
     }
   })

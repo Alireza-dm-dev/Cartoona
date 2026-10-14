@@ -53,9 +53,11 @@ docker compose logs -f app
 docker compose down
 ```
 
-Docker runs **only the Cartoona web app** — Supabase stays external, and no
-PostgreSQL or Supabase container is included. Full reference, including which
-variables are build-time versus runtime: [docs/DOCKER.md](docs/DOCKER.md).
+Docker runs the Cartoona web app plus a local PostgreSQL 17 (`localhost:5433`).
+That database is **prepared but not wired**: the app's data, auth and storage
+still come from Supabase. `docker compose down` keeps the local database, and
+`docker compose down -v` deletes it. Full reference, including which variables
+are build-time versus runtime: [docs/DOCKER.md](docs/DOCKER.md).
 
 ## Environment Variables
 

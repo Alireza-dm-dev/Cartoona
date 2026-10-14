@@ -1,12 +1,18 @@
-# Cartoona — local / prod-like Docker run (V0.1.35)
+# Cartoona — local / prod-like Docker run (V0.1.35, PostgreSQL added V0.1.37)
 #
-# One service: the Next.js web app. Supabase stays EXTERNAL — there is
-# deliberately no PostgreSQL, Supabase CLI, auth or storage container here, so
-# this file commits to no backend provider. See docs/DOCKER.md.
+# Two services:
+#   app       the Next.js web app. Its data, auth and storage still come from
+#             the EXTERNAL Supabase project.
+#   postgres  a local PostgreSQL 17, PREPARED BUT NOT WIRED: nothing in the app
+#             connects to it yet. It is the foundation for the upcoming
+#             migration off Supabase's database (V0.1.38+).
+# There is still no Supabase CLI, auth or storage emulator. See docs/DOCKER.md.
 #
-# No credential appears in this file. Runtime values come from .env.docker,
-# which the operator creates locally from .env.docker.example and which is
-# gitignored.
+# No credential appears in this file. App runtime values come from .env.docker
+# (env_file). Postgres values are interpolated from the shell / --env-file, so
+# the database container never receives the app's Supabase secrets. Both come
+# from .env.docker, which the operator creates from .env.docker.example and
+# which is gitignored.
 
 services:
   app:
@@ -56,3 +62,48 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Local PostgreSQL 17 (V0.1.37) — prepared, not wired. The app does not
+  # depend on it, so there is deliberately no `depends_on`: a missing password
+  # or an unhealthy database never stops the web app from starting.
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cartoona}
+      POSTGRES_USER: ${POSTGRES_USER:-cartoona}
+      # No default on purpose. Left empty, the image refuses to initialise
+      # instead of creating a passwordless superuser — and it is never "trust".
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      # Password auth on the Unix socket too, not just TCP (the image defaults
+      # local socket connections to trust).
+      POSTGRES_INITDB_ARGS: --auth-local=scram-sha-256 --auth-host=scram-sha-256
+      # Lets `docker compose exec postgres psql ...` authenticate. Same secret,
+      # same container — nothing new is exposed.
+      PGPASSWORD: ${POSTGRES_PASSWORD:-}
+    # Reachable from this Mac only (psql, migrations, debugging), never from
+    # the LAN. 5433 avoids a natively installed PostgreSQL on 5432. Containers
+    # on the compose network use postgres:5432.
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    # Over TCP (-h 127.0.0.1) so the probe cannot pass early: during first-run
+    # initialisation the image's temporary server listens on the socket only.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  # Survives `docker compose down`; removed only by `docker compose down -v`.
+  # Fixed name so it does not depend on the checkout directory's name.
+  postgres_data:
+    name: cartoona_postgres_data

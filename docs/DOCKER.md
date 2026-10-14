@@ -1,8 +1,17 @@
-# Docker (V0.1.35)
+# Docker (V0.1.35, PostgreSQL added V0.1.37)
 
-Run Cartoona in a production-like container. **Only the web app runs in
-Docker.** Supabase — or whichever backend provider replaces it — stays
-external; see [Backend boundary](#backend-boundary).
+Run Cartoona in a production-like container. The stack has two services:
+
+| Service | Image | Role |
+|---|---|---|
+| `app` | `cartoona-app:local` (built here) | The Next.js web app |
+| `postgres` | `postgres:17-bookworm` | Local PostgreSQL 17, **prepared but not wired** |
+
+**Cartoona's application data still comes from Supabase.** The database, auth
+and storage are all the external Supabase project. Nothing in the app connects
+to the local `postgres` service yet. It is infrastructure for the upcoming
+migration (V0.1.38+). See [Local PostgreSQL](#local-postgresql) and
+[Backend boundary](#backend-boundary).
 
 Normal day-to-day development is unchanged and does **not** use Docker:
 
@@ -37,12 +46,15 @@ it to the running container. The template contains placeholders only.
 ## 3. Build and start
 
 ```bash
-# NEXT_PUBLIC_* must also be present at BUILD time (see section 9), so export
-# them for the build; Compose reads them for the build args.
+# NEXT_PUBLIC_* (build args) and POSTGRES_* (database service) are read by
+# Compose itself, so export the file first.
 set -a; source .env.docker; set +a
 
 docker compose up --build -d
 ```
+
+`docker compose --env-file .env.docker up --build -d` is equivalent, with no
+need to export.
 
 Then open <http://localhost:3000>.
 
@@ -56,14 +68,16 @@ with no exported variables at all.
 docker compose ps
 ```
 
-`STATUS` should reach `Up … (healthy)` within roughly a minute (30s
-`start_period` plus one 30s interval).
+`STATUS` should reach `Up … (healthy)` within roughly a minute for `app`
+(30s `start_period` plus one 30s interval). `postgres` is usually healthy within
+about 30s on first start, while it initialises its volume, and faster after that.
 
 ## 5. View logs
 
 ```bash
 docker compose logs -f app
 docker compose logs --tail=100 app
+docker compose logs -f postgres
 ```
 
 Application logs are the V0.1.30 structured JSON logger writing to
@@ -72,8 +86,11 @@ stdout/stderr. Nothing is written to a log file inside the container.
 ## 6. Stop
 
 ```bash
-docker compose down
+docker compose down        # stops and removes containers — KEEPS database data
+docker compose down -v     # ALSO DELETES the local database volume
 ```
+
+Only `-v` deletes data; see [Data persistence](#data-persistence).
 
 ## 7. Rebuild
 
@@ -126,6 +143,17 @@ into the browser bundle:
 | `RATE_LIMIT_TRUSTED_IP_HEADER` | no | yes | Only behind a proxy you control |
 | `RATE_LIMIT_DISABLED` | no | yes | Leave unset for prod-like runs |
 | `LOG_LEVEL` | no | yes | `debug`/`info`/`warn`/`error` |
+| `POSTGRES_DB` | — | `postgres` service | Default `cartoona` |
+| `POSTGRES_USER` | — | `postgres` service | Default `cartoona` |
+| `POSTGRES_PASSWORD` | — | `postgres` service | Secret. No default: left empty, the database refuses to initialise |
+| `DATABASE_URL` | no | (not read yet) | `postgresql://cartoona:<password>@postgres:5432/cartoona`, for a backend inside the compose network |
+| `LOCAL_DATABASE_URL` | — | host tools | `postgresql://cartoona:<password>@localhost:5433/cartoona`, for psql and migrations on this Mac |
+
+The `POSTGRES_*` values are **interpolated by Compose** into the `postgres`
+service, not passed through `env_file`. That keeps the database container from
+receiving the app's Supabase secrets, and is why `.env.docker` must be exported
+or passed with `--env-file`. Use a URL-safe password (`openssl rand -hex 24`) so
+it can go into the URLs unescaped.
 
 Rules:
 
@@ -148,15 +176,94 @@ Rules:
   `DEV_PARENT_AUTH_*`) and the destructive-test variables (`CARTOONA_TEST_*`)
   belong in `.env.local`, never in a container.
 
+## Local PostgreSQL
+
+Status: **prepared, not wired.** The service runs, persists data and is
+health-checked, but no application code reads `DATABASE_URL` and no ORM or
+driver is installed. The data-access layer is planned for V0.1.39.
+
+| | Value |
+|---|---|
+| Image | `postgres:17-bookworm`, the same major version as the Supabase project (`supabase/config.toml`) |
+| From containers on the compose network | `postgres:5432` |
+| From this Mac | `localhost:5433`, bound to `127.0.0.1` only |
+| Database / user | `cartoona` / `cartoona` |
+| Volume | `cartoona_postgres_data` (named volume, not a bind mount) |
+
+**Why 5433 and loopback:** 5433 avoids clashing with a PostgreSQL installed
+natively on 5432. The port is published as `127.0.0.1:5433`, so it is reachable
+from this Mac but not from other machines on the network.
+
+**Authentication:** `scram-sha-256` for every connection, including the Unix
+socket inside the container. The image's default `trust` for local sockets is
+overridden. There is no passwordless superuser: with `POSTGRES_PASSWORD` empty,
+the image refuses to initialise.
+
+**Startup independence:** `app` has no `depends_on: postgres`. A missing
+password or an unhealthy database never stops the web app from starting,
+because the app does not use it.
+
+**Healthcheck:** `pg_isready` over TCP every 5s (timeout 5s, 10 retries, 10s
+start period). TCP rather than the socket, so the probe cannot report healthy
+while the image's first-run initialisation server is still running.
+
+### Commands
+
+```bash
+docker compose up -d                                   # both services
+docker compose up -d postgres                          # database only
+docker compose ps
+docker compose logs -f postgres
+docker compose exec postgres psql -U cartoona -d cartoona
+docker compose restart postgres
+docker compose down                                    # keeps data
+docker compose down -v                                 # DELETES data
+```
+
+`exec … psql` authenticates with the container's own password, so it does not
+prompt. From the Mac, with a local `psql`:
+
+```bash
+psql "$LOCAL_DATABASE_URL" -c "select version();"
+```
+
+### Data persistence
+
+Data lives in the named volume `cartoona_postgres_data`, outside the repository,
+so no database file can reach Git.
+
+| Command | Containers | Database data |
+|---|---|---|
+| `docker compose restart postgres` | restarted | **kept** |
+| `docker compose down` | removed | **kept** |
+| `docker compose up -d` after `down` | recreated | **kept**, reattached |
+| `docker compose down -v` | removed | **DELETED** |
+| `docker volume rm cartoona_postgres_data` | — | **DELETED** |
+
+`POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` are applied only when the
+volume is first initialised. Changing them later in `.env.docker` does not change
+an existing database. To start over with new values, use `docker compose down -v`
+(this destroys local data).
+
+### Not yet portable from Supabase
+
+The 45 migrations in `supabase/migrations` assume Supabase-provided schemas and
+roles: `auth.users`, `auth.uid()`, `auth.jwt()`, `auth.sessions`,
+`auth.identities`, the `storage.buckets` and `storage.objects` tables, the
+`storage.foldername()` function, the
+`authenticated`/`anon`/`service_role` roles, and `extensions.gen_random_bytes`
+(pgcrypto). They do **not** apply to this plain PostgreSQL as-is. Resolving that
+is V0.1.38.
+
 ## Backend boundary
 
-Docker currently runs **only the Cartoona web app**. Supabase remains an
-external, networked service.
+Supabase remains the app's only backend: database, auth and storage. The
+local `postgres` service is not a Supabase replacement. It has no auth or
+storage schema, and nothing is migrated into it.
 
-Not present, and deliberately so until the backend-portability decision is
-made: a PostgreSQL service, a Supabase CLI container, an auth emulator, a
-storage emulator. The compose file therefore stays provider-neutral — swapping
-backends should mean changing environment variables, not deleting services.
+Still deliberately absent: a Supabase CLI container, an auth emulator and a
+storage emulator. Swapping backends should mean changing environment variables,
+not deleting services.
 
 ## Image architecture
 
