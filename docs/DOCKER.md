@@ -252,8 +252,11 @@ roles: `auth.users`, `auth.uid()`, `auth.jwt()`, `auth.sessions`,
 `auth.identities`, the `storage.buckets` and `storage.objects` tables, the
 `storage.foldername()` function, the
 `authenticated`/`anon`/`service_role` roles, and `extensions.gen_random_bytes`
-(pgcrypto). They do **not** apply to this plain PostgreSQL as-is. Resolving that
-is V0.1.38.
+(pgcrypto). They do **not** apply to this plain PostgreSQL as-is.
+
+V0.1.38 adds a separate, Supabase-independent baseline for this database in
+`database/migrations/`, applied with `scripts/db/migrate-local.sh`. It is not
+used by the app yet. See [PLAIN_POSTGRES.md](PLAIN_POSTGRES.md).
 
 ## Backend boundary
 
