@@ -5,6 +5,12 @@ import { isAdminRole } from "@/lib/auth/admin-role"
 import { ADMIN_BRAND_HREF, ADMIN_BRAND_LABEL, ADMIN_NAV_ITEMS } from "@/lib/admin/navigation/admin-nav"
 import { AppBackground } from "@/components/ui/app-background"
 
+// The admin shell resolves the session for every admin route, so nothing under
+// /admin may be prerendered. Without this, `next build` would try to render the
+// admin pages and fail on the missing Supabase configuration, making the build
+// depend on a live backend (V0.1.35).
+export const dynamic = "force-dynamic"
+
 export default async function AdminLayout({
   children,
 }: {

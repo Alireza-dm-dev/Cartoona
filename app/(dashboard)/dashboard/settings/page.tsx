@@ -25,6 +25,12 @@ async function hasPasswordSet(): Promise<boolean> {
   }
 }
 
+// Per-request, auth-gated page: it reads the session on every request and must
+// never be prerendered. Without this, `next build` would try to render it and
+// fail on the missing Supabase configuration, making the build depend on a
+// live backend (V0.1.35).
+export const dynamic = "force-dynamic";
+
 export default async function SettingsPage() {
   const passwordSet = await hasPasswordSet();
 

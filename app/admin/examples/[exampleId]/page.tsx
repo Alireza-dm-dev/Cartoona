@@ -5,6 +5,12 @@ import { createServerSupabaseClient } from "@/lib/supabase/server"
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+// Per-request, auth-gated page: it reads the session on every request and must
+// never be prerendered. Without this, `next build` would try to render it and
+// fail on the missing Supabase configuration, making the build depend on a
+// live backend (V0.1.35).
+export const dynamic = "force-dynamic";
+
 export default async function EditExamplePage({
   params,
 }: {
