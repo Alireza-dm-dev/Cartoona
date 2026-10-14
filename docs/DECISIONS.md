@@ -137,3 +137,24 @@
 - Simpler moderation pipeline.
 - No social graph or community features.
 - Future public gallery requires strict parent opt-in with granular controls.
+
+---
+
+## ADR-010: Server-Side PostgREST Reads Fail Fast (V0.1.36)
+
+**Status:** Accepted
+
+**Context:** `@supabase/postgrest-js` 2.110.2 retries every GET/HEAD/OPTIONS that throws a fetch error — including our own `FetchTimeoutError` — or answers HTTP 503/520, up to 3 more times with 1 s + 2 s + 4 s backoff. A failed read therefore cost ~7 s even when DNS failed in milliseconds, and a hanging read cost 4 × 10 s timeouts + 7 s ≈ 47 s, so `SUPABASE_REQUEST_TIMEOUT_MS` was not the upper bound it was meant to be. POST/PATCH/DELETE/RPC were never retried. The homepage also ran its three CMS reads one after another, so an unreachable backend made `/` take ~21 s.
+
+**Decision:**
+- Server, admin and middleware Supabase clients make **one network attempt per PostgREST call**. `disablePostgrestRetries()` (`lib/supabase/postgrest-retry.ts`) sets postgrest-js's documented `retry` option to `false` on the client's PostgREST instance. supabase-js does not forward that option from `createClient`, so it is set right after construction, and every `from()`, `schema()` and `rpc()` builder inherits it.
+- No application-level retries. The 10 s fetch timeout is the upper bound for one call. A failed server render is retried by the user, not silently by the server.
+- Write, RPC and Storage behaviour is unchanged. The library never retried them, and nothing new retries them.
+- The browser client is unchanged.
+- The homepage's three independent reads (`homepage_content`, `homepage_media_assets`, `homepage_hero_layout`) run concurrently. Each still degrades on its own to the committed defaults.
+
+**Consequences:**
+- A transient 503 during a PostgREST schema-cache reload is returned to the caller instead of being retried. Pages already fall back to defaults on a read error.
+- `tests/unit/supabase-postgrest-retry.test.ts` drives the real supabase-js client and pins the library's default 4-attempt behaviour. A supabase-js upgrade that moves the `retry` wiring fails that test instead of quietly bringing the backoff back.
+
+**Known open issue — Auth refresh stall (not changed here):** auth-js 2.110.2 `_refreshAccessToken` retries a failed refresh with 200 ms × 2ⁿ backoff for as long as the next attempt fits inside a 30 s window (`AUTO_REFRESH_TICK_DURATION_MS`). With an unreachable Auth backend, any request that carries an **expired** session cookie was measured waiting ~25.5–26 s, including public pages through the header account lookup. Fixing it means changing how the session refresh is bounded. That is an Auth design change with session-validity implications, so it is deferred to its own task. Session validation is not weakened.

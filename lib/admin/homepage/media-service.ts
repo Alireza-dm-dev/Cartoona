@@ -69,6 +69,33 @@ function parseRow(row: Record<string, unknown>): MediaRowSnapshot {
   };
 }
 
+async function readMediaAssetRows(supabase: SupabaseClient): Promise<Record<string, unknown>[]> {
+  try {
+    const { data } = await supabase.from("homepage_media_assets").select("*");
+    return Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function readHeroLayout(
+  supabase: SupabaseClient,
+): Promise<{ rect: HeroTvRect; revision: number } | null> {
+  try {
+    const { data } = await supabase
+      .from("homepage_hero_layout")
+      .select("tv_rect, revision")
+      .eq("singleton_key", "hero")
+      .maybeSingle();
+    if (data && validateHeroTvRect(data.tv_rect).length === 0 && typeof data.revision === "number") {
+      return { rect: data.tv_rect as HeroTvRect, revision: data.revision };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Reads all media rows + hero layout for the admin manager. Never throws:
  * missing tables/rows degrade to local-asset fallback views (previewUrl =
@@ -77,28 +104,12 @@ function parseRow(row: Record<string, unknown>): MediaRowSnapshot {
 export async function queryAdminHomepageMedia(
   supabase: SupabaseClient,
 ): Promise<AdminMediaOverview> {
-  let rows: Record<string, unknown>[] = [];
-  let layout: { rect: HeroTvRect; revision: number } | null = null;
-
-  try {
-    const { data } = await supabase.from("homepage_media_assets").select("*");
-    if (Array.isArray(data)) rows = data as Record<string, unknown>[];
-  } catch {
-    rows = [];
-  }
-
-  try {
-    const { data } = await supabase
-      .from("homepage_hero_layout")
-      .select("tv_rect, revision")
-      .eq("singleton_key", "hero")
-      .maybeSingle();
-    if (data && validateHeroTvRect(data.tv_rect).length === 0 && typeof data.revision === "number") {
-      layout = { rect: data.tv_rect as HeroTvRect, revision: data.revision };
-    }
-  } catch {
-    layout = null;
-  }
+  // Independent reads, issued together so a slow backend costs one timeout,
+  // not two. Each still degrades on its own.
+  const [rows, layout] = await Promise.all([
+    readMediaAssetRows(supabase),
+    readHeroLayout(supabase),
+  ]);
 
   const bySlot = new Map(rows.map((r) => [String(r.slot_key), parseRow(r)]));
   const slots: AdminMediaSlotView[] = HOMEPAGE_MEDIA_SLOT_VALUES.map((slot) => {

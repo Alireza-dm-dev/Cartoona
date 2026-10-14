@@ -1,6 +1,7 @@
 import "server-only"
 import { createClient } from "@supabase/supabase-js"
 import { supabaseTimeoutFetch } from "./timeout-fetch"
+import { disablePostgrestRetries } from "./postgrest-retry"
 
 export function createAdminSupabaseClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -9,7 +10,7 @@ export function createAdminSupabaseClient() {
   if (!url) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL")
   if (!secret) throw new Error("Missing SUPABASE_SECRET_KEY")
 
-  return createClient(url, secret, {
+  const client = createClient(url, secret, {
     global: { fetch: supabaseTimeoutFetch },
     auth: {
       autoRefreshToken: false,
@@ -17,4 +18,6 @@ export function createAdminSupabaseClient() {
       detectSessionInUrl: false,
     },
   })
+
+  return disablePostgrestRetries(client)
 }

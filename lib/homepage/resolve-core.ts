@@ -161,20 +161,18 @@ export async function readHomepageContentRow(supabase: SupabaseClient): Promise<
 /**
  * Resolves the full homepage from a live client. Three bounded reads:
  * `homepage_content`, `homepage_media_assets`, `homepage_hero_layout`.
+ * They are independent and run concurrently, so an unreachable backend costs
+ * one request timeout rather than three in a row.
  * Never throws - every failure degrades to the committed defaults.
  */
 export async function resolveHomepageWith(
   supabase: SupabaseClient,
 ): Promise<ResolvedHomepage> {
-  const { row, readFailed } = await readHomepageContentRow(supabase);
+  const [{ row, readFailed }, overview] = await Promise.all([
+    readHomepageContentRow(supabase),
+    queryAdminHomepageMedia(supabase).catch(() => EMPTY_MEDIA_OVERVIEW),
+  ]);
   const contentResult = resolveHomepageContent({ row, readFailed });
-
-  let overview: AdminMediaOverview;
-  try {
-    overview = await queryAdminHomepageMedia(supabase);
-  } catch {
-    overview = EMPTY_MEDIA_OVERVIEW;
-  }
 
   const { media, mediaPerSlot } = composeMedia(overview);
   const { heroLayout, source: heroLayoutSource } = composeHeroLayout(overview);

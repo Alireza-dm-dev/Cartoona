@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { isAuthRetryableFetchError } from '@supabase/supabase-js'
 import { getSupabaseEnv } from './lib/supabase/env'
 import { supabaseTimeoutFetch } from './lib/supabase/timeout-fetch'
+import { disablePostgrestRetries } from './lib/supabase/postgrest-retry'
 import { isAdminRole } from './lib/auth/admin-role'
 import { isParentRole } from './lib/auth/parent-access'
 import { checkCurrentParentSessionLifetime } from './lib/auth/parent-session-lifetime'
@@ -59,7 +60,7 @@ export async function middleware(request: NextRequest) {
 
   try {
     const env = getSupabaseEnv()
-    supabase = createServerClient(
+    supabase = disablePostgrestRetries(createServerClient(
       env.NEXT_PUBLIC_SUPABASE_URL,
       env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
       {
@@ -79,7 +80,7 @@ export async function middleware(request: NextRequest) {
           },
         },
       },
-    )
+    ))
 
     const {
       data: { user: verifiedUser },
