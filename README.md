@@ -33,6 +33,30 @@ Open [http://localhost:3000](http://localhost:3000) to see the marketing homepag
 
 > **Node.js:** Use the version recommended by the current Next.js release. Avoid very new experimental Node.js versions if build or dependency issues appear.
 
+## Running in Docker
+
+Development stays on `npm run dev`. For a production-like run (real `next
+build`, standalone server, non-root container):
+
+```bash
+cp .env.docker.example .env.docker   # fill in values locally; gitignored
+set -a; source .env.docker; set +a   # NEXT_PUBLIC_* are needed at build time
+docker compose up --build -d
+```
+
+Then open [http://localhost:3000](http://localhost:3000); health is at
+`/api/health`. Status, logs and teardown:
+
+```bash
+docker compose ps
+docker compose logs -f app
+docker compose down
+```
+
+Docker runs **only the Cartoona web app** — Supabase stays external, and no
+PostgreSQL or Supabase container is included. Full reference, including which
+variables are build-time versus runtime: [docs/DOCKER.md](docs/DOCKER.md).
+
 ## Environment Variables
 
 See `.env.example` for all required variables. You'll need:

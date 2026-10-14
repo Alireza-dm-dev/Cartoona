@@ -1,0 +1,81 @@
+# Build context for the Cartoona image (V0.1.35).
+#
+# Deny by default is not used here, so every entry below is deliberate. The two
+# rules that matter most: no real environment file and no .git history may ever
+# enter the context, because anything in the context can end up in an image
+# layer.
+
+# ── Secrets — never in the build context ─────────────────────────────────────
+.env
+.env.*
+# …but the placeholder-only templates stay, as in-context documentation. They
+# are not read by `next build` (Next loads .env / .env.local / .env.production
+# only), so they cannot influence a build.
+!.env.example
+!.env.local.example
+!.env.docker.example
+
+# ── Version control ──────────────────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+
+# ── Dependencies and build output (reinstalled / rebuilt in the image) ───────
+node_modules
+.next
+out
+build
+.turbo
+*.tsbuildinfo
+next-env.d.ts
+
+# ── Tests, test output, coverage ─────────────────────────────────────────────
+tests
+coverage
+test-results
+playwright-report
+playwright.config.ts
+vitest.config.ts
+
+# ── Local database / backend tooling (nothing runs in this image) ────────────
+supabase/.branches
+supabase/.temp
+supabase/.env
+*.sqlite
+*.sqlite3
+*.db
+pgdata
+postgres-data
+
+# ── Docs, scratch space, agent + graph artifacts ─────────────────────────────
+docs
+scratchpad
+graphify-out
+.claude
+.opencode
+AGENTS.md
+README.md
+
+# ── Logs and temporary files ─────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.tmp
+*.temp
+tmp
+
+# ── Docker's own files (not needed inside the image) ─────────────────────────
+Dockerfile
+.dockerignore
+compose.yml
+docker-compose.yml
+
+# ── IDE / OS metadata ────────────────────────────────────────────────────────
+.DS_Store
+._*
+.idea
+.vscode
+*.swp
+*.pem

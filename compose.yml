@@ -1,0 +1,58 @@
+# Cartoona — local / prod-like Docker run (V0.1.35)
+#
+# One service: the Next.js web app. Supabase stays EXTERNAL — there is
+# deliberately no PostgreSQL, Supabase CLI, auth or storage container here, so
+# this file commits to no backend provider. See docs/DOCKER.md.
+#
+# No credential appears in this file. Runtime values come from .env.docker,
+# which the operator creates locally from .env.docker.example and which is
+# gitignored.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Only NEXT_PUBLIC_* values exist at build time (Next inlines them into
+      # the browser bundle). They are read from the operator's environment —
+      # nothing is hard-coded, and no secret is ever passed as a build arg.
+      # Empty is a valid build; see docs/DOCKER.md for how to supply them.
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3000}
+    image: cartoona-app:local
+    # Runtime configuration, including every secret. `required: false` so
+    # `docker compose up --build` still works before the file exists — the app
+    # then starts and serves /api/health, and only Supabase-backed pages fail.
+    env_file:
+      - path: .env.docker
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      # Must stay 0.0.0.0, or the published port cannot reach the app.
+      HOSTNAME: 0.0.0.0
+    ports:
+      - "3000:3000"
+    # PID 1 reaper, so stray children cannot keep the container alive after
+    # SIGTERM. Next itself receives the signal directly (`node server.js`).
+    init: true
+    # Local/prod-like: comes back after a crash or a Docker restart, but a
+    # deliberate `docker compose down` stays down.
+    restart: unless-stopped
+    # Liveness of the web process only — runs Node inside the container, so no
+    # curl/wget is needed, and never checks Supabase.
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.mjs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # Logs go to stdout/stderr (the V0.1.30 JSON logger) and are read with
+    # `docker compose logs`; nothing is written to a log file in the container.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
