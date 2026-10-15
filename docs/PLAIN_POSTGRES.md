@@ -6,9 +6,9 @@ business logic, with **no dependency on Supabase Auth, Supabase Storage, RLS
 helpers or Supabase database roles**.
 
 > **Status: not active.** The app still uses Supabase for its database, Auth
-> and Storage. Nothing in the application reads `DATABASE_URL` or connects to
-> this schema. The data-access layer arrives in V0.1.39, and no production data
-> has been copied.
+> and Storage. V0.1.39 added a data-access layer (`lib/db`, `lib/repositories`;
+> see [POSTGRES_DATA_ACCESS.md](POSTGRES_DATA_ACCESS.md)), but no route or page
+> uses it yet, and no production data has been copied.
 
 ## Why a new baseline
 
@@ -46,6 +46,7 @@ every run and fails until the two agree again.
 | `0006_append_only_guards.sql` | Append-only triggers that replace RLS-only immutability |
 | `0007_privileges.sql` | `REVOKE EXECUTE … FROM PUBLIC` on all functions, now and by default |
 | `0008_reference_data.sql` | Pricing catalog, candy packages, characters and the three singletons (25 rows) |
+| `0009_application_role.sql` | V0.1.39: the `cartoona_app` NOLOGIN group role and its least-privilege grants (no password) |
 
 Applied migrations are recorded in `public.schema_migrations` (version and
 sha256). Never edit an applied file; add a new one.
@@ -213,8 +214,13 @@ baseline grants nothing. It revokes the PostgreSQL default `EXECUTE` to
 `PUBLIC` on every function, now and for future ones, because a SECURITY DEFINER
 function executable by any login role would act as its owner.
 
-Grants to reintroduce with the V0.1.39 access layer, for a dedicated
-non-owner, non-superuser application role:
+V0.1.39 introduced that role as `cartoona_app` (`0009_application_role.sql`):
+a NOLOGIN group role, with login roles as members created per environment by
+`scripts/db/app-login-role.sh`. It currently holds `CONNECT`, `USAGE` on
+`public` and `SELECT` on the seven tables the read repositories query, and
+nothing else. See [POSTGRES_DATA_ACCESS.md](POSTGRES_DATA_ACCESS.md#application-role).
+The grants below are added domain by domain, each in a new migration, as write
+paths move over:
 
 - `USAGE` on schema `public`;
 - `EXECUTE` on the `*_trusted` business functions it calls;
@@ -420,7 +426,7 @@ payment providers and from URLs.
 
 ## Remaining blockers before the app can use this database
 
-1. **Data-access layer (V0.1.39):** a `pg` client, an application DB role with the grants above, and repositories that enforce the RLS plan.
+1. **Data-access layer:** done in V0.1.39 for reads (`pg` pool, `cartoona_app` role, read repositories with explicit actors). Write repositories and their grants follow per domain; see [POSTGRES_DATA_ACCESS.md](POSTGRES_DATA_ACCESS.md#before-the-first-route-cuts-over).
 2. **Call-site changes:** the 8 renamed explicit-actor functions, and `p_file_mime_type` supplied by the request route after storage verification.
 3. **Auth:** user creation and identity resolution (`user_identities`), plus a replacement for the parent session-lifetime check and its 15 call sites. Supabase Auth can stay in front temporarily, with its user id resolved through `user_identities`.
 4. **Storage:** the object-storage provider, signed URLs, and the storage access rules above.

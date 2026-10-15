@@ -186,20 +186,23 @@ describe("prepared, not wired", () => {
     return out
   }
 
-  it("no application code reads DATABASE_URL or the POSTGRES_* variables yet", () => {
+  it("only the lazy data-access pool reads DATABASE_URL; nothing reads the POSTGRES_* variables", () => {
+    // V0.1.39: lib/db/pool.ts reads DATABASE_URL at first use (never at import),
+    // and no route or page uses it yet (see db-layer-static.test.ts).
     const sources = appSources()
     expect(sources.length).toBeGreaterThan(50)
     const offenders = sources.filter((file) =>
       /\b(DATABASE_URL|LOCAL_DATABASE_URL|POSTGRES_(DB|USER|PASSWORD))\b/.test(read(file)),
     )
-    expect(offenders).toEqual([])
+    expect(offenders).toEqual([path.join("lib", "db", "pool.ts")])
+    expect(read("lib/db/pool.ts")).not.toMatch(/LOCAL_DATABASE_URL|POSTGRES_(DB|USER|PASSWORD)/)
   })
 
-  it("installs no database driver or ORM yet", () => {
+  it("installs the pg driver only: no other client and no ORM", () => {
     const pkg = JSON.parse(read("package.json"))
+    expect(pkg.dependencies.pg).toBeDefined()
     const deps = { ...pkg.dependencies, ...pkg.devDependencies }
     for (const name of [
-      "pg",
       "postgres",
       "@prisma/client",
       "prisma",
@@ -207,6 +210,7 @@ describe("prepared, not wired", () => {
       "sequelize",
       "typeorm",
       "kysely",
+      "knex",
     ]) {
       expect(deps[name], name).toBeUndefined()
     }

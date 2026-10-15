@@ -146,7 +146,7 @@ into the browser bundle:
 | `POSTGRES_DB` | — | `postgres` service | Default `cartoona` |
 | `POSTGRES_USER` | — | `postgres` service | Default `cartoona` |
 | `POSTGRES_PASSWORD` | — | `postgres` service | Secret. No default: left empty, the database refuses to initialise |
-| `DATABASE_URL` | no | (not read yet) | `postgresql://cartoona:<password>@postgres:5432/cartoona`, for a backend inside the compose network |
+| `DATABASE_URL` | no | `lib/db` (V0.1.39, no route uses it yet) | `postgresql://cartoona:<password>@postgres:5432/cartoona`, for a backend inside the compose network. Before any route uses it, point it at an app login role, not the owner ([POSTGRES_DATA_ACCESS.md](POSTGRES_DATA_ACCESS.md)) |
 | `LOCAL_DATABASE_URL` | — | host tools | `postgresql://cartoona:<password>@localhost:5433/cartoona`, for psql and migrations on this Mac |
 
 The `POSTGRES_*` values are **interpolated by Compose** into the `postgres`
@@ -179,8 +179,10 @@ Rules:
 ## Local PostgreSQL
 
 Status: **prepared, not wired.** The service runs, persists data and is
-health-checked, but no application code reads `DATABASE_URL` and no ORM or
-driver is installed. The data-access layer is planned for V0.1.39.
+health-checked. V0.1.39 added the `pg` driver and a data-access layer that reads
+`DATABASE_URL` lazily, but no route, page or health check calls it yet, so the
+app still starts and serves entirely from Supabase without this database. See
+[POSTGRES_DATA_ACCESS.md](POSTGRES_DATA_ACCESS.md).
 
 | | Value |
 |---|---|

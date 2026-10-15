@@ -215,7 +215,7 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
         DATABASE_URL: `postgresql://cartoona@postgres:5432/${DB}`,
       },
     })
-    expect(stdout).toMatch(/done - 8 applied/)
+    expect(stdout).toMatch(/done - 9 applied/)
 
     // The Supabase reference: real historical chain over the stub.
     await psql("", { db: REF, file: path.join(root, "tests/helpers/supabase-stub.sql") })

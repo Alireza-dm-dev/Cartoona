@@ -50,12 +50,25 @@ describe("database/migrations — no Supabase dependency", () => {
 
   it("3. requires no Supabase role", () => {
     expect(all).not.toMatch(/\b(service_role|anon)\b/)
-    // A role can only be referenced through these; none may appear at all.
+    // A role can only be referenced through these. The V0.1.38 baseline uses
+    // none at all; the one exception is 0009 (V0.1.39), which may create and
+    // grant to the application role `cartoona_app` and nothing else.
     // As statements (the candy ledger has a 'grant' transaction type).
-    expect(code).not.toMatch(/^\s*GRANT\s/im)
-    expect(code).not.toMatch(/^\s*CREATE\s+ROLE\b/im)
+    const APP_ROLE_FILE = "0009_application_role.sql"
+    const baseline = Object.entries(sql)
+      .filter(([f]) => f !== APP_ROLE_FILE)
+      .map(([, s]) => s.replace(/--.*$/gm, ""))
+      .join("\n")
+    expect(baseline).not.toMatch(/^\s*GRANT\s/im)
+    expect(baseline).not.toMatch(/^\s*CREATE\s+ROLE\b/im)
     expect(code).not.toMatch(/\bOWNER\s+TO\b/i)
     expect(code).not.toMatch(/\bSET\s+(LOCAL\s+)?ROLE\b/i)
+
+    const appRole = sql[APP_ROLE_FILE].replace(/--.*$/gm, "")
+    for (const m of appRole.matchAll(/\bCREATE\s+ROLE\s+(\w+)/gi)) expect(m[1]).toBe("cartoona_app")
+    const grants = [...appRole.matchAll(/\bGRANT\b[\s\S]*?\bTO\s+(\w+)/gi)].map((m) => m[1])
+    expect(grants.length).toBeGreaterThan(0)
+    for (const grantee of grants) expect(grantee).toBe("cartoona_app")
   })
 
   it("4. never calls auth.uid() / auth.jwt() / auth.role()", () => {
