@@ -21,7 +21,8 @@ const read = (p: string) => fs.readFileSync(path.join(root, p), "utf8")
 
 const compose = withoutYamlComments(read("compose.yml"))
 const postgres = composeService(compose, "postgres")
-const app = composeService(compose, "app")
+// The Next.js service was renamed app -> frontend in V0.1.40.
+const app = composeService(compose, "frontend")
 const template = read(".env.docker.example")
 
 /** `KEY: value` inside a service's `environment:` map. */
@@ -46,8 +47,8 @@ const templateVar = (name: string) =>
   new RegExp(`^${name}=(.*)$`, "m").exec(template)?.[1]
 
 describe("compose.yml — postgres service", () => {
-  it("defines a postgres service alongside app", () => {
-    expect(composeServiceNames(compose)).toEqual(["app", "postgres"])
+  it("defines a postgres service alongside frontend and backend", () => {
+    expect(composeServiceNames(compose)).toEqual(["frontend", "backend", "postgres"])
     expect(postgres).not.toBe("")
   })
 
@@ -105,7 +106,7 @@ describe("compose.yml — postgres service", () => {
   })
 })
 
-describe("compose.yml — app is functionally unchanged", () => {
+describe("compose.yml — frontend (formerly app) is functionally unchanged", () => {
   it("still builds, publishes and health-checks the web app as before", () => {
     expect(app).toMatch(/dockerfile: Dockerfile/)
     expect(app).toMatch(/image: cartoona-app:local/)

@@ -3,6 +3,7 @@ import { execFile, spawn } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import { promisify } from "node:util"
 import path from "node:path"
+import { withPgClusterLock } from "../helpers/pg-cluster-lock"
 import { closePool, getPool } from "@/lib/db/pool"
 import { withTransaction } from "@/lib/db/transaction"
 import { DbError, normalizePgError } from "@/lib/db/errors"
@@ -112,7 +113,7 @@ describe.skipIf(!enabled)("PostgreSQL data-access layer (real SQL, local Docker 
     if (!container) throw new Error("compose postgres service is not running: docker compose up -d postgres")
     await owner(`create database ${DB}`, "postgres")
 
-    const migrated = await script("scripts/db/migrate-local.sh", { DATABASE_URL: ownerUrl })
+    const migrated = await withPgClusterLock(() => script("scripts/db/migrate-local.sh", { DATABASE_URL: ownerUrl }))
     expect(migrated.stdout).toMatch(/done - 9 applied/)
 
     const login = await script("scripts/db/app-login-role.sh", { DATABASE_URL: ownerUrl, CARTOONA_APP_DB_PASSWORD: PASSWORD }, [ROLE])

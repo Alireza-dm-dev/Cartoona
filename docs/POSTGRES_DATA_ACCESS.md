@@ -184,7 +184,7 @@ their rotation belong outside the schema chain. Login roles are created as
 members of `cartoona_app` by:
 
 ```sh
-CARTOONA_APP_DB_PASSWORD="$(openssl rand -base64 32)" \
+CARTOONA_APP_DB_PASSWORD="$(openssl rand -hex 32)" \
 DATABASE_URL=postgresql://cartoona:<owner-password>@localhost:5433/cartoona \
   scripts/db/app-login-role.sh            # role defaults to cartoona_app_login
 ```

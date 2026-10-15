@@ -47,6 +47,9 @@ supabase/.env
 pgdata
 postgres-data
 
+# ── The backend has its own image (backend/Dockerfile) ───────────────────────
+backend
+
 # ── Docs, scratch space, agent + graph artifacts ─────────────────────────────
 docs
 scratchpad

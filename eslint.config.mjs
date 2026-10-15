@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Generated backend bundle (npm run backend:build), gitignored.
+    "backend/dist/**",
   ]),
 ]);
 

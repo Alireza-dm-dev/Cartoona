@@ -1,11 +1,16 @@
-# Docker (V0.1.35, PostgreSQL added V0.1.37)
+# Docker (V0.1.35; PostgreSQL V0.1.37; backend V0.1.40)
 
-Run Cartoona in a production-like container. The stack has two services:
+Run Cartoona in production-like containers. The stack has three services:
 
-| Service | Image | Role |
-|---|---|---|
-| `app` | `cartoona-app:local` (built here) | The Next.js web app |
-| `postgres` | `postgres:17-bookworm` | Local PostgreSQL 17, **prepared but not wired** |
+| Service | Image | Port (host) | Role |
+|---|---|---|---|
+| `frontend` | `cartoona-app:local` (built here) | `3000` | The Next.js web app. Named `app` before V0.1.40. |
+| `backend` | `cartoona-backend:local` (built here) | `127.0.0.1:4000` | Fastify API, **side by side**: no frontend traffic reaches it yet. See [BACKEND.md](BACKEND.md). |
+| `postgres` | `postgres:17-bookworm` | `127.0.0.1:5433` | Local PostgreSQL 17 with the plain schema. Only the backend uses it. |
+
+> **Upgrading from before V0.1.40:** the `app` service is now `frontend`. Run
+> `docker compose up -d --remove-orphans` once, or the old `cartoona-app-1`
+> container keeps holding port 3000.
 
 **Cartoona's application data still comes from Supabase.** The database, auth
 and storage are all the external Supabase project. Nothing in the app connects
@@ -68,20 +73,21 @@ with no exported variables at all.
 docker compose ps
 ```
 
-`STATUS` should reach `Up … (healthy)` within roughly a minute for `app`
-(30s `start_period` plus one 30s interval). `postgres` is usually healthy within
+`STATUS` should reach `Up … (healthy)` within roughly a minute for `frontend`
+(30s `start_period` plus one 30s interval), and within about 15s for `backend`. `postgres` is usually healthy within
 about 30s on first start, while it initialises its volume, and faster after that.
 
 ## 5. View logs
 
 ```bash
-docker compose logs -f app
-docker compose logs --tail=100 app
+docker compose logs -f frontend
+docker compose logs --tail=100 frontend
+docker compose logs -f backend
 docker compose logs -f postgres
 ```
 
-Application logs are the V0.1.30 structured JSON logger writing to
-stdout/stderr. Nothing is written to a log file inside the container.
+Frontend and backend logs are the same V0.1.30 structured JSON logger writing
+to stdout/stderr. Nothing is written to a log file inside the container.
 
 ## 6. Stop
 
@@ -120,8 +126,10 @@ Verify from the host:
 
 ```bash
 curl -i http://localhost:3000/api/health          # expect 200
-docker compose exec app node healthcheck.mjs      # the container's own probe
-docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q app)"
+docker compose exec frontend node healthcheck.mjs      # the container's own probe
+docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q frontend)"
+curl -i http://localhost:4000/health              # backend liveness, expect 200
+curl -i http://localhost:4000/ready               # backend readiness (PostgreSQL + restricted role)
 ```
 
 The probe (`docker/healthcheck.mjs`) runs the image's own Node binary, so the
@@ -148,10 +156,13 @@ into the browser bundle:
 | `POSTGRES_PASSWORD` | — | `postgres` service | Secret. No default: left empty, the database refuses to initialise |
 | `DATABASE_URL` | no | `lib/db` (V0.1.39, no route uses it yet) | `postgresql://cartoona:<password>@postgres:5432/cartoona`, for a backend inside the compose network. Before any route uses it, point it at an app login role, not the owner ([POSTGRES_DATA_ACCESS.md](POSTGRES_DATA_ACCESS.md)) |
 | `LOCAL_DATABASE_URL` | — | host tools | `postgresql://cartoona:<password>@localhost:5433/cartoona`, for psql and migrations on this Mac |
+| `CARTOONA_APP_DB_PASSWORD` | — | `scripts/db/app-login-role.sh` | Secret. The backend login role's password; `openssl rand -hex 32` |
+| `BACKEND_DATABASE_URL` | — | `backend` service (as its `DATABASE_URL`) | `postgresql://cartoona_app_login:<app password>@postgres:5432/cartoona`. A restricted role, **never the owner** |
 
-The `POSTGRES_*` values are **interpolated by Compose** into the `postgres`
-service, not passed through `env_file`. That keeps the database container from
-receiving the app's Supabase secrets, and is why `.env.docker` must be exported
+The `POSTGRES_*` and `BACKEND_DATABASE_URL` values are **interpolated by
+Compose** into the `postgres` and `backend` services, not passed through
+`env_file`. That keeps both containers from receiving the frontend's Supabase
+secrets, and keeps the owner password out of the backend, and is why `.env.docker` must be exported
 or passed with `--env-file`. Use a URL-safe password (`openssl rand -hex 24`) so
 it can go into the URLs unescaped.
 
@@ -201,9 +212,10 @@ socket inside the container. The image's default `trust` for local sockets is
 overridden. There is no passwordless superuser: with `POSTGRES_PASSWORD` empty,
 the image refuses to initialise.
 
-**Startup independence:** `app` has no `depends_on: postgres`. A missing
-password or an unhealthy database never stops the web app from starting,
-because the app does not use it.
+**Startup independence:** `frontend` has no `depends_on` at all. A missing
+password, an unhealthy database or a failing backend never stops the web app
+from starting, because it uses neither. Only `backend` waits for a healthy
+`postgres`.
 
 **Healthcheck:** `pg_isready` over TCP every 5s (timeout 5s, 10 retries, 10s
 start period). TCP rather than the socket, so the probe cannot report healthy
@@ -212,7 +224,7 @@ while the image's first-run initialisation server is still running.
 ### Commands
 
 ```bash
-docker compose up -d                                   # both services
+docker compose up -d                                   # all services
 docker compose up -d postgres                          # database only
 docker compose ps
 docker compose logs -f postgres
@@ -262,9 +274,12 @@ used by the app yet. See [PLAIN_POSTGRES.md](PLAIN_POSTGRES.md).
 
 ## Backend boundary
 
-Supabase remains the app's only backend: database, auth and storage. The
-local `postgres` service is not a Supabase replacement. It has no auth or
-storage schema, and nothing is migrated into it.
+Supabase remains the frontend's only backend: database, auth and storage. The
+`backend` service (V0.1.40) runs side by side and serves only liveness,
+readiness and a public pricing read from the local `postgres`; no frontend
+request reaches it. The local `postgres` service is not a Supabase
+replacement: it has no auth or storage schema, and no production data. See
+[BACKEND.md](BACKEND.md).
 
 Still deliberately absent: a Supabase CLI container, an auth emulator and a
 storage emulator. Swapping backends should mean changing environment variables,

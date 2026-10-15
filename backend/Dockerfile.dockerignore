@@ -1,0 +1,23 @@
+# Build context for backend/Dockerfile (V0.1.40). Docker uses this file
+# instead of the root .dockerignore when building with backend/Dockerfile.
+#
+# Deny by default: only the manifests, the shared server-side lib code and the
+# backend sources enter the context. No .env file, no .git, no tests, no docs,
+# no frontend app, no node_modules.
+*
+
+!package.json
+!package-lock.json
+!tsconfig.json
+!types/**
+!lib/**
+!backend/build.mjs
+!backend/healthcheck.mjs
+!backend/src/**
+
+# Never, even if a rule above would admit it.
+**/.env
+**/.env.*
+**/*.pem
+**/node_modules
+backend/dist

@@ -135,18 +135,19 @@ describe(".dockerignore", () => {
   })
 })
 
-describe("compose.yml — app service", () => {
+describe("compose.yml — frontend service (named app before V0.1.40)", () => {
   const compose = read("compose.yml")
-  // Scoped to the app block: the postgres service (V0.1.37) has its own
-  // healthcheck/restart/ports and must not satisfy these by accident.
-  const app = composeService(compose, "app")
+  // Scoped to the frontend block: the postgres (V0.1.37) and backend (V0.1.40)
+  // services have their own healthcheck/restart/ports and must not satisfy
+  // these by accident.
+  const app = composeService(compose, "frontend")
 
   it("uses the modern format with no obsolete version key", () => {
     expect(compose).toMatch(/^services:/m)
     expect(compose).not.toMatch(/^version:/m)
   })
 
-  it("defines one app service built from the project Dockerfile", () => {
+  it("defines one frontend service built from the project Dockerfile", () => {
     expect(app).not.toBe("")
     expect(app).toMatch(/dockerfile: Dockerfile/)
     expect(app).toMatch(/image: cartoona-app:local/)
@@ -183,11 +184,12 @@ describe("compose.yml — app service", () => {
     expect(compose).not.toMatch(/[a-z0-9-]+\.supabase\.co/)
   })
 
-  it("runs no backend emulator — the only services are app and postgres", () => {
-    // V0.1.37 deliberately adds a plain PostgreSQL (see
-    // docker-postgres-foundation.test.ts); Supabase emulators stay out.
+  it("runs no Supabase emulator — the only services are frontend, backend and postgres", () => {
+    // V0.1.37 adds a plain PostgreSQL (docker-postgres-foundation.test.ts) and
+    // V0.1.40 the Fastify backend (backend-container.test.ts); Supabase
+    // emulators stay out.
     const services = composeServiceNames(compose)
-    expect(services).toEqual(["app", "postgres"])
+    expect(services).toEqual(["frontend", "backend", "postgres"])
     expect(compose).not.toMatch(/supabase\/|pgbouncer|gotrue|postgrest\/postgrest/)
   })
 })

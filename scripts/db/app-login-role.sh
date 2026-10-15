@@ -2,7 +2,7 @@
 # Create (or re-password) a LOGIN role for the application on a LOCAL plain
 # PostgreSQL, as a member of the `cartoona_app` group role (V0.1.39).
 #
-#   CARTOONA_APP_DB_PASSWORD="$(openssl rand -base64 32)" \
+#   CARTOONA_APP_DB_PASSWORD="$(openssl rand -hex 32)" \
 #   DATABASE_URL=postgresql://cartoona:<owner-password>@localhost:5433/cartoona \
 #     scripts/db/app-login-role.sh [role]
 #
@@ -12,9 +12,10 @@
 # connects as postgresql://<role>:<password>@<host>/<db>.
 #
 # role defaults to cartoona_app_login and must match cartoona_app_<a-z0-9_>.
-# The password must be 24-128 characters of [A-Za-z0-9._~+/=-] (base64 output
-# qualifies). It is sent to psql on stdin, never on a command line, and is
-# never printed - not even inside a psql error.
+# The password must be 24-128 characters of [A-Za-z0-9._~+/=-]. Prefer hex
+# (openssl rand -hex 32): it is also safe inside a connection URL, which a
+# base64 value with '/' or '+' is not. It is sent to psql on stdin, never on
+# a command line, and is never printed - not even inside a psql error.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -29,7 +30,7 @@ role="${1:-cartoona_app_login}"
 pw="${CARTOONA_APP_DB_PASSWORD:-}"
 [ -n "$pw" ] || fail "CARTOONA_APP_DB_PASSWORD is not set."
 [[ "$pw" =~ ^[A-Za-z0-9._~+/=-]{24,128}$ ]] \
-  || fail "CARTOONA_APP_DB_PASSWORD must be 24-128 characters of [A-Za-z0-9._~+/=-] (e.g. openssl rand -base64 32)."
+  || fail "CARTOONA_APP_DB_PASSWORD must be 24-128 characters of [A-Za-z0-9._~+/=-] (e.g. openssl rand -hex 32)."
 
 # Target validation is migrate-local's: one rule set, one place.
 "$ROOT/scripts/db/migrate-local.sh" --check >/dev/null

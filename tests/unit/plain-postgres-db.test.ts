@@ -3,6 +3,7 @@ import { execFile, spawn } from "node:child_process"
 import { promisify } from "node:util"
 import fs from "node:fs"
 import path from "node:path"
+import { withPgClusterLock } from "../helpers/pg-cluster-lock"
 
 /**
  * REAL-SQL tests for the V0.1.38 plain-PostgreSQL baseline (database/migrations).
@@ -205,7 +206,8 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
     await psql(`create database ${REF}`, { db: "postgres" })
 
     // The plain chain, through the real runner (inside the container).
-    const { stdout } = await run("bash", [path.join(root, "scripts/db/migrate-local.sh")], {
+    // Serialised across the opt-in suites: migration 0009 alters a CLUSTER-wide role.
+    const { stdout } = await withPgClusterLock(() => run("bash", [path.join(root, "scripts/db/migrate-local.sh")], {
       cwd: root,
       env: {
         PATH: process.env.PATH ?? "",
@@ -214,7 +216,7 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
         CARTOONA_PG_CONTAINER: container,
         DATABASE_URL: `postgresql://cartoona@postgres:5432/${DB}`,
       },
-    })
+    }))
     expect(stdout).toMatch(/done - 9 applied/)
 
     // The Supabase reference: real historical chain over the stub.

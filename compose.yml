@@ -1,21 +1,26 @@
-# Cartoona — local / prod-like Docker run (V0.1.35, PostgreSQL added V0.1.37)
+# Cartoona — local / prod-like Docker run (V0.1.35; PostgreSQL V0.1.37;
+# backend V0.1.40)
 #
-# Two services:
-#   app       the Next.js web app. Its data, auth and storage still come from
-#             the EXTERNAL Supabase project.
-#   postgres  a local PostgreSQL 17, PREPARED BUT NOT WIRED: nothing in the app
-#             connects to it yet. It is the foundation for the upcoming
-#             migration off Supabase's database (V0.1.38+).
-# There is still no Supabase CLI, auth or storage emulator. See docs/DOCKER.md.
+# Three services:
+#   frontend  the Next.js web app (was `app` before V0.1.40). Its data, auth and
+#             storage still come from the EXTERNAL Supabase project. It does
+#             not call the backend yet and does not depend on it.
+#   backend   the Fastify API (backend/), SIDE BY SIDE: it reads the local
+#             PostgreSQL as a restricted login role, and no frontend traffic
+#             reaches it yet. Published on loopback only, for local debugging.
+#   postgres  local PostgreSQL 17 with the plain schema (database/migrations).
+# There is still no Supabase CLI, auth or storage emulator. See docs/DOCKER.md
+# and docs/BACKEND.md.
 #
-# No credential appears in this file. App runtime values come from .env.docker
-# (env_file). Postgres values are interpolated from the shell / --env-file, so
-# the database container never receives the app's Supabase secrets. Both come
-# from .env.docker, which the operator creates from .env.docker.example and
-# which is gitignored.
+# No credential appears in this file. Frontend runtime values come from
+# .env.docker (env_file). Postgres and backend values are interpolated from the
+# shell / --env-file, so neither container receives the frontend's Supabase
+# secrets, and the backend never receives the database OWNER password: its
+# DATABASE_URL is BACKEND_DATABASE_URL, a cartoona_app login role. All of it
+# lives in .env.docker, created from .env.docker.example and gitignored.
 
 services:
-  app:
+  frontend:
     build:
       context: .
       dockerfile: Dockerfile
@@ -63,9 +68,52 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Local PostgreSQL 17 (V0.1.37) — prepared, not wired. The app does not
-  # depend on it, so there is deliberately no `depends_on`: a missing password
-  # or an unhealthy database never stops the web app from starting.
+  # Fastify backend (V0.1.40). Side by side: the frontend neither calls nor
+  # depends on it, so a missing database password or an unhealthy backend never
+  # stops the web app.
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: cartoona-backend:local
+    # No env_file on purpose: the backend gets exactly these variables and
+    # nothing from .env.docker's frontend secrets.
+    environment:
+      NODE_ENV: production
+      BACKEND_PORT: "4000"
+      # Must stay 0.0.0.0 inside the container, or the published port cannot
+      # reach it. Exposure is limited by the loopback port binding below.
+      BACKEND_HOST: 0.0.0.0
+      # A cartoona_app LOGIN role (scripts/db/app-login-role.sh), never the
+      # owner. Empty => the backend refuses to start; /ready also refuses an
+      # owner or superuser session.
+      DATABASE_URL: ${BACKEND_DATABASE_URL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    # Loopback only: for curl/debugging from this Mac. The frontend will reach
+    # it as http://backend:4000 on the compose network, never via the host.
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # No `init`: Node runs as PID 1 and handles SIGTERM itself (server.ts).
+    restart: unless-stopped
+    # Liveness only (GET /health, no database).
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.mjs"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Local PostgreSQL 17 (V0.1.37). The frontend does not depend on it, so a
+  # missing password or an unhealthy database never stops the web app from
+  # starting; only the backend waits for it.
   postgres:
     image: postgres:17-bookworm
     environment:
