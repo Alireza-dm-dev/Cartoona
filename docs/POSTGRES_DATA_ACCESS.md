@@ -5,10 +5,12 @@ A small, framework-free layer for the plain-PostgreSQL schema in
 a transaction helper, error normalisation, and read repositories that take an
 explicit actor.
 
-> **Status: side by side, not in use.** No route, page, middleware or health
-> check imports `lib/db` or `lib/repositories`, and a static test enforces it.
-> Every request is still served by Supabase (database, Auth and Storage).
-> Traffic moves over domain by domain in later versions.
+> **Status: used by the backend only.** No Next.js route, page, middleware or
+> health check imports `lib/db` or `lib/repositories`, and a static test
+> enforces it; the Fastify backend (`backend/`) does. Since V0.1.41 one
+> frontend route, `GET /api/creation-pricing`, reaches PostgreSQL through that
+> backend ([ROUTE_CUTOVER.md](ROUTE_CUTOVER.md)). Everything else is still
+> served by Supabase (database, Auth and Storage).
 
 ## Layout
 

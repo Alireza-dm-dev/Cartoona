@@ -3,11 +3,12 @@
 #
 # Three services:
 #   frontend  the Next.js web app (was `app` before V0.1.40). Its data, auth and
-#             storage still come from the EXTERNAL Supabase project. It does
-#             not call the backend yet and does not depend on it.
-#   backend   the Fastify API (backend/), SIDE BY SIDE: it reads the local
-#             PostgreSQL as a restricted login role, and no frontend traffic
-#             reaches it yet. Published on loopback only, for local debugging.
+#             storage still come from the EXTERNAL Supabase project, except GET
+#             /api/creation-pricing (V0.1.41), which its server calls on the
+#             backend at BACKEND_INTERNAL_URL. It holds NO database credential.
+#   backend   the Fastify API (backend/). It reads the local PostgreSQL as a
+#             restricted login role and is called by the frontend's server only
+#             (never by the browser). Published on loopback only, for debugging.
 #   postgres  local PostgreSQL 17 with the plain schema (database/migrations).
 # There is still no Supabase CLI, auth or storage emulator. See docs/DOCKER.md
 # and docs/BACKEND.md.
@@ -44,6 +45,23 @@ services:
       PORT: "3000"
       # Must stay 0.0.0.0, or the published port cannot reach the app.
       HOSTNAME: 0.0.0.0
+      # Server-to-server address of the backend (V0.1.41): the compose service
+      # name, on the compose network. Fixed here on purpose (not interpolated),
+      # and not NEXT_PUBLIC_*, so it never reaches the browser bundle.
+      BACKEND_INTERNAL_URL: http://backend:4000
+      BACKEND_REQUEST_TIMEOUT_MS: ${BACKEND_REQUEST_TIMEOUT_MS:-3000}
+      # `env_file` hands the frontend the WHOLE .env.docker, which also holds the
+      # database owner password and the backend's login role. `environment`
+      # wins over `env_file`, so each is blanked here: the frontend process never
+      # sees a database credential. Add any new database variable to this list
+      # (a static test checks the template against it).
+      POSTGRES_DB: ""
+      POSTGRES_USER: ""
+      POSTGRES_PASSWORD: ""
+      DATABASE_URL: ""
+      LOCAL_DATABASE_URL: ""
+      CARTOONA_APP_DB_PASSWORD: ""
+      BACKEND_DATABASE_URL: ""
     ports:
       - "3000:3000"
     # PID 1 reaper, so stray children cannot keep the container alive after
@@ -60,6 +78,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+    # No `depends_on: backend`, on purpose: the web process and every page that
+    # does not use the backend must start and stay healthy while it is down.
+    # /api/creation-pricing answers its own safe 503 until the backend is ready.
     # Logs go to stdout/stderr (the V0.1.30 JSON logger) and are read with
     # `docker compose logs`; nothing is written to a log file in the container.
     logging:
@@ -68,9 +89,9 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Fastify backend (V0.1.40). Side by side: the frontend neither calls nor
-  # depends on it, so a missing database password or an unhealthy backend never
-  # stops the web app.
+  # Fastify backend (V0.1.40). The frontend's server calls it (V0.1.41) but does
+  # not depend on it at startup, so a missing database password or an unhealthy
+  # backend never stops the web app.
   backend:
     build:
       context: .

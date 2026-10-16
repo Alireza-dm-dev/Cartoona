@@ -65,7 +65,15 @@ function extractCost(text: string | null): number | null {
 
 // ── Image price-change test ──────────────────────────────────────────────
 
-test("database price change updates image UI without source changes", async ({ page }) => {
+// SKIPPED since V0.1.41. /api/creation-pricing is served by the Fastify backend
+// from the local PostgreSQL, so changing a price in SUPABASE (what this spec
+// does) no longer changes what the route returns, by design - and the route
+// deliberately has no Supabase fallback. The equivalent proof now lives in
+// tests/unit/creation-pricing-cutover-db.test.ts (opt-in, CARTOONA_PLAIN_PG=docker):
+// a price changed only in PostgreSQL is what Next returns through Fastify.
+// Re-enable this browser-level check by pointing setDbPrice/getDbPrice at the
+// local PostgreSQL (not Supabase) when a UI-level cutover test is wanted.
+test.skip("database price change updates image UI without source changes", async ({ page }) => {
   test.setTimeout(60000);
 
   // 1. Record current price

@@ -137,16 +137,18 @@ describe("compose.yml - backend service", () => {
   })
 })
 
-describe("frontend stays independent of the backend", () => {
-  it("compose: no depends_on and no reference to the backend", () => {
+describe("frontend knows the backend only as an internal HTTP address (V0.1.41)", () => {
+  it("compose: no startup dependency; the backend URL is fixed; nothing else about it", () => {
     expect(frontend).not.toBe("")
-    expect(frontend).not.toMatch(/depends_on|backend|4000/)
+    expect(frontend).not.toMatch(/depends_on/)
+    expect(frontend).toMatch(/^\s+BACKEND_INTERNAL_URL: http:\/\/backend:4000\s*$/m)
+    expect(frontend).not.toMatch(/BACKEND_(PORT|HOST)\b/)
   })
 
-  it("no frontend code calls or imports the backend", () => {
+  it("no frontend code imports backend/ sources or hard-codes a backend address", () => {
     const files = [...walk("app"), ...walk("components"), ...walk("lib"), "middleware.ts", "next.config.ts"].filter((f) => fs.existsSync(path.join(root, f)))
     expect(files.length).toBeGreaterThan(50)
-    const offenders = files.filter((f) => /@\/backend\/|localhost:4000|backend:4000|BACKEND_(PORT|HOST|URL|DATABASE_URL)/.test(read(f)))
+    const offenders = files.filter((f) => /@\/backend\/|localhost:4000|127\.0\.0\.1:4000|backend:4000|BACKEND_(PORT|HOST|DATABASE_URL)\b/.test(code(f)))
     expect(offenders).toEqual([])
   })
 

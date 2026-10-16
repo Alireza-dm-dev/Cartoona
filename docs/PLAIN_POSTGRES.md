@@ -5,10 +5,11 @@ PostgreSQL 17**. It contains the domain schema and the transaction-critical
 business logic, with **no dependency on Supabase Auth, Supabase Storage, RLS
 helpers or Supabase database roles**.
 
-> **Status: not active.** The app still uses Supabase for its database, Auth
-> and Storage. V0.1.39 added a data-access layer (`lib/db`, `lib/repositories`;
-> see [POSTGRES_DATA_ACCESS.md](POSTGRES_DATA_ACCESS.md)), but no route or page
-> uses it yet, and no production data has been copied.
+> **Status: used by one route.** The app still uses Supabase for its database,
+> Auth and Storage, except `/api/creation-pricing` (below). V0.1.39 added a data-access layer (`lib/db`, `lib/repositories`;
+> see [POSTGRES_DATA_ACCESS.md](POSTGRES_DATA_ACCESS.md)), and since V0.1.41
+> the Fastify backend serves one route (`/api/creation-pricing`) from it
+> ([ROUTE_CUTOVER.md](ROUTE_CUTOVER.md)). No production data has been copied.
 
 ## Why a new baseline
 

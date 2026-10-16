@@ -5,20 +5,19 @@ frontend and the local PostgreSQL 17. It reuses the V0.1.39 data-access layer
 (`lib/db`, `lib/repositories`) directly. There is no second pool and no copied
 SQL.
 
-> **Status: side by side, no traffic.** The frontend still serves every page
-> and API route from Supabase (database, Auth, Storage) and never calls the
-> backend. `/api/creation-pricing` and every other Next route are unchanged.
-> The backend serves liveness, readiness and one public read so the stack can
-> be exercised end to end. Routes move over domain by domain later.
+> **Status: one route migrated.** Since V0.1.41 `GET /api/creation-pricing`
+> is served by this backend from PostgreSQL (see [ROUTE_CUTOVER.md](ROUTE_CUTOVER.md)).
+> Every other page and API route still uses Supabase (database, Auth, Storage)
+> and never calls the backend. Routes move over domain by domain.
 
 ## Architecture
 
 ```
-            today                                   target (later versions)
-Browser ──> Next.js (frontend) ──> Supabase         Browser ──> Next.js (frontend / BFF)
-                                                                   │ server-to-server, compose network
-            Fastify (backend) ──> PostgreSQL 17                    v
-            (side by side, unused by the frontend)              Fastify (backend) ──> PostgreSQL 17
+            today (V0.1.41)                          target (later versions)
+Browser ──> Next.js ──> Supabase                    Browser ──> Next.js (frontend / BFF)
+              │  (every route but one)                              │ server-to-server, compose network
+              └─ /api/creation-pricing ──> Fastify ──> PostgreSQL   v
+                                                                 Fastify (backend) ──> PostgreSQL 17
 ```
 
 | Layer | Where | Knows about |
@@ -178,6 +177,36 @@ docker compose stop backend               # graceful: SIGTERM -> exit 0
 
 `npm run dev`, `npm run build` and `npm start` are unchanged.
 
+## How the frontend calls it (V0.1.41)
+
+`lib/backend/` is a server-only client (`backendGetJson`, native `fetch`):
+
+- **Address:** `BACKEND_INTERNAL_URL`, read at call time. Compose sets
+  `http://backend:4000`. For Next.js on the Mac against `npm run backend:dev`
+  use `http://127.0.0.1:4000` in `.env.local`. There is no URL guessing and
+  no default; missing means the route answers its public 503. It must be a
+  plain `http(s)://host[:port]`: credentials, path, query and fragment are
+  rejected, and no error message ever prints it. It is never `NEXT_PUBLIC_*`.
+  In production the backend must be reachable only on a private network.
+- **Timeout:** `BACKEND_REQUEST_TIMEOUT_MS`, default **3000**, range
+  250–15000. One attempt per request; it covers connect, headers and body.
+  There is **no retry** and no fallback. The deadline is short because an
+  internal call that takes longer than a few seconds is a failure, not
+  something worth making a visitor wait on.
+- **Request id:** a well-formed inbound `X-Request-Id` is forwarded; otherwise
+  Next's own generated id is. Fastify echoes it, and the Next response
+  carries the same one, so one request has one id in every log line.
+- **Responses are validated** (`lib/pricing/creation-prices.ts`) and rebuilt,
+  never passed through. Failures become `BackendClientError` with a safe kind
+  (`not_configured`, `timeout`, `unavailable`, `bad_status`,
+  `invalid_response`); the original exception, URL and body are dropped.
+- **Logs** (safe fields only: request id, operation, status, duration,
+  category): `BACKEND_REQUEST_COMPLETED`, `BACKEND_TIMEOUT`,
+  `BACKEND_UNAVAILABLE`, `BACKEND_INVALID_RESPONSE`, `BACKEND_NOT_CONFIGURED`.
+
+The frontend container holds **no database credential**. See
+[Frontend credential boundary](ROUTE_CUTOVER.md#frontend-credential-boundary).
+
 ## CORS and server-to-server
 
 CORS is **not enabled**: no `Access-Control-*` header is ever sent, and
@@ -228,7 +257,7 @@ Desktop. These are **not production estimates**.
 | `tests/unit/backend-container.test.ts` | none | Dockerfile (base, non-root, PID 1, 0.0.0.0, two files), dockerignore, compose (loopback, restricted URL, no env_file), frontend independence, import boundaries, scripts |
 | `tests/unit/backend-db.test.ts` | opt-in `CARTOONA_PLAIN_PG=docker` | the real pool as a script-provisioned login role: /ready, live pricing, refusal of non-member and owning roles, unreachable DB, and the role's denied privileges |
 
-## Before the first real route cuts over
+## Before the first authenticated route cuts over
 
 1. **Identity:** an `AuthAdapter` that verifies the caller (Supabase Auth
    first), plus a mapping from the Supabase user id to `users.id` through
@@ -236,9 +265,9 @@ Desktop. These are **not production estimates**.
 2. **Data:** the domain's data in PostgreSQL, through the copy procedure in
    PLAIN_POSTGRES.md or dual writes. The local database holds only the seeded
    reference data today.
-3. **Frontend to backend client:** a server-only client in the Next app for
-   `http://backend:4000`, with a timeout, request-id propagation and a
-   fallback policy. Add `depends_on` or retry only when a route needs it.
+3. **Frontend to backend client:** done for GET in V0.1.41 (`lib/backend`).
+   An authenticated route additionally needs a way to forward the verified
+   principal (never a browser-supplied id) and non-GET support.
 4. **Grants:** EXECUTE on the `*_trusted` functions a write route needs, in a
    new migration.
 5. **Deployment:** where the backend runs outside local compose, how it is

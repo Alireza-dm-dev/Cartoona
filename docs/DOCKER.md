@@ -5,16 +5,17 @@ Run Cartoona in production-like containers. The stack has three services:
 | Service | Image | Port (host) | Role |
 |---|---|---|---|
 | `frontend` | `cartoona-app:local` (built here) | `3000` | The Next.js web app. Named `app` before V0.1.40. |
-| `backend` | `cartoona-backend:local` (built here) | `127.0.0.1:4000` | Fastify API, **side by side**: no frontend traffic reaches it yet. See [BACKEND.md](BACKEND.md). |
+| `backend` | `cartoona-backend:local` (built here) | `127.0.0.1:4000` | Fastify API. The frontend's **server** calls it for `GET /api/creation-pricing` only (V0.1.41). See [BACKEND.md](BACKEND.md). |
 | `postgres` | `postgres:17-bookworm` | `127.0.0.1:5433` | Local PostgreSQL 17 with the plain schema. Only the backend uses it. |
 
 > **Upgrading from before V0.1.40:** the `app` service is now `frontend`. Run
 > `docker compose up -d --remove-orphans` once, or the old `cartoona-app-1`
 > container keeps holding port 3000.
 
-**Cartoona's application data still comes from Supabase.** The database, auth
-and storage are all the external Supabase project. Nothing in the app connects
-to the local `postgres` service yet. It is infrastructure for the upcoming
+**Cartoona's application data still comes from Supabase**, with one exception:
+`GET /api/creation-pricing` is served through the `backend` from the local
+`postgres` (V0.1.41, [ROUTE_CUTOVER.md](ROUTE_CUTOVER.md)). Nothing in the
+frontend connects to `postgres` itself. It is infrastructure for the upcoming
 migration (V0.1.38+). See [Local PostgreSQL](#local-postgresql) and
 [Backend boundary](#backend-boundary).
 
@@ -156,13 +157,22 @@ into the browser bundle:
 | `POSTGRES_PASSWORD` | — | `postgres` service | Secret. No default: left empty, the database refuses to initialise |
 | `DATABASE_URL` | no | `lib/db` (V0.1.39, no route uses it yet) | `postgresql://cartoona:<password>@postgres:5432/cartoona`, for a backend inside the compose network. Before any route uses it, point it at an app login role, not the owner ([POSTGRES_DATA_ACCESS.md](POSTGRES_DATA_ACCESS.md)) |
 | `LOCAL_DATABASE_URL` | — | host tools | `postgresql://cartoona:<password>@localhost:5433/cartoona`, for psql and migrations on this Mac |
+| `BACKEND_INTERNAL_URL` | no | set by compose, **not** from `.env.docker` | `http://backend:4000`. Server-side only, never `NEXT_PUBLIC_*`. For Next.js on the Mac: `http://127.0.0.1:4000` in `.env.local` |
+| `BACKEND_REQUEST_TIMEOUT_MS` | no | frontend (optional) | Default `3000`, range 250–15000. One attempt per request |
 | `CARTOONA_APP_DB_PASSWORD` | — | `scripts/db/app-login-role.sh` | Secret. The backend login role's password; `openssl rand -hex 32` |
 | `BACKEND_DATABASE_URL` | — | `backend` service (as its `DATABASE_URL`) | `postgresql://cartoona_app_login:<app password>@postgres:5432/cartoona`. A restricted role, **never the owner** |
 
 The `POSTGRES_*` and `BACKEND_DATABASE_URL` values are **interpolated by
-Compose** into the `postgres` and `backend` services, not passed through
-`env_file`. That keeps both containers from receiving the frontend's Supabase
-secrets, and keeps the owner password out of the backend, and is why `.env.docker` must be exported
+Compose** into the `postgres` and `backend` services. The `backend` and
+`postgres` containers have no `env_file`, so they never receive the frontend's
+Supabase secrets, and the owner password stays out of the backend. The
+**frontend** does get `.env.docker` as its `env_file`, which also contains the
+database variables, so `compose.yml` blanks every one of them
+(`POSTGRES_*`, `DATABASE_URL`, `LOCAL_DATABASE_URL`, `CARTOONA_APP_DB_PASSWORD`,
+`BACKEND_DATABASE_URL`) in the frontend's `environment:`, which wins over
+`env_file`. A static test checks the template against that list, so a new
+database variable cannot be added without blanking it. Verify with
+`docker compose exec frontend env | grep -E 'POSTGRES|DATABASE'` (all empty), and is why `.env.docker` must be exported
 or passed with `--env-file`. Use a URL-safe password (`openssl rand -hex 24`) so
 it can go into the URLs unescaped.
 
@@ -189,11 +199,12 @@ Rules:
 
 ## Local PostgreSQL
 
-Status: **prepared, not wired.** The service runs, persists data and is
-health-checked. V0.1.39 added the `pg` driver and a data-access layer that reads
-`DATABASE_URL` lazily, but no route, page or health check calls it yet, so the
-app still starts and serves entirely from Supabase without this database. See
-[POSTGRES_DATA_ACCESS.md](POSTGRES_DATA_ACCESS.md).
+Status: **used by the backend only.** The service runs, persists data and is
+health-checked. The `backend` reads it as a restricted login role; the
+frontend never connects to it and holds no credential for it. The frontend
+still starts and serves every page (except the pricing data) without this
+database. See [POSTGRES_DATA_ACCESS.md](POSTGRES_DATA_ACCESS.md) and
+[BACKEND.md](BACKEND.md).
 
 | | Value |
 |---|---|
@@ -212,10 +223,12 @@ socket inside the container. The image's default `trust` for local sockets is
 overridden. There is no passwordless superuser: with `POSTGRES_PASSWORD` empty,
 the image refuses to initialise.
 
-**Startup independence:** `frontend` has no `depends_on` at all. A missing
-password, an unhealthy database or a failing backend never stops the web app
-from starting, because it uses neither. Only `backend` waits for a healthy
-`postgres`.
+**Startup independence:** `frontend` has no `depends_on` at all, on purpose.
+A missing password, an unhealthy database or a failing backend never stops the
+web app from starting, and every page that does not need the pricing data
+stays up. `GET /api/creation-pricing` simply answers its public 503 until the
+backend is ready (one attempt, 3 s bound, no Supabase fallback). Only `backend`
+waits for a healthy `postgres`.
 
 **Healthcheck:** `pg_isready` over TCP every 5s (timeout 5s, 10 retries, 10s
 start period). TCP rather than the socket, so the probe cannot report healthy
@@ -275,9 +288,9 @@ used by the app yet. See [PLAIN_POSTGRES.md](PLAIN_POSTGRES.md).
 ## Backend boundary
 
 Supabase remains the frontend's only backend: database, auth and storage. The
-`backend` service (V0.1.40) runs side by side and serves only liveness,
-readiness and a public pricing read from the local `postgres`; no frontend
-request reaches it. The local `postgres` service is not a Supabase
+`backend` service (V0.1.40) serves liveness, readiness and a public pricing
+read from the local `postgres`; since V0.1.41 the frontend's server calls that
+pricing read for `GET /api/creation-pricing` and nothing else. The local `postgres` service is not a Supabase
 replacement: it has no auth or storage schema, and no production data. See
 [BACKEND.md](BACKEND.md).
 

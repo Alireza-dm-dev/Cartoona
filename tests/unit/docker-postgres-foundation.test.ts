@@ -116,7 +116,11 @@ describe("compose.yml — frontend (formerly app) is functionally unchanged", ()
 
   it("does not depend on postgres — an unhealthy database cannot block startup", () => {
     expect(app).not.toMatch(/depends_on/)
-    expect(app).not.toMatch(/postgres|DATABASE_URL/)
+    // V0.1.41: the only places the frontend block may name a database variable
+    // are `NAME: ""` entries that BLANK what env_file would otherwise leak.
+    const mentions = app.split("\n").filter((l) => /postgres|DATABASE_URL|APP_DB_PASSWORD/i.test(l))
+    expect(mentions.length).toBeGreaterThan(0)
+    for (const line of mentions) expect(line).toMatch(/^\s+[A-Z_]+:\s*""\s*$/)
   })
 })
 
