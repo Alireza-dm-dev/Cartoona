@@ -31,18 +31,19 @@ backend/
   src/
     app.ts          buildBackendApp(deps): the app, never listening
     server.ts       config -> app -> listen; SIGTERM/SIGINT -> graceful close
-    config.ts       BACKEND_PORT / BACKEND_HOST / DATABASE_URL validation
-    routes/         health.ts (/health, /ready), creation-pricing.ts (/v1/creation-pricing)
-    plugins/        observability.ts (request id, completion logs, nosniff)
+    config.ts       BACKEND_PORT / BACKEND_HOST / DATABASE_URL / CARTOONA_INTERNAL_AUTH_SECRET validation
+    routes/         health.ts (/health, /ready), creation-pricing.ts, auth.ts (/v1/auth/me)
+    plugins/        observability.ts (request id, completion logs, nosniff), auth.ts (requireAuth, requireRole)
     errors/         error-handler.ts (central mapping, 404)
-    auth/           principal.ts (AuthPrincipal / AuthAdapter: types only)
+    auth/           principal.ts (re-exports the neutral identity types; the rules)
   build.mjs         esbuild bundle -> backend/dist/server.cjs (gitignored)
   healthcheck.mjs   container liveness probe
   Dockerfile        + Dockerfile.dockerignore (deny by default)
   tsconfig.json     backend-scoped typecheck
 ```
 
-`buildBackendApp({ db, closeDb })` takes its database as a lazy getter.
+`buildBackendApp({ db, closeDb, authSecret })` takes its database and its
+assertion key as lazy getters.
 Building the app or serving `/health` opens no connection. Tests inject a
 fake, or use the real pool against local PostgreSQL. The backend never runs
 migrations.
@@ -53,6 +54,7 @@ migrations.
 |---|---|---|
 | `GET /health` | **Liveness.** The process serves HTTP. No database, no env, no dependency. | 200 `{"status":"ok"}` |
 | `GET /ready` | **Readiness.** `SELECT 1` succeeds **and** the session is a restricted `cartoona_app` login. The role check passes once and is then cached; the ping runs every time. | 200 `{"status":"ready"}`, 503 `{"status":"unavailable"}` |
+| `GET /v1/auth/me` | **Authenticated** (V0.1.42): who the signed internal assertion resolves to, from `user_identities` + `users`. Proof of the identity chain; see [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md). | 200 `{"authenticated":true,"userId":"…","role":"parent"}`; 401 `unauthenticated`; 403 `identity_not_linked` / `forbidden`; 503 `service_unavailable`; all `no-store` |
 | `GET /v1/creation-pricing` | Public price catalog from PostgreSQL (`getActiveCreationPrices`). Same contract as the Next route `GET /api/creation-pricing`. | 200 `{"prices":{…}}` with `Cache-Control: public, s-maxage=60, stale-while-revalidate=300`; 503 `{"error":"<Persian message>","code":"CREATION_PRICING_UNAVAILABLE"}` with `no-store` for a DB failure or an invalid or empty catalog |
 | anything else | | 404 `{"error":"not_found"}` |
 
@@ -95,7 +97,7 @@ the contract is identical.
 | Credential | Used by | Rights |
 |---|---|---|
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` (owner) | migrations (`scripts/db/migrate-local.sh`), `app-login-role.sh`, psql | everything; **never given to the backend** |
-| `cartoona_app_login` via `BACKEND_DATABASE_URL` | the backend's `DATABASE_URL` | member of `cartoona_app`: SELECT on the 7 read tables, nothing else |
+| `cartoona_app_login` via `BACKEND_DATABASE_URL` | the backend's `DATABASE_URL` | member of `cartoona_app`: SELECT on the 7 read tables plus `user_identities` (0010), nothing else |
 
 The backend refuses to be ready on an over-privileged connection. `/ready`
 returns 503 (logged as `READINESS_FAILED db_role_<reason>`) when the session
@@ -221,22 +223,26 @@ to trust a browser origin, cookie or user-supplied identity. If browser-direct
 calls are ever needed, add an explicit origin allow-list (never `*`) at that
 point.
 
-## Authentication boundary (not implemented)
+## Authentication (V0.1.42)
 
-`backend/src/auth/principal.ts` declares the boundary only. No backend route
-is authenticated yet.
+Implemented; full design in [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md).
 
 ```
-request -> AuthAdapter.verify()  -> AuthPrincipal { userId, role }  -> service/repository({ parentProfileId, ... })
-           (provider-specific)      (verified, provider-neutral)       (explicit ids, no session lookups)
+Next server: Supabase session --adapter--> VerifiedIdentity --signs--> X-Cartoona-Internal-Auth
+Fastify: requireAuth --verify (HMAC, expiry, method+path)--> user_identities --> request.authPrincipal { userId, role }
+route --> repositories({ parentProfileId, ... })   (explicit ids, from the principal only)
 ```
 
-- A principal comes only from an adapter that verified a credential. A user
-  id, role or profile id sent by the browser is never trusted.
-- `userId` is the plain `public.users.id`. During migration, a Supabase-backed
-  adapter maps the Supabase user to it through `user_identities`.
-- Repositories already take explicit actor ids (V0.1.39); routes pass the
-  principal's ids down.
+- The backend reads one identity input, the signed assertion header. It never
+  reads `X-User-Id`, `X-Role`, cookies or bearer tokens, and never calls
+  Supabase.
+- The role comes from `public.users`. An unlinked identity is 403
+  `identity_not_linked`; nothing is created on the fly.
+- Use it with `{ preHandler: requireAuth(deps) }` and, where needed,
+  `requireRole("parent")`. Read `request.authPrincipal`; never take a caller
+  id from the query or the body.
+- `CARTOONA_INTERNAL_AUTH_SECRET` is required at startup. It is shared with
+  the frontend only.
 
 ## Local timings (informational)
 
@@ -259,15 +265,17 @@ Desktop. These are **not production estimates**.
 
 ## Before the first authenticated route cuts over
 
-1. **Identity:** an `AuthAdapter` that verifies the caller (Supabase Auth
-   first), plus a mapping from the Supabase user id to `users.id` through
-   `user_identities` or matching UUIDs from the data copy.
+1. **Identity:** done in V0.1.42 (adapter, signed assertion, `requireAuth`,
+   `user_identities`). Still open: the session-lifetime replacement
+   ([AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md#session-lifetime-replacement-decision))
+   and the `user_identities` backfill as part of the data copy.
 2. **Data:** the domain's data in PostgreSQL, through the copy procedure in
    PLAIN_POSTGRES.md or dual writes. The local database holds only the seeded
    reference data today.
-3. **Frontend to backend client:** done for GET in V0.1.41 (`lib/backend`).
-   An authenticated route additionally needs a way to forward the verified
-   principal (never a browser-supplied id) and non-GET support.
+3. **Frontend to backend client:** GET is done (V0.1.41), and forwarding a
+   verified identity is done (V0.1.42, `identity:` option). Non-GET support
+   and a one-time nonce (assertion replay) are still needed for the first
+   write route.
 4. **Grants:** EXECUTE on the `*_trusted` functions a write route needs, in a
    new migration.
 5. **Deployment:** where the backend runs outside local compose, how it is

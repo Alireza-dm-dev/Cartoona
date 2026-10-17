@@ -1,4 +1,5 @@
 import { readPoolConfig } from "@/lib/db/pool"
+import { readInternalAuthSecret } from "@/lib/identity/assertion"
 
 /**
  * Backend runtime configuration (V0.1.40), validated once at startup.
@@ -11,6 +12,9 @@ import { readPoolConfig } from "@/lib/db/pool"
  *  DATABASE_URL  required   validated by lib/db's own rules (scheme, no query
  *                           string, never hosted Supabase); it must name a
  *                           restricted login role, which /ready verifies.
+ *  CARTOONA_INTERNAL_AUTH_SECRET  required (V0.1.42). Hex, >= 32 bytes; verifies
+ *                           the Next server's identity assertions. The same
+ *                           value is given to the frontend, nothing else is.
  *  DB_POOL_MAX, DB_IDLE_TIMEOUT_MS, DB_CONNECTION_TIMEOUT_MS  see lib/db/pool.
  *
  * Every error message is written here and names the variable, never its
@@ -49,6 +53,11 @@ export function loadBackendConfig(env: Env = process.env): BackendConfig {
     readPoolConfig(env)
   } catch (error) {
     throw new BackendConfigError(error instanceof Error ? error.message : "DATABASE_URL is invalid.")
+  }
+  try {
+    readInternalAuthSecret(env)
+  } catch (error) {
+    throw new BackendConfigError(error instanceof Error ? error.message : "CARTOONA_INTERNAL_AUTH_SECRET is invalid.")
   }
 
   return { port: Number(rawPort), host }

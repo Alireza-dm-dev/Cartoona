@@ -1,8 +1,11 @@
 import Fastify, { type FastifyInstance } from "fastify"
 import { closePool, getPool } from "@/lib/db/pool"
 import type { Queryable } from "@/lib/db/types"
+import { readInternalAuthSecret } from "@/lib/identity/assertion"
 import { registerErrorHandling } from "./errors/error-handler"
+import { registerAuth } from "./plugins/auth"
 import { registerObservability, requestIdFor } from "./plugins/observability"
+import { registerAuthRoutes } from "./routes/auth"
 import { registerCreationPricingRoutes } from "./routes/creation-pricing"
 import { registerHealthRoutes } from "./routes/health"
 
@@ -16,21 +19,26 @@ import { registerHealthRoutes } from "./routes/health"
  * No migrations run here, ever.
  *
  * Deliberately absent: CORS (no browser calls the backend directly; the Next
- * app will call it server-to-server), cookies, auth (see auth/principal.ts),
- * request bodies (every route is GET; the body limit is minimal), and
- * Fastify's own pino logger (lib/observability/logger is used instead).
+ * app calls it server-to-server), cookies, any browser identity (the only
+ * caller identity is the signed internal assertion, see plugins/auth.ts and
+ * auth/principal.ts), request bodies (every route is GET; the body limit is
+ * minimal), and Fastify's own pino logger (lib/observability/logger is used
+ * instead).
  */
 
 export interface BackendDeps {
   db: () => Queryable
   /** Called once when the app closes; ends the shared pool by default. */
   closeDb: () => Promise<void>
+  /** Key for internal assertions; read per request (CARTOONA_INTERNAL_AUTH_SECRET by default). */
+  authSecret: () => Buffer
 }
 
 export function buildBackendApp(overrides: Partial<BackendDeps> = {}): FastifyInstance {
   const deps: BackendDeps = {
     db: overrides.db ?? getPool,
     closeDb: overrides.closeDb ?? closePool,
+    authSecret: overrides.authSecret ?? (() => readInternalAuthSecret()),
   }
 
   const app = Fastify({
@@ -45,8 +53,10 @@ export function buildBackendApp(overrides: Partial<BackendDeps> = {}): FastifyIn
 
   registerObservability(app)
   registerErrorHandling(app)
+  registerAuth(app)
   registerHealthRoutes(app, deps)
   registerCreationPricingRoutes(app, deps)
+  registerAuthRoutes(app, deps)
 
   app.addHook("onClose", async () => {
     await deps.closeDb()

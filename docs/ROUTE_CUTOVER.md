@@ -129,6 +129,11 @@ exactly what this cutover rules out.
 
 ## Next
 
-The next routes need the first authenticated read, which needs an `AuthAdapter`
-and the Supabase-user → `users.id` mapping first. See
-[BACKEND.md](BACKEND.md#before-the-first-authenticated-route-cuts-over).
+The identity chain for authenticated routes exists since V0.1.42
+([AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md)): the Next server verifies the
+Supabase session, signs a short-lived assertion bound to the backend method
+and path, and Fastify resolves it through `user_identities` to a Cartoona user
+and role. The proof route `GET /api/auth/backend-me` exercises it end to end.
+**No business route uses it yet.** The first candidate is the parent orders
+list. It still needs the session-lifetime replacement and real data in
+PostgreSQL. See [BACKEND.md](BACKEND.md#before-the-first-authenticated-route-cuts-over).

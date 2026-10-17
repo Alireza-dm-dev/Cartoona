@@ -4,12 +4,17 @@ import { cookies } from 'next/headers'
 import { supabaseTimeoutFetch } from './timeout-fetch'
 import { disablePostgrestRetries } from './postgrest-retry'
 
-export async function createServerSupabaseClient() {
+/**
+ * `options.fetch` replaces the default per-request deadline fetch. Used by the
+ * auth adapter to impose ONE deadline on a whole identity verification, which
+ * can otherwise span several refresh attempts (lib/auth/auth-deadline.ts).
+ */
+export async function createServerSupabaseClient(options: { fetch?: typeof fetch } = {}) {
   const env = getSupabaseEnv()
   const cookieStore = await cookies()
 
   const client = createServerClient(env.NEXT_PUBLIC_SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
-    global: { fetch: supabaseTimeoutFetch },
+    global: { fetch: options.fetch ?? supabaseTimeoutFetch },
     cookies: {
       getAll() {
         return cookieStore.getAll()

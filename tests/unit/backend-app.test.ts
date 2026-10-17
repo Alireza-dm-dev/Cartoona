@@ -337,13 +337,32 @@ describe("errors", () => {
 
 describe("config", () => {
   const URL_OK = `postgresql://cartoona_app_login:${SECRET}@postgres:5432/cartoona`
+  const AUTH_SECRET = "ab".repeat(32)
+  const BASE = { DATABASE_URL: URL_OK, CARTOONA_INTERNAL_AUTH_SECRET: AUTH_SECRET }
 
   it("defaults to 0.0.0.0:4000", () => {
-    expect(loadBackendConfig({ DATABASE_URL: URL_OK })).toEqual({ port: 4000, host: "0.0.0.0" })
+    expect(loadBackendConfig(BASE)).toEqual({ port: 4000, host: "0.0.0.0" })
   })
 
   it("accepts BACKEND_PORT / BACKEND_HOST overrides", () => {
-    expect(loadBackendConfig({ DATABASE_URL: URL_OK, BACKEND_PORT: "4100", BACKEND_HOST: "127.0.0.1" })).toEqual({ port: 4100, host: "127.0.0.1" })
+    expect(loadBackendConfig({ ...BASE, BACKEND_PORT: "4100", BACKEND_HOST: "127.0.0.1" })).toEqual({ port: 4100, host: "127.0.0.1" })
+  })
+
+  it.each([
+    ["missing", undefined, /CARTOONA_INTERNAL_AUTH_SECRET is not set/],
+    ["too short", "ab".repeat(16), /64-256 hex/],
+    ["not hex", "z".repeat(64), /64-256 hex/],
+    ["odd length", "a".repeat(65), /64-256 hex/],
+  ])("refuses to start with a %s internal auth secret, without echoing it", (_label, secret, expected) => {
+    let message = ""
+    try {
+      loadBackendConfig({ DATABASE_URL: URL_OK, CARTOONA_INTERNAL_AUTH_SECRET: secret })
+    } catch (error) {
+      expect(error).toBeInstanceOf(BackendConfigError)
+      message = (error as Error).message
+    }
+    expect(message).toMatch(expected)
+    if (secret) expect(message).not.toContain(secret)
   })
 
   it.each([
@@ -357,7 +376,7 @@ describe("config", () => {
   ])("fails clearly on %j without echoing values", (override, expected) => {
     let message = ""
     try {
-      loadBackendConfig({ DATABASE_URL: URL_OK, ...override })
+      loadBackendConfig({ ...BASE, ...override })
     } catch (error) {
       expect(error).toBeInstanceOf(BackendConfigError)
       message = (error as Error).message

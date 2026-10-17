@@ -2,6 +2,8 @@ import "server-only"
 import { fetchWithTimeout, isFetchTimeoutError } from "@/lib/http/fetch-with-timeout"
 import { logEvent } from "@/lib/observability/logger"
 import { REQUEST_ID_HEADER, isSafeRequestId } from "@/lib/observability/request-id"
+import { INTERNAL_AUTH_HEADER, InternalAuthConfigError, readInternalAuthSecret, signAssertion } from "@/lib/identity/assertion"
+import type { VerifiedIdentity } from "@/lib/identity/types"
 import { BackendConfigError, readBackendClientConfig } from "./config"
 import { BackendClientError } from "./errors"
 
@@ -24,6 +26,11 @@ import { BackendClientError } from "./errors"
  *   logged with allow-listed fields: request id, operation, status, duration,
  *   category. Never the URL, headers, response body or the raw exception.
  *
+ * Authenticated calls (V0.1.42): pass the `identity` an auth adapter verified.
+ * The client signs a short-lived internal assertion bound to this method, path
+ * and request id (lib/identity/assertion.ts) and sends it in
+ * X-Cartoona-Internal-Auth. No provider token, cookie or user id is forwarded.
+ *
  * Only GET + JSON exists today; write methods arrive with the first write route.
  */
 
@@ -34,8 +41,15 @@ export interface BackendGetRequest<T> {
   path: string
   /** The inbound request's id. Replaced by a fresh UUID when absent or unsafe. */
   requestId?: string
-  /** Validates and narrows the JSON body; throwing marks the response invalid. */
-  parse: (json: unknown) => T
+  /**
+   * Validates and narrows the JSON body; throwing marks the response invalid.
+   * Called for 2xx, and for any status listed in `acceptStatuses`.
+   */
+  parse: (json: unknown, status: number) => T
+  /** Non-2xx statuses whose JSON body the caller wants (e.g. 401/403 auth outcomes). */
+  acceptStatuses?: readonly number[]
+  /** A VERIFIED identity to assert to the backend; omit for public endpoints. */
+  identity?: VerifiedIdentity
 }
 
 export interface BackendResponse<T> {
@@ -78,6 +92,24 @@ export async function backendGetJson<T>(
     throw new BackendClientError("not_configured")
   }
 
+  const headers: Record<string, string> = { accept: "application/json", [REQUEST_ID_HEADER]: requestId }
+  if (request.identity) {
+    try {
+      const secret = readInternalAuthSecret(deps.env)
+      headers[INTERNAL_AUTH_HEADER] = signAssertion({
+        identity: request.identity,
+        requestId,
+        method: "GET",
+        path: request.path,
+        secret,
+      })
+    } catch (error) {
+      if (!(error instanceof InternalAuthConfigError)) throw error
+      logEvent("error", "BACKEND_NOT_CONFIGURED", { ...base, errorCode: "INTERNAL_AUTH_NOT_CONFIGURED" })
+      throw new BackendClientError("not_configured")
+    }
+  }
+
   const started = performance.now()
   const duration = () => performance.now() - started
   const fail = (
@@ -97,7 +129,7 @@ export async function backendGetJson<T>(
       `${config.baseUrl}${request.path}`,
       {
         method: "GET",
-        headers: { accept: "application/json", [REQUEST_ID_HEADER]: requestId },
+        headers,
         cache: "no-store",
         redirect: "error",
       },
@@ -109,7 +141,7 @@ export async function backendGetJson<T>(
     return fail("unavailable", "BACKEND_UNAVAILABLE", "warn", "BACKEND_UNAVAILABLE")
   }
 
-  if (!response.ok) {
+  if (!response.ok && !request.acceptStatuses?.includes(response.status)) {
     await response.body?.cancel().catch(() => {})
     return fail("bad_status", "BACKEND_UNAVAILABLE", "warn", "BACKEND_BAD_STATUS", response.status)
   }
@@ -126,7 +158,7 @@ export async function backendGetJson<T>(
   let data: T
   try {
     if (text.length > BACKEND_MAX_BODY_CHARS) throw new Error("too large")
-    data = request.parse(JSON.parse(text))
+    data = request.parse(JSON.parse(text), response.status)
   } catch {
     return fail("invalid_response", "BACKEND_INVALID_RESPONSE", "error", "BACKEND_INVALID_RESPONSE", response.status)
   }

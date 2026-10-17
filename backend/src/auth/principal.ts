@@ -1,40 +1,22 @@
 /**
- * The authentication boundary (V0.1.40: declared, NOT implemented).
+ * The authentication boundary of the backend (V0.1.40 types, implemented V0.1.42).
  *
- * No backend route is authenticated yet. When one is, the flow is:
+ *   Next.js server: Supabase session --verified--> VerifiedIdentity
+ *     --signed internal assertion (lib/identity/assertion.ts)-->
+ *   Fastify: verify assertion --> (provider, subject)
+ *     --user_identities (PostgreSQL)--> AuthPrincipal { userId, role }
+ *     --> route --> repositories with explicit ids (principal.userId -> parentProfileId)
  *
- *   request -> AuthAdapter.verify(request)   (cookie/JWT/session: provider-specific)
- *           -> AuthPrincipal                 (verified, provider-neutral)
- *           -> service / repository          (explicit ids, e.g. { parentProfileId })
+ * Rules:
+ *  - The ONLY input is the `X-Cartoona-Internal-Auth` header. X-User-Id,
+ *    X-Role, cookies, bearer tokens, query or body identity are never read.
+ *  - The backend never calls the identity provider; it trusts the Next server's
+ *    signature (shared secret), and nothing else.
+ *  - The role comes from `public.users`, never from the assertion.
+ *  - Provider-specific code lives only in the Next adapter
+ *    (lib/auth/supabase-identity-adapter.ts); replacing Supabase Auth replaces
+ *    that adapter and the `provider` value, not this backend.
  *
- * Rules that hold from the first authenticated route on:
- *  - A principal is produced ONLY by an AuthAdapter that verified a credential.
- *    A user id, role or profile id sent by the browser (body, query, header) is
- *    never trusted and never becomes a principal.
- *  - Routes pass the principal's ids to repositories explicitly; repositories
- *    never look up "the current user" themselves (see lib/repositories/actor.ts).
- *  - The adapter is the only provider-specific piece. Supabase Auth can sit
- *    behind it during migration, its user id mapped to `users.id` through
- *    `user_identities`; replacing the provider replaces the adapter only.
+ * The types are shared with Next and tests from lib/identity/types.ts.
  */
-
-export type PrincipalRole = "parent" | "admin" | "super_admin"
-
-export interface AuthPrincipal {
-  /** `public.users.id`: the plain-PostgreSQL user, never a provider id. */
-  userId: string
-  role: PrincipalRole
-}
-
-/** Minimal request view an adapter needs; deliberately not a Fastify type. */
-export interface AuthRequest {
-  headers: Record<string, string | string[] | undefined>
-}
-
-export type AuthResult =
-  | { ok: true; principal: AuthPrincipal }
-  | { ok: false; reason: "unauthenticated" | "auth_unavailable" }
-
-export interface AuthAdapter {
-  verify(request: AuthRequest): Promise<AuthResult>
-}
+export type { AuthPrincipal, ExternalIdentity, PrincipalRole, VerifiedIdentity } from "@/lib/identity/types"

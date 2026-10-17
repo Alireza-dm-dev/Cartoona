@@ -67,6 +67,35 @@ describe("middleware with timed-out Supabase calls", () => {
   })
 })
 
+describe("middleware session-check deadline (V0.1.42)", () => {
+  it("a getUser() that never settles (auth-js retrying a refresh) -> 503 at 10 s, not ~26-30 s; no sign-out", async () => {
+    vi.useFakeTimers()
+    try {
+      const c = client({ getUser: () => new Promise(() => {}), rpc: vi.fn() })
+      m.client = c
+      const { middleware } = await import("@/middleware")
+      let settled: Response | null = null
+      const pending = middleware(new NextRequest("http://x/dashboard")).then((r) => (settled = r))
+      await vi.advanceTimersByTimeAsync(9_999)
+      expect(settled).toBeNull()
+      await vi.advanceTimersByTimeAsync(1)
+      await pending
+      expect(settled!.status).toBe(503)
+      expect(settled!.headers.get("location")).toBeNull()
+      expect(settled!.headers.get("Retry-After")).toBe("2")
+      expect(c.auth.signOut).not.toHaveBeenCalled()
+      expect(c.rpc).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("public paths are outside the matcher: middleware never runs auth for them", async () => {
+    const { config } = await import("@/middleware")
+    for (const pattern of config.matcher) expect(pattern).toMatch(/^\/(dashboard|admin|complete-request|parent-consent)/)
+  })
+})
+
 describe("middleware observability", () => {
   it("transient failures log safe warn events and the 503 carries X-Request-Id; no cookies/tokens logged", async () => {
     const records: LogRecord[] = []

@@ -30,16 +30,20 @@ const compose = withoutYamlComments(read("compose.yml"))
 const frontend = composeService(compose, "frontend")
 const backend = composeService(compose, "backend")
 
-describe("scope: creation pricing is the only migrated route", () => {
-  it("only app/api/creation-pricing/route.ts uses the backend client", () => {
+// The only frontend routes that call the backend: the migrated public read
+// (V0.1.41) and the auth-chain proof (V0.1.42). No business route is authenticated through it yet.
+const BACKEND_ROUTES = ["app/api/auth/backend-me/route.ts", "app/api/creation-pricing/route.ts"]
+
+describe("scope: creation pricing is the only migrated business route", () => {
+  it("only the pricing route and the auth proof route use the backend client", () => {
     const users = frontendFiles
       .filter((f) => !f.startsWith("lib/backend/"))
       .filter((f) => /@\/lib\/backend\//.test(read(f)))
-    expect(users).toEqual(["app/api/creation-pricing/route.ts"])
+    expect(users.sort()).toEqual(BACKEND_ROUTES)
   })
 
   it("the other pricing/billing/order/auth/storage routes still read Supabase and never the backend", () => {
-    const routes = walk("app/api").filter((f) => f !== "app/api/creation-pricing/route.ts" && f !== "app/api/health/route.ts")
+    const routes = walk("app/api").filter((f) => !BACKEND_ROUTES.includes(f) && f !== "app/api/health/route.ts")
     expect(routes.length).toBeGreaterThan(10)
     for (const route of routes) expect(read(route)).not.toMatch(/@\/lib\/backend|BACKEND_INTERNAL_URL/)
   })

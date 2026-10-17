@@ -50,6 +50,10 @@ services:
       # and not NEXT_PUBLIC_*, so it never reaches the browser bundle.
       BACKEND_INTERNAL_URL: http://backend:4000
       BACKEND_REQUEST_TIMEOUT_MS: ${BACKEND_REQUEST_TIMEOUT_MS:-3000}
+      # Signs the internal identity assertions the frontend's server sends to the
+      # backend (V0.1.42). The ONE secret the two containers share; never a build
+      # arg, never NEXT_PUBLIC_*. Empty => authenticated backend calls answer 503.
+      CARTOONA_INTERNAL_AUTH_SECRET: ${CARTOONA_INTERNAL_AUTH_SECRET:-}
       # `env_file` hands the frontend the WHOLE .env.docker, which also holds the
       # database owner password and the backend's login role. `environment`
       # wins over `env_file`, so each is blanked here: the frontend process never
@@ -109,6 +113,10 @@ services:
       # owner. Empty => the backend refuses to start; /ready also refuses an
       # owner or superuser session.
       DATABASE_URL: ${BACKEND_DATABASE_URL:-}
+      # Verifies the frontend's internal identity assertions (V0.1.42). Required:
+      # the backend refuses to start without it. It never receives any Supabase
+      # value - it does not talk to the identity provider at all.
+      CARTOONA_INTERNAL_AUTH_SECRET: ${CARTOONA_INTERNAL_AUTH_SECRET:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     # Loopback only: for curl/debugging from this Mac. The frontend will reach
     # it as http://backend:4000 on the compose network, never via the host.

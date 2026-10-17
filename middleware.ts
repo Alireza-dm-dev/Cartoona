@@ -1,6 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
-import { isAuthRetryableFetchError } from '@supabase/supabase-js'
+import { isAuthRetryableFetchError, type UserResponse } from '@supabase/supabase-js'
 import { getSupabaseEnv } from './lib/supabase/env'
 import { supabaseTimeoutFetch } from './lib/supabase/timeout-fetch'
 import { disablePostgrestRetries } from './lib/supabase/postgrest-retry'
@@ -10,6 +10,17 @@ import { checkCurrentParentSessionLifetime } from './lib/auth/parent-session-lif
 import { logEvent } from './lib/observability/logger'
 import { REQUEST_ID_HEADER, resolveRequestId } from './lib/observability/request-id'
 import { categorizeError } from './lib/observability/errors'
+import { withDeadline } from './lib/auth/auth-deadline'
+
+/**
+ * Total time the session check may take (V0.1.42). auth-js retries a failing
+ * token refresh with backoff inside a 30 s budget, so with the auth provider
+ * down a protected page used to wait ~26-30 s before its 503. 10 s equals the
+ * existing per-request bound, so no refresh is abandoned earlier than before;
+ * only the retries after it are no longer waited for. Past the deadline the
+ * request is a transient auth failure: the same retryable 503, no sign-out.
+ */
+const MIDDLEWARE_AUTH_DEADLINE_MS = 10_000
 
 function redirectCookies(
   url: string | URL,
@@ -85,7 +96,7 @@ export async function middleware(request: NextRequest) {
     const {
       data: { user: verifiedUser },
       error: getUserError,
-    } = await supabase.auth.getUser()
+    } = await withDeadline<UserResponse>(supabase.auth.getUser(), MIDDLEWARE_AUTH_DEADLINE_MS)
     user = verifiedUser
     if (!verifiedUser && getUserError && isAuthRetryableFetchError(getUserError)) {
       authTransientFailure = true

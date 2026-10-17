@@ -159,6 +159,7 @@ into the browser bundle:
 | `LOCAL_DATABASE_URL` | — | host tools | `postgresql://cartoona:<password>@localhost:5433/cartoona`, for psql and migrations on this Mac |
 | `BACKEND_INTERNAL_URL` | no | set by compose, **not** from `.env.docker` | `http://backend:4000`. Server-side only, never `NEXT_PUBLIC_*`. For Next.js on the Mac: `http://127.0.0.1:4000` in `.env.local` |
 | `BACKEND_REQUEST_TIMEOUT_MS` | no | frontend (optional) | Default `3000`, range 250–15000. One attempt per request |
+| `CARTOONA_INTERNAL_AUTH_SECRET` | **yes** (backend refuses to start) | frontend (signs) and backend (verifies) | Secret, `openssl rand -hex 32`. Shared by these two only; never `NEXT_PUBLIC_*`, never a build arg. See [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md) |
 | `CARTOONA_APP_DB_PASSWORD` | — | `scripts/db/app-login-role.sh` | Secret. The backend login role's password; `openssl rand -hex 32` |
 | `BACKEND_DATABASE_URL` | — | `backend` service (as its `DATABASE_URL`) | `postgresql://cartoona_app_login:<app password>@postgres:5432/cartoona`. A restricted role, **never the owner** |
 
