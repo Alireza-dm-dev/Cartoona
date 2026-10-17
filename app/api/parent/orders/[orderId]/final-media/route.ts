@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
+import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
 import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 import { isValidOrderId } from "@/lib/parent/orders/detail-queries"
 import {
@@ -68,7 +68,7 @@ async function handlePost(
     return errorResponse(mapOwnershipFailure(ownership.reason))
   }
 
-  const lifetime = await checkCurrentParentSessionLifetime(supabase)
+  const lifetime = await checkParentSessionLifetime(supabase, ownership.userId)
   if (!lifetime.valid) {
     return createParentSessionFailureResponse(supabase, lifetime)
   }

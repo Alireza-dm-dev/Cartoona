@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { setRateLimitStore, InMemoryRateLimitStore } from "@/lib/rate-limit"
+import { getSessionResult } from "../helpers/supabase-jwt"
 
 // POST /api/requests must refuse an oversized body from Content-Length alone,
 // BEFORE request.formData() buffers it. No real large buffers are allocated:
@@ -37,7 +38,7 @@ function healthyClient() {
     select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }), maybeSingle: async () => ({ data, error: null }) }) }),
   })
   return {
-    auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), signOut: vi.fn() },
+    auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), getSession: async () => getSessionResult("valid", "u1"), signOut: vi.fn() },
     rpc: async () => ({
       data: [{ is_valid: true, session_started_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-31T00:00:00Z" }],
       error: null,

@@ -20,6 +20,8 @@ import { currentRequestId, log, withObservability } from "@/lib/observability/re
  *
  *   200 { authenticated: true, userId, role }   role from public.users
  *   401 { error: "unauthenticated" }             no session / session rejected
+ *   401 { error: "session_expired" }             signed in more than 30 days ago
+ *   401 { error: "session_invalidated" }         signed in before users.sessions_not_before
  *   403 { error: "identity_not_linked" }         verified, but no Cartoona user mapped
  *   403 { error: "forbidden" }                   linked account not allowed (deleted)
  *   503 { error: "auth_unavailable" }            identity provider down or too slow
@@ -33,7 +35,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 type BackendMe =
   | { kind: "ok"; userId: string; role: PrincipalRole }
-  | { kind: "rejected"; status: 401 | 403; error: "unauthenticated" | "identity_not_linked" | "forbidden" }
+  | { kind: "rejected"; status: 401 | 403; error: "unauthenticated" | "session_expired" | "session_invalidated" | "identity_not_linked" | "forbidden" }
 
 function parseBackendMe(json: unknown, status: number): BackendMe {
   const body = (json ?? {}) as Record<string, unknown>
@@ -43,7 +45,7 @@ function parseBackendMe(json: unknown, status: number): BackendMe {
     }
     return { kind: "ok", userId: body.userId, role: body.role }
   }
-  if ((status === 401 && body.error === "unauthenticated") ||
+  if ((status === 401 && (body.error === "unauthenticated" || body.error === "session_expired" || body.error === "session_invalidated")) ||
       (status === 403 && (body.error === "identity_not_linked" || body.error === "forbidden"))) {
     return { kind: "rejected", status, error: body.error } as BackendMe
   }
@@ -55,13 +57,18 @@ const json = (body: unknown, status: number) => NextResponse.json(body, { status
 async function handleGet() {
   const verification = await verifySupabaseIdentity()
   if (!verification.ok) {
-    log(verification.reason === "auth_unavailable" ? "warn" : "info", "AUTH_REJECTED", {
+    const { reason } = verification
+    log(reason === "auth_unavailable" ? "warn" : "info", "AUTH_REJECTED", {
       subsystem: "auth",
-      errorCode: verification.reason === "auth_unavailable" ? "AUTH_UNAVAILABLE" : verification.reason === "no_session" ? "AUTH_MISSING" : "AUTH_INVALID",
+      errorCode:
+        reason === "auth_unavailable" ? "AUTH_UNAVAILABLE"
+        : reason === "no_session" ? "AUTH_MISSING"
+        : reason === "session_expired" ? "SESSION_EXPIRED"
+        : "AUTH_INVALID",
     })
-    return verification.reason === "auth_unavailable"
-      ? json({ error: "auth_unavailable" }, 503)
-      : json({ error: "unauthenticated" }, 401)
+    if (reason === "auth_unavailable") return json({ error: "auth_unavailable" }, 503)
+    if (reason === "session_expired") return json({ error: "session_expired" }, 401)
+    return json({ error: "unauthenticated" }, 401)
   }
 
   let result: BackendMe
@@ -70,7 +77,7 @@ async function handleGet() {
       operation: "auth_me",
       path: "/v1/auth/me",
       requestId: currentRequestId(),
-      identity: verification.identity,
+      auth: verification.context,
       acceptStatuses: [401, 403],
       parse: parseBackendMe,
     }))
@@ -81,6 +88,12 @@ async function handleGet() {
 
   if (result.kind === "ok") return json({ authenticated: true, userId: result.userId, role: result.role }, 200)
 
+  // Session-policy outcomes the backend owns (sessions_not_before; the 30-day
+  // rule is also checked there): the visitor must sign in again.
+  if (result.status === 401 && (result.error === "session_expired" || result.error === "session_invalidated")) {
+    log("info", "AUTH_REJECTED", { subsystem: "auth", errorCode: result.error === "session_expired" ? "SESSION_EXPIRED" : "SESSION_INVALIDATED" })
+    return json({ error: result.error }, 401)
+  }
   // The backend rejecting an assertion we just signed is OUR misconfiguration
   // (secret mismatch, clock skew), not the visitor's session: 503, logged.
   if (result.status === 401) {

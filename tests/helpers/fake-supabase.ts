@@ -4,10 +4,14 @@
  * pagination tests prove behaviour, not just call shapes, and it records every
  * backend call so tests can assert exact round-trip counts.
  */
+import { getSessionResult, type SessionKind } from "./supabase-jwt"
+
 type Row = Record<string, unknown>
 
 export interface FakeCalls {
   getUser: number
+  /** Local session reads (no network); not part of total(). */
+  getSession: number
   from: Record<string, number>
   rpc: { fn: string; args: Record<string, unknown> }[]
   storageBatch: number
@@ -22,6 +26,8 @@ export interface FakeOptions {
   tables?: Record<string, Row[]>
   rpc?: Record<string, (args: Record<string, unknown>) => unknown>
   tableErrors?: Record<string, { message: string }>
+  /** What auth.getSession() reports (V0.1.43 lifetime evidence). Default: a fresh session for `user`. */
+  session?: SessionKind
 }
 
 // "created_at.lt.X,and(created_at.eq.X,id.lt.Y)" - the only .or() shape in use.
@@ -40,6 +46,7 @@ const hash = (s: string) => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) |
 export function createFakeSupabase(opts: FakeOptions = {}) {
   const calls: FakeCalls = {
     getUser: 0,
+    getSession: 0,
     from: {},
     rpc: [],
     storageBatch: 0,
@@ -98,6 +105,10 @@ export function createFakeSupabase(opts: FakeOptions = {}) {
         if (opts.authError) return { data: { user: null }, error: opts.authError }
         return { data: { user: opts.user ?? null }, error: null }
       },
+      getSession: async () => {
+        calls.getSession++
+        return getSessionResult(opts.session ?? (opts.user ? "valid" : "missing"), opts.user?.id ?? "")
+      },
       signOut: async () => ({}),
     },
     from: (table: string) => {
@@ -126,9 +137,6 @@ export function createFakeSupabase(opts: FakeOptions = {}) {
   return { client: client as never, calls }
 }
 
-export const VALID_LIFETIME = [
-  { is_valid: true, session_started_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-31T00:00:00Z" },
-]
 
 export const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`
 export const ts = (n: number) =>

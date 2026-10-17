@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
+import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
 import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 import { ensureParentProfile } from "@/lib/parent/ensure-parent-profile"
 
@@ -24,7 +24,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
 
-  const lifetime = await checkCurrentParentSessionLifetime(supabase)
+  const lifetime = await checkParentSessionLifetime(supabase, user.id)
   if (!lifetime.valid) {
     return createParentSessionFailureResponse(supabase, lifetime)
   }

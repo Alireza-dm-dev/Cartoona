@@ -1,5 +1,5 @@
 import { fetchWithTimeout } from "@/lib/http/fetch-with-timeout"
-import { SUPABASE_REQUEST_TIMEOUT_MS } from "@/lib/supabase/timeout-fetch"
+import { SUPABASE_REQUEST_TIMEOUT_MS, resolveSupabaseTimeoutMs } from "@/lib/supabase/timeout-fetch"
 
 /**
  * One deadline for a whole server-side identity check (V0.1.42).
@@ -38,6 +38,21 @@ export function createDeadlineFetch(deadlineAt: number, fetchImpl?: typeof fetch
     const remaining = deadlineAt - Date.now()
     if (remaining <= 0) throw new AuthDeadlineError()
     return fetchWithTimeout(input, init, Math.min(remaining, SUPABASE_REQUEST_TIMEOUT_MS), fetchImpl)
+  }
+}
+
+/**
+ * Like createDeadlineFetch, but only for Auth endpoints (`/auth/v1/`): token
+ * refreshes and user verification share the deadline; PostgREST and Storage
+ * calls made later on the same client keep their usual per-request bound. For
+ * middleware, whose role lookup must not be starved by a slow sign-in check.
+ */
+export function createAuthDeadlineFetch(deadlineAt: number, fetchImpl?: typeof fetch): typeof fetch {
+  const bounded = createDeadlineFetch(deadlineAt, fetchImpl)
+  return async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
+    if (url.includes("/auth/v1/")) return bounded(input, init)
+    return fetchWithTimeout(input, init, resolveSupabaseTimeoutMs(input), fetchImpl)
   }
 }
 

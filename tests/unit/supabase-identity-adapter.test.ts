@@ -11,6 +11,7 @@ import { getParentAccountSummary } from "@/lib/auth/parent-account"
 import { disablePostgrestRetries } from "@/lib/supabase/postgrest-retry"
 import { supabaseTimeoutFetch } from "@/lib/supabase/timeout-fetch"
 import { cookieJar, sessionCookie, startStubAuth, type StubAuth } from "../helpers/stub-supabase-auth"
+import { accessToken, DAY_MS } from "../helpers/supabase-jwt"
 
 /**
  * The Supabase Auth adapter and the public header lookup against the REAL
@@ -66,13 +67,15 @@ describe("deadline constants", () => {
 describe("verifySupabaseIdentity: outcomes", () => {
   it("a valid session -> the verified external identity, and nothing else", async () => {
     stub = await startStubAuth({ userId: USER_ID })
-    const jar = cookieJar([sessionCookie(stub.url)])
+    const jar = cookieJar([stub.cookie()])
     const result = await verifySupabaseIdentity({ createClient: clientFactory(stub.url, jar) })
-    expect(result).toEqual({ ok: true, identity: { provider: "supabase", subject: USER_ID } })
-    // Verified with the provider (server round trip), using the session's own token.
-    expect(stub.requests).toEqual([{ method: "GET", path: "/auth/v1/user", authorization: "Bearer access-valid" }])
-    // No email / phone / tokens leave the adapter.
-    expect(JSON.stringify(result)).not.toMatch(/example\.com|989|access-|refresh-/)
+    expect(result).toEqual({ ok: true, context: { identity: { provider: "supabase", subject: USER_ID }, authenticatedAt: expect.any(Number) } })
+    // ONE provider round trip, verifying the session's own access token.
+    expect(stub.requests).toHaveLength(1)
+    expect(stub.requests[0]).toMatchObject({ method: "GET", path: "/auth/v1/user" })
+    expect(stub.requests[0].authorization).toMatch(/^Bearer ey/)
+    // No email / phone / tokens / claims leave the adapter.
+    expect(JSON.stringify(result)).not.toMatch(/example\.com|989|eyJ|refresh-|amr|session_id/)
   })
 
   it("no session cookie -> no_session, with no network call", async () => {
@@ -84,13 +87,13 @@ describe("verifySupabaseIdentity: outcomes", () => {
 
   it("a session the provider rejects -> invalid_session", async () => {
     stub = await startStubAuth({ userId: USER_ID, userMode: "unauthorized" })
-    const result = await verifySupabaseIdentity({ createClient: clientFactory(stub.url, cookieJar([sessionCookie(stub.url)])) })
+    const result = await verifySupabaseIdentity({ createClient: clientFactory(stub.url, cookieJar([stub.cookie()])) })
     expect(result).toEqual({ ok: false, reason: "invalid_session" })
   })
 
   it("provider answering 5xx -> auth_unavailable (not a sign-out)", async () => {
     stub = await startStubAuth({ userId: USER_ID, userMode: "server_error" })
-    const jar = cookieJar([sessionCookie(stub.url)])
+    const jar = cookieJar([stub.cookie()])
     const result = await verifySupabaseIdentity({ createClient: clientFactory(stub.url, jar) })
     expect(result).toEqual({ ok: false, reason: "auth_unavailable" })
     expect(jar.cleared("sb-")).toBe(false)
@@ -98,19 +101,81 @@ describe("verifySupabaseIdentity: outcomes", () => {
 
   it("expired access token + working refresh -> verified, and the rotated session is written back", async () => {
     stub = await startStubAuth({ userId: USER_ID })
-    const jar = cookieJar([sessionCookie(stub.url, { expired: true })])
+    const jar = cookieJar([stub.cookie({ expired: true })])
     const result = await verifySupabaseIdentity({ createClient: clientFactory(stub.url, jar) })
-    expect(result).toEqual({ ok: true, identity: { provider: "supabase", subject: USER_ID } })
+    expect(result).toEqual(expect.objectContaining({ ok: true }))
     expect(refreshCalls(stub)).toBe(1)
     expect(jar.writes.some((w) => w.value.startsWith("base64-"))).toBe(true)
   })
 
   it("expired + refresh token rejected by the provider -> invalid_session (a genuine sign-out, unchanged)", async () => {
     stub = await startStubAuth({ userId: USER_ID, refreshMode: "invalid_grant" })
-    const jar = cookieJar([sessionCookie(stub.url, { expired: true })])
+    const jar = cookieJar([stub.cookie({ expired: true })])
     const result = await verifySupabaseIdentity({ createClient: clientFactory(stub.url, jar) })
     expect(result.ok).toBe(false)
     expect(["invalid_session", "no_session"]).toContain((result as { reason: string }).reason)
+  })
+})
+
+describe("session evidence (V0.1.43): the sign-in time, verified, and refresh-proof", () => {
+  it("11. extracts the original sign-in time (amr), at second precision", async () => {
+    stub = await startStubAuth({ userId: USER_ID })
+    const signedIn = Date.now() - 3 * DAY_MS - 1234
+    const result = await verifySupabaseIdentity({ createClient: clientFactory(stub.url, cookieJar([stub.cookie({ authenticatedAt: signedIn })])) })
+    expect(result.ok && result.context.authenticatedAt).toBe(Math.floor(signedIn / 1000) * 1000)
+  })
+
+  it("12. a refreshed access token carries the SAME sign-in time (not its new iat)", async () => {
+    stub = await startStubAuth({ userId: USER_ID })
+    const signedIn = Date.now() - 10 * DAY_MS
+    const jar = cookieJar([stub.cookie({ expired: true, authenticatedAt: signedIn })])
+    const result = await verifySupabaseIdentity({ createClient: clientFactory(stub.url, jar) })
+    expect(stub.refreshedTokens).toHaveLength(1) // a refresh really happened
+    const refreshedIat = JSON.parse(Buffer.from(stub.refreshedTokens[0].split(".")[1], "base64url").toString()).iat
+    expect(refreshedIat * 1000).toBeGreaterThan(signedIn + 9 * DAY_MS) // new token, new iat ...
+    expect(result.ok && result.context.authenticatedAt).toBe(Math.floor(signedIn / 1000) * 1000) // ... same sign-in time
+  })
+
+  it("13. refreshing never extends the 30-day limit", async () => {
+    stub = await startStubAuth({ userId: USER_ID })
+    const signedIn = Date.now() - 30 * DAY_MS + 60_000 // 1 minute left
+    const jar = cookieJar([stub.cookie({ expired: true, authenticatedAt: signedIn })])
+    const now = vi.fn(() => Date.now())
+    const before = await verifySupabaseIdentity({ createClient: clientFactory(stub.url, jar), now })
+    expect(before.ok).toBe(true)
+    expect(stub.refreshedTokens).toHaveLength(1)
+    // Two minutes later the refreshed (fresh-iat) token is still on the cookie - and the session is over.
+    now.mockReturnValue(Date.now() + 120_000)
+    const after = await verifySupabaseIdentity({ createClient: clientFactory(stub.url, jar), now })
+    expect(after).toEqual({ ok: false, reason: "session_expired" })
+  })
+
+  it("a session signed in 31 days ago -> session_expired (no assertion can follow)", async () => {
+    stub = await startStubAuth({ userId: USER_ID })
+    const result = await verifySupabaseIdentity({ createClient: clientFactory(stub.url, cookieJar([stub.cookie({ authenticatedAt: Date.now() - 31 * DAY_MS })])) })
+    expect(result).toEqual({ ok: false, reason: "session_expired" })
+  })
+
+  it.each([
+    ["a token the provider did not issue (forged claims)", () => sessionCookie(stub!.url)],
+    ["string-only amr (no timestamps)", () => stub!.cookie({ amr: ["otp"] })],
+    ["no amr at all", () => stub!.cookie({ amr: [] })],
+    ["only a token_refresh amr entry", () => stub!.cookie({ amr: [{ method: "token_refresh", timestamp: Math.floor(Date.now() / 1000) }] })],
+  ])("14. %s -> invalid_session, never a verified context", async (_label, cookie) => {
+    stub = await startStubAuth({ userId: USER_ID })
+    const result = await verifySupabaseIdentity({ createClient: clientFactory(stub.url, cookieJar([cookie()])) })
+    expect(result).toEqual({ ok: false, reason: "invalid_session" })
+  })
+
+  it("claims are read only from the token the provider just accepted", async () => {
+    stub = await startStubAuth({ userId: USER_ID })
+    // A browser-edited token: same session, sign-in time moved forward. The provider rejects it.
+    const forged = accessToken({ sub: USER_ID, authenticatedAt: Date.now() })
+    const cookie = stub.cookie()
+    const session = JSON.parse(Buffer.from(cookie.value.slice("base64-".length), "base64url").toString())
+    session.access_token = forged
+    const tampered = { name: cookie.name, value: `base64-${Buffer.from(JSON.stringify(session)).toString("base64url")}` }
+    expect(await verifySupabaseIdentity({ createClient: clientFactory(stub.url, cookieJar([tampered])) })).toEqual({ ok: false, reason: "invalid_session" })
   })
 })
 
@@ -119,7 +184,7 @@ describe("verifySupabaseIdentity: one bounded deadline, never a sign-out on outa
 
   it("provider hangs on /user -> auth_unavailable at the deadline", async () => {
     stub = await startStubAuth({ userId: USER_ID, userMode: "hang" })
-    const jar = cookieJar([sessionCookie(stub.url)])
+    const jar = cookieJar([stub.cookie()])
     const { result, ms } = await timed(verifySupabaseIdentity({ deadlineMs: DEADLINE, createClient: clientFactory(stub.url, jar) }))
     expect(result).toEqual({ ok: false, reason: "auth_unavailable" })
     expect(ms).toBeGreaterThanOrEqual(DEADLINE - 50)
@@ -132,7 +197,7 @@ describe("verifySupabaseIdentity: one bounded deadline, never a sign-out on outa
     ["fails immediately (503)", "server_error" as const],
   ])("expired session, refresh %s -> auth_unavailable at the deadline; session kept", async (_label, refreshMode) => {
     stub = await startStubAuth({ userId: USER_ID, refreshMode })
-    const jar = cookieJar([sessionCookie(stub.url, { expired: true })])
+    const jar = cookieJar([stub.cookie({ expired: true })])
     const { result, ms } = await timed(verifySupabaseIdentity({ deadlineMs: DEADLINE, createClient: clientFactory(stub.url, jar) }))
     expect(result).toEqual({ ok: false, reason: "auth_unavailable" })
     expect(ms).toBeLessThan(DEADLINE + 600)
@@ -158,7 +223,7 @@ describe("verifySupabaseIdentity: one bounded deadline, never a sign-out on outa
 describe("public header lookup: bounded, degrades to anonymous", () => {
   it("valid parent session -> the name summary", async () => {
     stub = await startStubAuth({ userId: USER_ID, fullName: "Sara Ahmadi" })
-    const account = await getPublicHeaderAccount({ createClient: clientFactory(stub.url, cookieJar([sessionCookie(stub.url)])) })
+    const account = await getPublicHeaderAccount({ createClient: clientFactory(stub.url, cookieJar([stub.cookie()])) })
     expect(account).toEqual({ displayName: "Sara Ahmadi", initials: "SA" })
   })
 
@@ -167,7 +232,7 @@ describe("public header lookup: bounded, degrades to anonymous", () => {
     ["refresh fails fast", "server_error" as const],
   ])("expired session, %s -> anonymous header within the 2.5 s default (was ~26 s)", async (_label, refreshMode) => {
     stub = await startStubAuth({ userId: USER_ID, refreshMode })
-    const jar = cookieJar([sessionCookie(stub.url, { expired: true })])
+    const jar = cookieJar([stub.cookie({ expired: true })])
     const { result, ms } = await timed(getPublicHeaderAccount({ createClient: clientFactory(stub.url, jar) }))
     expect(result).toBeNull()
     expect(ms).toBeGreaterThanOrEqual(PUBLIC_HEADER_AUTH_DEADLINE_MS - 100)
@@ -194,7 +259,7 @@ describe.skipIf(process.env.CARTOONA_MEASURE_AUTH_STALL !== "1")("baseline: the 
     ["refresh hangs", "hang" as const],
   ])("expired session, %s", async (label, refreshMode) => {
     stub = await startStubAuth({ userId: USER_ID, refreshMode })
-    const jar = cookieJar([sessionCookie(stub.url, { expired: true })])
+    const jar = cookieJar([stub.cookie({ expired: true })])
     const supabase = await clientFactory(stub.url, jar)(supabaseTimeoutFetch)
     const { result, ms } = await timed(getParentAccountSummary(supabase))
     process.stderr.write(`[auth stall baseline] ${label}: ${(ms / 1000).toFixed(1)} s, ${refreshCalls(stub)} refresh attempts, result=${JSON.stringify(result)}\n`)

@@ -2,25 +2,32 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import { isAuthRetryableFetchError, type UserResponse } from '@supabase/supabase-js'
 import { getSupabaseEnv } from './lib/supabase/env'
-import { supabaseTimeoutFetch } from './lib/supabase/timeout-fetch'
 import { disablePostgrestRetries } from './lib/supabase/postgrest-retry'
 import { isAdminRole } from './lib/auth/admin-role'
 import { isParentRole } from './lib/auth/parent-access'
-import { checkCurrentParentSessionLifetime } from './lib/auth/parent-session-lifetime'
+import { checkParentSessionLifetime } from './lib/auth/parent-session-lifetime'
 import { logEvent } from './lib/observability/logger'
 import { REQUEST_ID_HEADER, resolveRequestId } from './lib/observability/request-id'
 import { categorizeError } from './lib/observability/errors'
-import { withDeadline } from './lib/auth/auth-deadline'
+import { createAuthDeadlineFetch, withDeadline } from './lib/auth/auth-deadline'
 
 /**
- * Total time the session check may take (V0.1.42). auth-js retries a failing
- * token refresh with backoff inside a 30 s budget, so with the auth provider
- * down a protected page used to wait ~26-30 s before its 503. 10 s equals the
- * existing per-request bound, so no refresh is abandoned earlier than before;
- * only the retries after it are no longer waited for. Past the deadline the
- * request is a transient auth failure: the same retryable 503, no sign-out.
+ * Total time the provider part of the session check may take (V0.1.42: 10 s,
+ * V0.1.43: 5 s). auth-js retries a failing token refresh with backoff inside a
+ * 30 s budget, so with the auth provider down a protected page used to wait
+ * ~26-30 s before its 503. Now every Auth call of this request (verification
+ * and any refresh) shares one 5 s budget, and nothing is sent after it.
+ * Past the deadline the request is a transient auth failure: the same
+ * retryable 503, never a sign-out. PostgREST reads keep their own bound.
+ *
+ * Why 5 s and not lower: a refresh that completes after we stopped waiting
+ * cannot write its rotated cookies into this response. Supabase's
+ * refresh-token reuse interval lets the visitor's prompt retry (the 503 asks
+ * for one, Retry-After: 2) pick up that same rotation, so a healthy-but-slow
+ * provider does not sign anyone out; a much tighter budget would make that
+ * race common on slow mobile links.
  */
-const MIDDLEWARE_AUTH_DEADLINE_MS = 10_000
+const MIDDLEWARE_AUTH_DEADLINE_MS = 5_000
 
 function redirectCookies(
   url: string | URL,
@@ -75,7 +82,7 @@ export async function middleware(request: NextRequest) {
       env.NEXT_PUBLIC_SUPABASE_URL,
       env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
       {
-        global: { fetch: supabaseTimeoutFetch },
+        global: { fetch: createAuthDeadlineFetch(Date.now() + MIDDLEWARE_AUTH_DEADLINE_MS) },
         cookies: {
           getAll() {
             return request.cookies.getAll()
@@ -246,7 +253,7 @@ export async function middleware(request: NextRequest) {
     }
 
     // 5. Parent session lifetime check
-    const lifetime = await checkCurrentParentSessionLifetime(supabase)
+    const lifetime = await checkParentSessionLifetime(supabase, user.id)
 
     if (!lifetime.valid) {
       // A lookup that could not complete is not an expiry: fail closed with a

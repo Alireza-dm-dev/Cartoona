@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { encodeGalleryCursor } from "@/lib/parent/gallery/pagination";
+import { getSessionResult } from "../helpers/supabase-jwt"
 
 const m = vi.hoisted(() => ({ client: null as unknown, get: vi.fn() }));
 vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient: async () => m.client }));
@@ -9,7 +10,7 @@ vi.mock("@/lib/parent/gallery/queries", async (orig) => {
 });
 
 const healthyClient = () => ({
-  auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), signOut: vi.fn() },
+  auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), getSession: async () => getSessionResult("valid", "u1"), signOut: vi.fn() },
   rpc: async () => ({
     data: [{ is_valid: true, session_started_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-31T00:00:00Z" }],
     error: null,

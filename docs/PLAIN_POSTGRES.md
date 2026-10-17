@@ -48,6 +48,8 @@ every run and fails until the two agree again.
 | `0007_privileges.sql` | `REVOKE EXECUTE … FROM PUBLIC` on all functions, now and by default |
 | `0008_reference_data.sql` | Pricing catalog, candy packages, characters and the three singletons (25 rows) |
 | `0009_application_role.sql` | V0.1.39: the `cartoona_app` NOLOGIN group role and its least-privilege grants (no password) |
+| `0010_identity_read_grant.sql` | V0.1.42: `SELECT` on `user_identities` for identity resolution |
+| `0011_users_sessions_not_before.sql` | V0.1.43: nullable `users.sessions_not_before` (forced session invalidation); no grant change |
 
 Applied migrations are recorded in `public.schema_migrations` (version and
 sha256). Never edit an applied file; add a new one.
@@ -332,17 +334,16 @@ database still enforces the admin role, the allowed order status, the
 non-negative size. `approve_final_media_trusted` and
 `supersede_final_media_trusted` never touched storage and are unchanged.
 
-## Session lifetime: replacement boundary
+## Session lifetime: replaced (V0.1.43)
 
-`get_current_parent_session_policy()`, which reads the auth session table and the JWT
-`session_id` claim, is **not ported**. The plain schema contains no session
-logic. The 30-day non-sliding parent session limit moves to the future
-auth/backend layer. Callers that need a replacement during migration (all via
-`checkCurrentParentSessionLifetime` in `lib/auth/parent-session-lifetime.ts`):
-
-- `middleware.ts`, `lib/parent/parent-request-context.ts`, `app/(auth)/complete-request/page.tsx`
-- `app/api/requests`, `app/api/parent-consent`, `app/api/parent/gallery`,
-  `app/api/parent/password`, `app/api/parent/orders/[orderId]/final-media`
+`get_current_parent_session_policy()`, which read the auth session table and
+the JWT `session_id` claim, is **not ported, and no longer called**. The
+30-day non-sliding limit is now Cartoona's own policy
+(`lib/identity/session-policy.ts`), evaluated from the provider-verified
+sign-in time. Forced invalidation is `users.sessions_not_before`
+(`0011_users_sessions_not_before.sql`), which the backend checks during
+identity resolution. The plain schema contains no session table. See
+[AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md#session-policy-v0143).
 - `app/api/candy-purchases`, `…/[id]/complete`, `…/[id]/coupon`, `app/api/coupons/validate`
 - `app/api/referrals`, `app/api/referrals/bind`
 
@@ -393,7 +394,7 @@ Checked mechanically by `plain-postgres-db.test.ts` against the live Supabase ch
 | 8 `auth.uid()` functions | **intentionally changed** | explicit-actor `*_trusted` variants (table above) |
 | `is_admin*`, `is_parent`, `is_super_admin`, `current_parent_profile_id`, `is_parent_approved_final_deliverable`, `handle_new_user` | **no longer required** | session-claim and storage-policy helpers |
 | `create_parent_request`, `complete_candy_purchase` | **no longer required** | legacy, not called; superseded by `*_trusted` |
-| `get_current_parent_session_policy` | **deferred** | session lifetime moves to the auth layer |
+| `get_current_parent_session_policy` | **replaced** (V0.1.43) | Cartoona session policy + `users.sessions_not_before` |
 | 48 table policies and 19 storage policies, RLS enablement | **deferred** | to the backend and storage layer (RLS plan above) |
 | Grants to Supabase roles | **no longer required** | app-role grants deferred to V0.1.39 |
 | Storage buckets (5) | **deferred** | storage provider configuration, not database rows |

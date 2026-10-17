@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest, preHandlerAsyncHookHandler } from "fastify"
 import { DbConfigError, DbError } from "@/lib/db/errors"
 import { InternalAuthConfigError, verifyAssertion } from "@/lib/identity/assertion"
+import { DEFAULT_SESSION_POLICY, evaluateSessionPolicy } from "@/lib/identity/session-policy"
 import type { AuthPrincipal, PrincipalRole } from "@/lib/identity/types"
 import { logEvent } from "@/lib/observability/logger"
 import { resolveUserIdentity } from "@/lib/repositories/user-identities"
@@ -17,6 +18,8 @@ import { routeLabel } from "./observability"
  *
  *   no assertion                         401 { error: "unauthenticated" }   AUTH_MISSING
  *   malformed/forged/expired/rebound     401 { error: "unauthenticated" }   AUTH_INVALID
+ *   session older than 30 days           401 { error: "session_expired" }   SESSION_EXPIRED
+ *   signed in before sessions_not_before 401 { error: "session_invalidated" } SESSION_INVALIDATED
  *   valid, identity not linked           403 { error: "identity_not_linked" } IDENTITY_NOT_LINKED
  *   linked, account deleted              403 { error: "forbidden" }         AUTH_FORBIDDEN
  *   role not allowed (requireRole)       403 { error: "forbidden" }         AUTH_FORBIDDEN
@@ -80,6 +83,7 @@ export function requireAuth(deps: BackendDeps): preHandlerAsyncHookHandler {
       secret,
       method: request.method,
       path: request.url.split("?")[0],
+      now: deps.now(),
     })
     if (!result.ok) return reject(request, reply, 401, "unauthenticated", "AUTH_INVALID", result.reason)
 
@@ -98,6 +102,18 @@ export function requireAuth(deps: BackendDeps): preHandlerAsyncHookHandler {
 
     if (!identity) return reject(request, reply, 403, "identity_not_linked", "IDENTITY_NOT_LINKED")
     if (identity.deleted) return reject(request, reply, 403, "forbidden", "AUTH_FORBIDDEN", "account_deleted")
+
+    // Cartoona's session policy (V0.1.43), on the provider-verified sign-in
+    // time the assertion carries and this user's sessions_not_before - both
+    // already in hand, so no extra query.
+    const decision = evaluateSessionPolicy(
+      { authenticatedAt: result.claims.authenticatedAt },
+      { ...DEFAULT_SESSION_POLICY, sessionsNotBefore: identity.sessionsNotBefore },
+      deps.now(),
+    )
+    if (decision.status === "invalidated") return reject(request, reply, 401, "session_invalidated", "SESSION_INVALIDATED")
+    if (decision.status === "expired") return reject(request, reply, 401, "session_expired", "SESSION_EXPIRED")
+    if (decision.status !== "valid") return reject(request, reply, 401, "unauthenticated", "AUTH_INVALID", "session_evidence")
 
     request.authPrincipal = { userId: identity.userId, role: identity.role }
     logEvent("debug", "AUTH_VERIFIED", { requestId: request.id, subsystem: "auth", userRole: identity.role })

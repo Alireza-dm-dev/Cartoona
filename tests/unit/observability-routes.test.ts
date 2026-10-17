@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { setRateLimitStore, InMemoryRateLimitStore } from "@/lib/rate-limit"
 import { setLogSink, type LogRecord } from "@/lib/observability/logger"
 import { REQUEST_ID_HEADER } from "@/lib/observability/request-id"
+import { getSessionResult } from "../helpers/supabase-jwt"
 
 const OID = "123e4567-e89b-42d3-a456-426614174000"
 const KEY = "11111111-1111-4111-8111-111111111111"
@@ -48,7 +49,7 @@ const chain = (data: unknown) => ({
 })
 function healthyClient() {
   return {
-    auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), signOut: vi.fn() },
+    auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), getSession: async () => getSessionResult("valid", "u1"), signOut: vi.fn() },
     rpc: async () => ({ data: [{ is_valid: true, session_started_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-31T00:00:00Z" }], error: null }),
     from: (t: string) => t === "users" ? chain({ role: "parent" }) : t === "parent_profiles" ? chain({ id: "p1", consent_granted: true }) : chain(null),
     storage: { from: () => ({ upload: m.upload, copy: m.copy, remove: async () => ({ error: null }) }) },

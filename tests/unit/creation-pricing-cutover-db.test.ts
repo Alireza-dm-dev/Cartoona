@@ -112,7 +112,7 @@ describe.skipIf(!enabled)("creation pricing cutover: Next -> Fastify -> PostgreS
     await owner(`create database ${DB}`, "postgres")
     const ownerUrl = `postgresql://cartoona@postgres:5432/${DB}`
     const migrated = await withPgClusterLock(() => script("scripts/db/migrate-local.sh", { DATABASE_URL: ownerUrl }))
-    expect(migrated.stdout).toMatch(/done - 10 applied/)
+    expect(migrated.stdout).toMatch(/done - 11 applied/)
     const login = await script("scripts/db/app-login-role.sh", { DATABASE_URL: ownerUrl, CARTOONA_APP_DB_PASSWORD: PASSWORD }, [ROLE])
     expect(login.code).toBe(0)
   }, 180_000)

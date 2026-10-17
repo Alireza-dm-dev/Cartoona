@@ -38,7 +38,7 @@ describe("neutral identity modules", () => {
 
   it("the assertion carries no PII/token fields by construction", () => {
     const src = code("lib/identity/assertion.ts")
-    expect(src).toMatch(/const PAYLOAD_KEYS = \["exp", "iat", "mth", "prv", "pth", "rid", "sub", "v"\]/)
+    expect(src).toMatch(/const PAYLOAD_KEYS = \["aat", "exp", "iat", "mth", "prv", "pth", "rid", "sub", "v"\]/)
     expect(src).not.toMatch(/email|phone|access_token|refresh_token|role:/i)
   })
 })
@@ -52,14 +52,31 @@ describe("the Supabase adapter verifies identity and nothing else", () => {
 
   it("reads no database, table, RPC, role or profile, and never auth.sessions", () => {
     const src = code(adapter)
-    expect(src).not.toMatch(/\.from\(|\.rpc\(|@\/lib\/(db|repositories)|from "pg"|parent_profiles|auth\.sessions|getSession\(/)
-    expect(imports(adapter).sort()).toEqual(["./auth-deadline", "@/lib/identity/types", "@/lib/supabase/server", "@supabase/supabase-js"].sort())
+    expect(src).not.toMatch(/\.from\(|\.rpc\(|@\/lib\/(db|repositories)|from "pg"|parent_profiles|auth\.sessions/)
+    expect(imports(adapter).sort()).toEqual([
+      "./auth-deadline", "./supabase-session-evidence", "@/lib/identity/session-policy", "@/lib/identity/types",
+      "@/lib/supabase/server", "@supabase/supabase-js",
+    ].sort())
   })
 
-  it("returns only provider and subject - never tokens", () => {
+  it("verifies EXACTLY the token whose claims it reads, then returns only identity + sign-in time", () => {
     const src = code(adapter)
-    expect(src).toMatch(/toVerifiedIdentity\(\{ provider: "supabase", subject: data\.user\.id \}\)/)
-    expect(src).not.toMatch(/access_token|refresh_token|session\./)
+    // getUser is called with the session's access token, and evidence is read from that same variable.
+    expect(src).toMatch(/const accessToken = sessionData\?\.session\?\.access_token/)
+    expect(src).toMatch(/supabase\.auth\.getUser\(accessToken\)/)
+    expect(src).toMatch(/readSupabaseSessionEvidence\(accessToken\)/)
+    expect(src.indexOf("getUser(accessToken)")).toBeLessThan(src.indexOf("readSupabaseSessionEvidence(accessToken)"))
+    expect(src).toMatch(/evidence\.subject !== data\.user\.id/)
+    // The context holds two fields; no token, claim set or refresh token is returned.
+    expect(src).toMatch(/context: \{\s*identity: toVerifiedIdentity\(\{ provider: "supabase", subject: data\.user\.id \}\),\s*authenticatedAt: evidence\.authenticatedAt,\s*\}/)
+    expect(src).not.toMatch(/refresh_token|claims:|accessToken,\s*\}/)
+  })
+
+  it("never derives the session start from the token issue time", () => {
+    for (const file of ["lib/auth/supabase-session-evidence.ts", "lib/auth/supabase-identity-adapter.ts", "lib/auth/parent-session-lifetime.ts"]) {
+      expect(code(file), file).not.toMatch(/\biat\b/)
+    }
+    expect(code("lib/auth/supabase-session-evidence.ts")).toMatch(/earliest = Math\.min\(earliest, timestamp\)/)
   })
 })
 
@@ -149,5 +166,49 @@ describe("nothing identity-related reaches a browser bundle", () => {
     const route = code("app/api/auth/backend-me/route.ts")
     expect(route).toMatch(/json\(\{ authenticated: true, userId: result\.userId, role: result\.role \}, 200\)/)
     expect(route).not.toMatch(/subject|INTERNAL_AUTH_HEADER|signAssertion/)
+  })
+})
+
+describe("V0.1.43: no runtime dependency on Supabase session internals", () => {
+  const runtime = [...walk("app"), ...walk("components"), ...walk("lib"), ...walk("backend/src"), "middleware.ts"]
+
+  it.each(runtime)("%s does not reference auth.sessions, auth.jwt(), the old lifetime check or its RPC", (file) => {
+    expect(code(file)).not.toMatch(/auth\.sessions|auth\.jwt\s*\(|checkCurrentParentSessionLifetime|get_current_parent_session_policy/)
+  })
+
+  it("the plain PostgreSQL migrations do not either", () => {
+    for (const file of fs.readdirSync(path.join(root, "database/migrations"))) {
+      expect(read(`database/migrations/${file}`).replace(/--.*$/gm, ""), file).not.toMatch(/auth\.sessions|auth\.jwt|get_current_parent_session_policy/)
+    }
+  })
+
+  it("historical references remain only in the untouched Supabase migrations (and are not rewritten)", () => {
+    const historical = fs.readdirSync(path.join(root, "supabase/migrations")).filter((f) => /auth\.sessions/.test(read(`supabase/migrations/${f}`)))
+    expect(historical).toContain("20260725120000_parent_session_lifetime.sql")
+  })
+
+  it("every former caller uses the provider-neutral lifetime check with the VERIFIED user id", () => {
+    const callers = runtime.filter((f) => /checkParentSessionLifetime\(/.test(code(f)) && f !== "lib/auth/parent-session-lifetime.ts")
+    expect(callers.length).toBe(14)
+    for (const file of callers) {
+      expect(code(file), file).toMatch(/checkParentSessionLifetime\(supabase, (user\.id|ownership\.userId)\)/)
+    }
+  })
+
+  it("the session policy is pure and neutral", () => {
+    expect(imports("lib/identity/session-policy.ts")).toEqual([])
+    expect(code("lib/auth/supabase-session-evidence.ts")).not.toMatch(/^import /m)
+  })
+
+  it("the backend evaluates the policy inside requireAuth, from the signed sign-in time and the resolved cut-off", () => {
+    const src = code("backend/src/plugins/auth.ts")
+    expect(src).toMatch(/evaluateSessionPolicy\(\s*\{ authenticatedAt: result\.claims\.authenticatedAt \},\s*\{ \.\.\.DEFAULT_SESSION_POLICY, sessionsNotBefore: identity\.sessionsNotBefore \}/)
+    expect(src.indexOf("evaluateSessionPolicy(")).toBeLessThan(src.indexOf("request.authPrincipal = {"))
+  })
+
+  it("migration 0011 adds the nullable column and grants nothing", () => {
+    const sql = read("database/migrations/0011_users_sessions_not_before.sql").replace(/--.*$/gm, "")
+    expect(sql).toMatch(/ALTER TABLE public\.users ADD COLUMN sessions_not_before timestamp with time zone;/)
+    expect(sql).not.toMatch(/NOT NULL|DEFAULT|GRANT|UPDATE /i)
   })
 })

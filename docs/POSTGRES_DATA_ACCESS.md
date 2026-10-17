@@ -122,7 +122,7 @@ bad id throws `RepositoryInputError`.
 | `getWelcomeImageCreditsRemaining(db, { parentProfileId })` | parent | `readWelcomeImageCredits` | `max(granted − used, 0)`; 0 when there is no row |
 | `getCandyBalance(db, { parentProfileId })` | parent | `candy_wallets` read in `/api/candy-purchases` | balance, or null when there is no wallet |
 | `getActiveCreationPrices(db)` | public | `GET /api/creation-pricing` | `{ ok, prices }` or `invalid_catalog` (same rejection rules as the route) |
-| `resolveUserIdentity(db, { provider, providerSubject })` | verified external identity (V0.1.42) | new: `user_identities` join `users` | `{ userId, role, deleted }` or null (identity not linked). Read-only; never creates a user |
+| `resolveUserIdentity(db, { provider, providerSubject })` | verified external identity (V0.1.42) | new: `user_identities` join `users` | `{ userId, role, deleted, sessionsNotBefore }` or null (identity not linked). One query; `sessionsNotBefore` (V0.1.43) is epoch ms or null. Read-only; never creates a user |
 | `getUserById(db, { userId })` | user | role lookup in `ParentRequestContext` | `{ id, role, deleted }` or null |
 | `findParentProfileIdByUserId(db, { userId })` | user | profile lookup in `ParentRequestContext` | profile id or null |
 
@@ -170,7 +170,9 @@ that holds the application's privileges:
   `parent_welcome_credits`, `candy_wallets`, `orders` and
   `order_status_history`, which is exactly what the read repositories query,
   plus `SELECT` on `user_identities` (`0010_identity_read_grant.sql`, V0.1.42)
-  for identity resolution;
+  for identity resolution. `users.sessions_not_before` (0011, V0.1.43) is
+  readable through the existing `users` grant; there is deliberately **no**
+  UPDATE, so the app role cannot clear a forced logout;
 - no INSERT/UPDATE/DELETE, no EXECUTE, no access to ledgers, purchases,
   coupons, audit logs or `schema_migrations`;
 - NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOREPLICATION and NOBYPASSRLS, and

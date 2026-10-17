@@ -17,6 +17,9 @@ const LINKED = "6f1c2e7a-3b4d-4c5e-8f9a-0b1c2d3e4f50"
 const DELETED = "7a2d3f8b-4c5e-4d6f-9a0b-1c2d3e4f5061"
 const UNLINKED = "8b3e4a9c-5d6f-4e7a-8b1c-2d3e4f506172"
 const CARTOONA_USER = "11111111-2222-4333-8444-555555555555"
+const DAY = 24 * 60 * 60 * 1000
+/** users.sessions_not_before per subject (epoch ms) - the fake database's copy. */
+const cutoffs = new Map<string, number | null>()
 
 interface Call { text: string; values: readonly unknown[] }
 
@@ -29,8 +32,9 @@ function fakeDb(behaviour: "ok" | "down" = "ok", role = "parent") {
       let rows: unknown[] = []
       if (text.includes("user_identities")) {
         const [provider, subject] = values
-        if (provider === "supabase" && subject === LINKED) rows = [{ user_id: CARTOONA_USER, role, deleted: false }]
-        if (provider === "supabase" && subject === DELETED) rows = [{ user_id: CARTOONA_USER, role, deleted: true }]
+        const cutoff = cutoffs.get(String(subject)) ?? null
+        if (provider === "supabase" && subject === LINKED) rows = [{ user_id: CARTOONA_USER, role, deleted: false, sessions_not_before_ms: cutoff }]
+        if (provider === "supabase" && subject === DELETED) rows = [{ user_id: CARTOONA_USER, role, deleted: true, sessions_not_before_ms: cutoff }]
       }
       return { rows, rowCount: rows.length, command: "SELECT", oid: 0, fields: [] } as never
     },
@@ -42,24 +46,26 @@ let app: FastifyInstance | null = null
 let logs: LogRecord[] = []
 let restore: (() => void) | null = null
 
-function build(opts: { db?: ReturnType<typeof fakeDb>; secret?: () => Buffer } = {}) {
+function build(opts: { db?: ReturnType<typeof fakeDb>; secret?: () => Buffer; now?: () => number } = {}) {
   const { db, calls } = opts.db ?? fakeDb()
   logs = []
   restore = setLogSink((r) => logs.push(r))
-  app = buildBackendApp({ db: () => db, closeDb: async () => {}, authSecret: opts.secret ?? (() => SECRET) })
+  app = buildBackendApp({ db: () => db, closeDb: async () => {}, authSecret: opts.secret ?? (() => SECRET), now: opts.now ?? Date.now })
   return { app, calls }
 }
 
 afterEach(async () => {
+  cutoffs.clear()
   await app?.close()
   app = null
   restore?.()
   restore = null
 })
 
-const assertion = (over: { subject?: string; path?: string; method?: string; secret?: Buffer; now?: number; requestId?: string } = {}) =>
+const assertion = (over: { subject?: string; path?: string; method?: string; secret?: Buffer; now?: number; requestId?: string; authenticatedAt?: number } = {}) =>
   signAssertion({
     identity: toVerifiedIdentity({ provider: "supabase", subject: over.subject ?? LINKED }),
+    authenticatedAt: over.authenticatedAt ?? (over.now ?? Date.now()) - DAY,
     requestId: over.requestId ?? "req-auth-000001",
     method: over.method ?? "GET",
     path: over.path ?? "/v1/auth/me",
@@ -167,10 +173,67 @@ describe("403 and 503", () => {
   })
 })
 
+describe("session policy (V0.1.43): 30-day lifetime and sessions_not_before", () => {
+  const NOW = Date.UTC(2026, 9, 17, 12, 0, 0)
+  const at = (offsetMs: number) => assertion({ now: NOW, authenticatedAt: NOW + offsetMs })
+  const call = async (token: string) => {
+    const res = await app!.inject({ method: "GET", url: "/v1/auth/me", headers: { [AUTH]: token } })
+    return { status: res.statusCode, body: res.json() }
+  }
+
+  it("a session signed in 29 days 23:59:59 ago is valid; at exactly 30 days it is expired", async () => {
+    build({ now: () => NOW })
+    expect((await call(at(-(30 * DAY - 1000)))).status).toBe(200)
+    expect(await call(at(-30 * DAY))).toEqual({ status: 401, body: { error: "session_expired" } })
+    expect(await call(at(-31 * DAY))).toEqual({ status: 401, body: { error: "session_expired" } })
+    expect(logs.filter((l) => l.event === "AUTH_REJECTED").map((l) => l.errorCode)).toEqual(["SESSION_EXPIRED", "SESSION_EXPIRED"])
+  })
+
+  it("sessions_not_before null: never invalidated", async () => {
+    cutoffs.set(LINKED, null)
+    build({ now: () => NOW })
+    expect((await call(at(-29 * DAY))).status).toBe(200)
+  })
+
+  it("signed in BEFORE sessions_not_before -> 401 session_invalidated; at or after it -> valid", async () => {
+    const cutoff = NOW - 2 * DAY // a whole second
+    cutoffs.set(LINKED, cutoff)
+    build({ now: () => NOW })
+    expect(await call(assertion({ now: NOW, authenticatedAt: cutoff - 1000 }))).toEqual({ status: 401, body: { error: "session_invalidated" } })
+    expect((await call(assertion({ now: NOW, authenticatedAt: cutoff }))).status).toBe(200) // equality is valid
+    expect((await call(assertion({ now: NOW, authenticatedAt: cutoff + 1000 }))).status).toBe(200)
+    expect(logs.find((l) => l.event === "AUTH_REJECTED")).toMatchObject({ errorCode: "SESSION_INVALIDATED", status: 401 })
+  })
+
+  it("a sub-second cut-off rounds UP: a sign-in in the same second counts as before it", async () => {
+    const cutoff = NOW - 2 * DAY + 400 // .400 into a second
+    cutoffs.set(LINKED, cutoff)
+    build({ now: () => NOW })
+    // Provider sign-in times are whole seconds: this sign-in may have happened
+    // before the invalidation within that second, so it is refused.
+    expect((await call(assertion({ now: NOW, authenticatedAt: NOW - 2 * DAY }))).status).toBe(401)
+    expect((await call(assertion({ now: NOW, authenticatedAt: NOW - 2 * DAY + 1000 }))).status).toBe(200)
+  })
+
+  it("invalidation wins over expiry, and both are evaluated with the sign-in time from the SIGNED assertion", async () => {
+    cutoffs.set(LINKED, NOW - DAY)
+    build({ now: () => NOW })
+    expect(await call(at(-40 * DAY))).toEqual({ status: 401, body: { error: "session_invalidated" } })
+  })
+
+  it("the policy adds no database query: still one parameterised lookup", async () => {
+    cutoffs.set(LINKED, NOW - 2 * DAY)
+    const { calls } = build({ now: () => NOW })
+    await call(at(-DAY))
+    expect(calls).toHaveLength(1)
+    expect(calls[0].text).toMatch(/sessions_not_before/)
+  })
+})
+
 describe("requireRole", () => {
   it("403 forbidden when the database role is not allowed; passes when it is", async () => {
     build({ db: fakeDb("ok", "parent") })
-    const deps = { db: () => fakeDb("ok", "parent").db, closeDb: async () => {}, authSecret: () => SECRET }
+    const deps = { db: () => fakeDb("ok", "parent").db, closeDb: async () => {}, authSecret: () => SECRET, now: Date.now }
     app!.get("/v1/admin-only", { preHandler: [requireAuth(deps), requireRole("admin", "super_admin")] }, async () => ({ ok: true }))
     app!.get("/v1/parent-only", { preHandler: [requireAuth(deps), requireRole("parent")] }, async () => ({ ok: true }))
     const admin = await app!.inject({ method: "GET", url: "/v1/admin-only", headers: { [AUTH]: assertion({ path: "/v1/admin-only" }) } })

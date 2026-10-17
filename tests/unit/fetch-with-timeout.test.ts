@@ -156,11 +156,28 @@ describe("timeout vs auth semantics (real supabase-js clients)", () => {
     expect(isAuthRetryableFetchError(error)).toBe(true) // middleware -> 503 branch
   })
 
-  it("an RPC timing out returns an error object, which maps to lookup_failed (not expired)", async () => {
-    const { checkCurrentParentSessionLifetime } = await import("@/lib/auth/parent-session-lifetime")
-    const sb = await timedOutClient()
-    const pending = checkCurrentParentSessionLifetime(sb)
-    await vi.advanceTimersByTimeAsync(1000)
+  it("a session refresh timing out maps to lookup_failed (not expired)", async () => {
+    // V0.1.43: the lifetime is read from the session; a session whose access
+    // token has expired is refreshed first, and that refresh times out here.
+    const { checkParentSessionLifetime } = await import("@/lib/auth/parent-session-lifetime")
+    const { createClient } = await import("@supabase/supabase-js")
+    const store = new Map<string, string>()
+    const storageKey = "sb-test-auth-token"
+    const now = Math.floor(Date.now() / 1000)
+    store.set(storageKey, JSON.stringify({
+      access_token: "a.b.c", refresh_token: "r", token_type: "bearer", expires_in: 3600, expires_at: now - 60,
+      user: { id: "u1", aud: "authenticated", role: "authenticated" },
+    }))
+    const sb = createClient("http://localhost:54321", "anon-key", {
+      global: { fetch: createTimeoutFetch(() => 1000, stalledFetch()) },
+      auth: {
+        persistSession: true, autoRefreshToken: false, detectSessionInUrl: false, storageKey,
+        storage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => void store.set(k, v), removeItem: (k) => void store.delete(k) },
+      },
+    })
+    const pending = checkParentSessionLifetime(sb, "u1")
+    await vi.advanceTimersByTimeAsync(31_000) // past auth-js's whole 30 s refresh budget
     expect(await pending).toEqual({ valid: false, reason: "lookup_failed" })
+    expect(store.has(storageKey)).toBe(true) // a timeout never removes the session
   })
 })

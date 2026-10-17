@@ -1,4 +1,4 @@
-# Auth architecture (V0.1.42)
+# Auth architecture (V0.1.42; session policy V0.1.43)
 
 **Supabase Auth is the temporary identity provider, and nothing more.** It
 answers one question: which external account owns this session. Everything
@@ -12,6 +12,9 @@ through code that never trusts the browser.
 > (Supabase session, `public.users` and RLS in Supabase). The new pieces are
 > the auth adapter, the internal assertion, `/v1/auth/me`, the proof route
 > `/api/auth/backend-me`, and bounded deadlines on two existing auth paths.
+> Since V0.1.43, Cartoona's own session policy (30-day absolute lifetime and
+> `users.sessions_not_before`) replaces the Supabase-internal lifetime RPC
+> everywhere: no runtime code reads `auth.sessions` or `auth.jwt()` any more.
 
 ## The chain
 
@@ -19,16 +22,18 @@ through code that never trusts the browser.
 Browser ── session cookie (Supabase) ──> Next.js server
   │                                          │
   │                       lib/auth/supabase-identity-adapter.ts
-  │                         getUser(): server round trip to the provider,
+  │                         getSession() -> getUser(<that token>): ONE provider round trip
+  │                         verifies the exact token; amr -> sign-in time; 30-day check
   │                         ONE 4 s deadline (refreshes included)
-  │                                          │ VerifiedIdentity { provider: "supabase", subject: <auth uid> }
+  │                                          │ { identity: { provider, subject }, authenticatedAt }
   │                       lib/backend/client.ts + lib/identity/assertion.ts
-  │                         signs a 30 s assertion bound to method + path + request id
-  │                                          │ X-Cartoona-Internal-Auth: v1.<payload>.<HMAC>   (server-to-server only)
+  │                         signs a 30 s v2 assertion: subject + sign-in time, bound to method + path + request id
+  │                                          │ X-Cartoona-Internal-Auth: v2.<payload>.<HMAC>   (server-to-server only)
   │                                          v
   │                                   Fastify  backend/src/plugins/auth.ts
   │                                     verify MAC (constant time), expiry, binding
-  │                                     user_identities(provider, subject) ──> users.id, users.role
+  │                                     user_identities(provider, subject) ──> users.id, role, sessions_not_before
+  │                                     session policy: 30 days + sessions_not_before (same query)
   │                                          │ request.authPrincipal { userId, role }
   │                                          v
   │                                   route ──> repositories with explicit ids
@@ -41,6 +46,9 @@ Browser ── session cookie (Supabase) ──> Next.js server
 | Assertion | `lib/identity/assertion.ts` | `node:crypto` only; shared by Next and Fastify |
 | Supabase adapter | `lib/auth/supabase-identity-adapter.ts` | Supabase SDK; server-only; **no** database, tables, roles or profiles |
 | Deadline helpers | `lib/auth/auth-deadline.ts` | one total budget for an auth check |
+| Session policy | `lib/identity/session-policy.ts` | pure: evidence + policy + clock -> valid / expired / invalidated |
+| Session evidence | `lib/auth/supabase-session-evidence.ts` | Supabase claim layout (`amr`) -> sign-in time; decode only, after verification |
+| Lifetime for Supabase-backed routes | `lib/auth/parent-session-lifetime.ts` | `checkParentSessionLifetime(supabase, verifiedUserId)`, no network call |
 | Identity resolution | `lib/repositories/user-identities.ts` | parameterised SQL; read-only |
 | Backend auth | `backend/src/plugins/auth.ts` | `requireAuth`, `requireRole`; reads one header |
 | Proof endpoints | `backend/src/routes/auth.ts` (`GET /v1/auth/me`), `app/api/auth/backend-me/route.ts` | minimal `{ authenticated, userId, role }` |
@@ -61,9 +69,15 @@ Browser ── session cookie (Supabase) ──> Next.js server
 ## Internal assertion
 
 ```
-v1.<base64url(JSON)>.<base64url(HMAC-SHA256(secret, "cartoona-internal-auth\nv1\n" || payload))>
-payload = { v: 1, prv: "supabase", sub, iat, exp, rid, mth, pth }   exactly these keys
+v2.<base64url(JSON)>.<base64url(HMAC-SHA256(secret, "cartoona-internal-auth\nv2\n" || payload))>
+payload = { v: 2, prv: "supabase", sub, aat, iat, exp, rid, mth, pth }   exactly these keys
 ```
+
+**v2 (V0.1.43)** adds `aat`, the provider-verified sign-in time (unix seconds).
+It is signed like every other field, so a forged, younger sign-in time fails
+the MAC. **v1 is rejected** (`unsupported_version`): it carries no session
+evidence, so it cannot be checked against the policy. Next and the backend
+deploy together, so there is no mixed-version window to support.
 
 | Rule | Value |
 |---|---|
@@ -71,6 +85,7 @@ payload = { v: 1, prv: "supabase", sub, iat, exp, rid, mth, pth }   exactly thes
 | Key | `CARTOONA_INTERNAL_AUTH_SECRET`: 64–256 hex chars (≥ 32 bytes), `openssl rand -hex 32`, no default |
 | Lifetime | issued for 30 s; anything longer than 60 s is rejected even if correctly signed |
 | Clock skew | `iat` up to 5 s in the future is accepted; beyond that it is `not_yet_valid` |
+| Sign-in time | `aat`: positive whole seconds, never more than 5 s after `iat` |
 | Binding | `mth` and `pth` must equal the request's method and path (query string excluded) |
 | Request id | `rid` must be a safe request id; the same id as the call's `X-Request-Id` |
 | Provider | allow-list (`supabase`); the subject must match the provider's id shape (UUID) |
@@ -102,12 +117,19 @@ PostgreSQL.
 | Situation | Next proof route | Fastify | Log category |
 |---|---|---|---|
 | No session | 401 `unauthenticated` (backend not called) | 401 `unauthenticated` | `AUTH_MISSING` |
-| Session rejected by the provider / assertion invalid, expired, rebound, forged | 401 `unauthenticated` | 401 `unauthenticated` | `AUTH_INVALID` |
+| Session rejected by the provider / assertion invalid, expired, rebound, forged, v1 / no usable sign-in evidence (`amr`) | 401 `unauthenticated` | 401 `unauthenticated` | `AUTH_INVALID` |
+| Signed in ≥ 30 days ago | 401 `session_expired` (no assertion is signed) | 401 `session_expired` | `SESSION_EXPIRED` |
+| Signed in before `users.sessions_not_before` | 401 `session_invalidated` | 401 `session_invalidated` | `SESSION_INVALIDATED` |
 | Provider unreachable or too slow (4 s) | **503** `auth_unavailable`, session kept | n/a | `AUTH_UNAVAILABLE` |
 | Valid identity, no Cartoona mapping | 403 `identity_not_linked` | 403 `identity_not_linked` | `IDENTITY_NOT_LINKED` |
 | Linked account soft-deleted / role not allowed | 403 `forbidden` | 403 `forbidden` | `AUTH_FORBIDDEN` |
 | Backend rejects an assertion Next just signed (secret mismatch, clock) | 503 `service_unavailable` | 401 | `AUTH_UNAVAILABLE` / `assertion_rejected` |
-| Database down, secret missing | 503 | 503 `service_unavailable` | `AUTH_UNAVAILABLE` |
+| Database down, backend unreachable, secret missing | 503 `service_unavailable` | 503 `service_unavailable` | `AUTH_UNAVAILABLE` |
+
+On the Supabase-backed routes (middleware and the 13 route and page callers),
+the existing contract is unchanged: an expired session signs out locally,
+then 401 or a login redirect with `reason=session_expired`. A failed session
+read is a retryable 503 and never a sign-out.
 
 A provider outage is never treated as a sign-out: the session cookie is never
 cleared, and there is no automatic redirect to login. Logs carry the request
@@ -155,42 +177,137 @@ backend function, creates:
 It is idempotent on `(provider, subject)`. Until then, signup stays on
 Supabase (the `on_auth_user_created` trigger plus `ensureParentProfile`).
 
-## Session lifetime: replacement decision
+## Session policy (V0.1.43)
 
-**Today:** `checkCurrentParentSessionLifetime` calls the Supabase RPC
-`get_current_parent_session_policy`, which uses `auth.uid()`,
-`auth.jwt() ->> 'session_id'` and `auth.sessions.created_at` to enforce a
-30-day **absolute** lifetime. It has 15 call sites: middleware, 12 API
-routes, `complete-request` and `ParentRequestContext`. It cannot exist on
-plain PostgreSQL.
+**Replaces** `get_current_parent_session_policy`, a Supabase RPC that read
+`auth.uid()`, `auth.jwt() ->> 'session_id'` and `auth.sessions.created_at`.
+It cost one extra round trip per protected request and could not exist on
+plain PostgreSQL. No runtime code references any of these any more, and a
+static test enforces that. The historical Supabase migrations are untouched.
 
-| Option | Absolute lifetime | Idle timeout | Forced invalidation | Cost |
-|---|---|---|---|---|
-| A. Provider expiry only | no: refresh tokens keep a session alive indefinitely | no | provider sign-out only | none |
-| B. Cartoona session table | yes | yes | yes | a write on every sign-in and a read per request; a second session system |
-| C. Signed application session over the provider | yes | possible | needs a deny list | a second cookie and its own refresh |
-| **Chosen: A + the verified sign-in time + `sessions_not_before`** | **yes** | not required today | **yes** | one claim check, one column |
+**Rules** (`lib/identity/session-policy.ts`, pure, UTC epoch ms, clock
+injected):
 
-The decision is to enforce the policy at the Next adapter boundary, from
-verified provider data, with no session table:
+| Outcome | Condition |
+|---|---|
+| `expired` | `now >= authenticatedAt + 30 days` |
+| `invalidated` | `authenticatedAt < ceil_to_second(sessions_not_before)`; never when NULL. Equality is **valid**. Checked before expiry. |
+| `invalid_evidence` | sign-in time missing, non-positive, non-finite, or more than 5 s in the future |
+| `valid` | otherwise, with `expiresAt = authenticatedAt + 30 days` |
 
-- **Absolute 30 days.** Supabase access tokens carry `amr[].timestamp` (when
-  the user authenticated) and `session_id`. The adapter verifies the JWT
-  (`auth.getClaims()`), takes the earliest `amr` timestamp as the session
-  start, and refuses sessions older than 30 days. That is the same rule as the
-  RPC, without `auth.sessions`.
-- **Forced invalidation.** Add `users.sessions_not_before timestamptz`.
-  A session whose sign-in time is earlier than this is refused. "Sign out
-  everywhere" or an account lock then needs no provider API. The provider's
-  own global sign-out also still works, because `getUser()` is a server round
-  trip and rejects revoked sessions.
-- **Idle timeout** is not a current requirement (the existing policy is
-  absolute only). Add it later only if needed; that would be option B.
+Why the cut-off rounds up: provider sign-in times are whole seconds. A session
+that began in the same second as an invalidation could have started before
+it, so it is refused (the user signs in once more), never allowed to survive.
 
-This is **not implemented in V0.1.42.** The 15 existing call sites keep the RPC
-until their routes move. Implementing it touches every parent route and is its
-own change, the next auth step. It requires a test that the `amr` timestamp
-survives refresh in the target Supabase project.
+There is no idle timeout. The previous policy had none (absolute only), and
+none is required now.
+
+### Where `authenticatedAt` comes from
+
+| Candidate | Verdict |
+|---|---|
+| `iat` | **Rejected**: every refresh issues a new token with a new `iat`, so a refreshed session would never expire. |
+| `session_id` | Stable across refreshes, but carries no time. |
+| `amr[].timestamp` | **Used.** "Authentication Methods References": one entry per method the user authenticated with in this session, `timestamp` = "when the method was successfully used" (auth-js 2.110 types). The provider keeps these per session and puts the same entries into every token of that session; refresh is not an authentication method (it is absent from auth-js's AMR method list). |
+
+`authenticatedAt = min(amr[].timestamp) × 1000`
+(`lib/auth/supabase-session-evidence.ts`). The minimum means a later step-up
+factor added to the same session can never move the start forward. Entries
+named `token_refresh` are ignored defensively. **Fail closed:** no `amr`, a
+string-only `amr` (no timestamps) or a malformed token means no evidence, so
+the user signs in again. That is never treated as "valid without a lifetime".
+
+**Verification.** Claims are read only from a token the provider has just
+accepted:
+
+- **BFF adapter.** It calls `getSession()` (which refreshes if needed; a
+  refresh response comes from the provider itself), then
+  `getUser(<that exact token>)`, then reads the claims. `sub` must equal the
+  verified user. This is one provider round trip, the same trust rule
+  `auth.getClaims()` itself uses for symmetric keys. `getClaims()` is not used
+  directly: with asymmetric keys it verifies locally and would not detect a
+  revoked session.
+- **Supabase-backed routes** (`checkParentSessionLifetime`). Every caller has
+  just run `getUser()` on the same client in the same request, which verified
+  the stored token. The check then reads that stored session locally and
+  requires `sub` to match the verified user. No network call: the old RPC
+  round trip is gone.
+
+**Refresh never extends the lifetime.** This is proven against the real
+auth-js with a stub provider that issues refreshed tokens with a new `iat` and
+the same `amr`:
+
+- the refreshed token has a new `iat`, and `authenticatedAt` is unchanged;
+- a session one minute from 30 days, refreshed, expires on time;
+- the same holds end to end through the backend.
+
+> **Pre-production check: NOT YET VERIFIED against a real Supabase project
+> (open blocker).** The `amr` design rests on the SDK's documented claim
+> layout (auth-js 2.110 types: `amr[]` entries of `{ method, timestamp }`) and
+> is proven against a local stub that issues tokens in that layout. It has
+> **not** been confirmed against real Supabase tokens. On 2026-10-17 the only
+> permitted project (the disposable one) was unreachable: requests to it fail
+> at the TLS handshake while other hosts work, which is consistent with a
+> paused project. Production is never used for this check.
+>
+> To close the blocker, once the disposable project is restored, with a test
+> account and **sanitised output only** (no tokens, ids, phone or session id):
+>
+> 1. Sign in with each method Cartoona uses (phone OTP; password where
+>    enabled). Record: is `amr` present, is it an array of objects, how many
+>    entries, which `method` values, does each have a numeric `timestamp`.
+> 2. Record the earliest timestamp, refresh through the normal supported flow,
+>    and confirm `iat` changed while the earliest `amr` timestamp did not.
+> 3. Confirm no custom access-token hook rewrites `amr`.
+>
+> If any of these fails, do not ship this design: the fallback is a
+> Cartoona-owned first-seen time per provider `session_id`, which needs a
+> write path. Until it passes, the branch is **not production-deployable**.
+> If `amr` is absent or untimestamped, the effect is fail-closed (every user
+> is asked to sign in again), never an unlimited session.
+
+### `users.sessions_not_before` (migration 0011)
+
+- **Meaning.** Every session that signed in before this instant is invalid.
+  NULL means no forced invalidation.
+- **Where it's enforced.** The backend checks it in `requireAuth`, from the
+  same identity-resolution query, so there is no extra round trip. That covers
+  every backend-authenticated request.
+- **Existing users.** Existing and copied users start NULL. Every current
+  session therefore stays valid, except those already past 30 days, which
+  were already invalid under the old RPC.
+- **Supabase-backed routes.** Routes that still run on Supabase (no
+  PostgreSQL data yet) enforce the 30-day rule only, as before. Their forced
+  logout remains the provider's global sign-out, which `getUser()` detects.
+  Each route gains `sessions_not_before` as it moves to the backend.
+- **Writing it (designed, not built).** A future trusted, audited function
+  will do the write:
+
+  ```sql
+  -- invalidateAllUserSessions(userId): one statement, idempotent.
+  UPDATE public.users SET sessions_not_before = now() WHERE id = $1;
+  ```
+
+  Uses: "log out all devices", a security incident, and a password change or
+  reset. **`cartoona_app` has no UPDATE on `users`**; this is verified, and
+  the write privilege arrives with that function in a later write-security
+  migration. Local tests set the column as the owner.
+
+### Next before signing
+
+The BFF adapter evaluates the 30-day rule before anything is signed. **An
+expired session never receives an assertion.** `sessions_not_before` lives in
+PostgreSQL, and the frontend has no database access. So the backend applies
+it in `requireAuth`, from the signed `aat` and the resolved cut-off, before any
+principal exists. An invalidated session's assertion is therefore refused and
+never reaches a route.
+
+Designs compared:
+
+- **A.** The backend resolves both, but Next has no evidence to send.
+- **B.** An extra auth round trip.
+- **C (chosen).** `aat` goes in the signed assertion, and the backend
+  evaluates it in the query it already runs.
 
 ## The ~26 s expired-session stall
 
@@ -203,7 +320,7 @@ attempts is not. With the provider down, three paths waited:
 | Path | Who | Before (measured, local stub provider) | Now |
 |---|---|---|---|
 | Public header lookup (`getPublicHeaderAccount`, every marketing and creation page with a session cookie) | everyone with an expired cookie | **25.5 s** (refresh fails fast, 8 attempts), **30.6 s** (refresh hangs) | **≤ 2.5 s**, then the anonymous header |
-| Middleware (`/dashboard`, `/admin`, `/complete-request`, `/parent-consent`) | protected pages | ~26–30 s, then 503 | **≤ 10 s**, then the same retryable 503 |
+| Middleware (`/dashboard`, `/admin`, `/complete-request`, `/parent-consent`) | protected pages | ~26–30 s, then 503 | **≤ 5 s** (V0.1.43; 10 s in V0.1.42), then the same retryable 503 |
 | New auth adapter (`/api/auth/backend-me`, future BFF routes) | authenticated BFF routes | n/a | **≤ 4 s**, then 503 `auth_unavailable` |
 
 The baseline is reproducible with
@@ -219,16 +336,17 @@ The baseline is reproducible with
   expired token by deleting the session (`_removeSession`), which would turn
   an outage into a sign-out. Tests assert that the cookie is never cleared and
   that no network call happens after the deadline.
-- The middleware deadline is 10 s, the existing single-attempt bound, so no
-  refresh is abandoned earlier than before; only the useless retries are
-  dropped.
+- In middleware, all Auth calls of the request share one **5 s** budget
+  (`createAuthDeadlineFetch`). Its PostgREST role lookup keeps its own bound,
+  so a slow sign-in check cannot starve it.
 - A refresh that succeeds after the deadline is not written back. This was
   already true for public pages (Server Components cannot set cookies) and for
   any attempt past the old 10 s per-request timeout. Supabase's refresh-token
-  reuse interval covers a prompt retry. The 4 s adapter deadline makes this
-  possible for refreshes taking 4–10 s on BFF routes. That is an accepted
-  trade-off for a bounded response, and it is limited today to the proof
-  route.
+  reuse interval covers a prompt retry (the 503 says "reload", with
+  `Retry-After: 2`). The 5 s middleware and 4 s adapter deadlines make this
+  possible for refreshes slower than that. That is an accepted trade-off for a
+  bounded response: a much tighter budget would make it common on slow mobile
+  links, which is why middleware stops at 5 s.
 
 **No auth on public pages beyond the header.** Middleware runs only for the
 four protected prefixes (pinned by a test). Public routes never call the
@@ -244,6 +362,33 @@ To replace Supabase Auth:
    rows alongside the `supabase` ones. Users keep their Cartoona ids.
 3. The backend, assertion format, repositories and roles do not change.
 4. Remove the `supabase` rows when the old provider is gone.
+
+## Session-lifetime caller audit (V0.1.43)
+
+Every former caller now uses `checkParentSessionLifetime(supabase, verifiedUserId)`.
+It runs after `getUser()` (or after the ownership check, which ran `getUser()`).
+Its results, and each caller's reaction, are unchanged:
+- **valid:** continue;
+- **expired / missing_session:** local sign-out, then 401 or a login redirect;
+- **lookup_failed:** retryable 503, no sign-out.
+
+| Kind | Caller | Runs after | On expiry | On lookup failure |
+|---|---|---|---|---|
+| middleware | `middleware.ts` (`/dashboard*`, `/complete-request`, `/parent-consent`; not `/admin`) | getUser + role | local signOut, redirect `/login?reason=session_expired` | 503 `sessionCheckUnavailable` |
+| parent auth helper | `lib/parent/parent-request-context.ts` (`verify: "full"`, the orders API) | getUser; in parallel with the role and profile reads | `session_invalid`: 401 + signOut | `session_invalid`: 503 |
+| server component | `app/(auth)/complete-request/page.tsx` | getUser + role | redirect `/login?reason=session_expired` (no sign-out, as before) | in-page retry message, no redirect |
+| route handlers (11 files, 12 calls) | `api/candy-purchases` (GET and POST), `candy-purchases/[id]/complete`, `candy-purchases/[id]/coupon`, `coupons/validate`, `parent-consent`, `parent/gallery`, `parent/password`, `referrals`, `referrals/bind`, `requests` | getUser + role | `createParentSessionFailureResponse`: 401 + signOut | 503 `SESSION_CHECK_UNAVAILABLE` |
+| route handler | `api/parent/orders/[orderId]/final-media` | ownership check (its own getUser), with `ownership.userId` | same | same |
+| admin | none: admin paths never had the lifetime check | n/a | n/a | n/a |
+
+**Round trips.**
+- **Protected middleware request:** was `getUser` + role read + lifetime RPC,
+  3 sequential provider calls. Now it is `getUser` + role read, 2. The
+  lifetime check is local.
+- **Each route and the full request context:** one network call fewer.
+- **Duplicate verification:** middleware and then the page both still call
+  `getUser()` on `/dashboard`. That is unchanged and is left for the
+  request-context rewrite at cutover.
 
 ## Audit (V0.1.42, before any change)
 

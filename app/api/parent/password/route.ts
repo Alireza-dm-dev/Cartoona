@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
+import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
 import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 
 export const runtime = "nodejs"
@@ -92,7 +92,7 @@ export async function POST(request: Request) {
     return jsonError("شما مجوز انجام این عملیات را ندارید.", 403)
   }
 
-  const lifetime = await checkCurrentParentSessionLifetime(supabase)
+  const lifetime = await checkParentSessionLifetime(supabase, user.id)
   if (!lifetime.valid) {
     return createParentSessionFailureResponse(supabase, lifetime)
   }

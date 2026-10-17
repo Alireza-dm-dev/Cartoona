@@ -12,12 +12,15 @@ import { isIdentityProvider, isValidSubject, type IdentityProvider, type Verifie
  *
  * Format (one header, `X-Cartoona-Internal-Auth`):
  *
- *   v1.<base64url(JSON payload)>.<base64url(HMAC-SHA256)>
+ *   v2.<base64url(JSON payload)>.<base64url(HMAC-SHA256)>
  *
  * Payload, exactly these keys:
- *   v    1                       format version
+ *   v    2                       format version
  *   prv  "supabase"              identity provider
  *   sub  provider subject        (Supabase: auth user UUID)
+ *   aat  authenticated at, unix seconds: when the user SIGNED IN, as verified by
+ *        the provider (V0.1.43). The backend checks it against the 30-day
+ *        lifetime and users.sessions_not_before. Never a token issue time.
  *   iat  issued at, unix seconds
  *   exp  expires at, unix seconds   (exp - iat <= 60; issued with 30)
  *   rid  request id               (the X-Request-Id of the call it rides on)
@@ -27,6 +30,11 @@ import { isIdentityProvider, isValidSubject, type IdentityProvider, type Verifie
  * NOT in it, ever: email, phone, names, profile data, provider access/refresh
  * tokens, Cartoona user id or role. The backend derives the user and role
  * from its own database.
+ *
+ * Versioning: v1 (V0.1.42) carried no session evidence and is REJECTED
+ * (unsupported_version): an authenticated request without a sign-in time
+ * cannot be checked against the session policy, so it is never accepted.
+ * Both sides deploy together; there is no mixed-version window to support.
  *
  * The MAC covers a fixed context string plus the encoded payload, keyed with
  * CARTOONA_INTERNAL_AUTH_SECRET (>= 32 random bytes as hex), and is compared in
@@ -41,19 +49,19 @@ import { isIdentityProvider, isValidSubject, type IdentityProvider, type Verifie
  */
 
 export const INTERNAL_AUTH_HEADER = "X-Cartoona-Internal-Auth"
-export const ASSERTION_VERSION = 1
+export const ASSERTION_VERSION = 2
 export const ASSERTION_LIFETIME_SECONDS = 30
 export const ASSERTION_MAX_LIFETIME_SECONDS = 60
 /** Tolerated clock difference between Next and Fastify hosts. */
 export const ASSERTION_CLOCK_SKEW_SECONDS = 5
 export const ASSERTION_MAX_LENGTH = 1024
 
-const MAC_CONTEXT = "cartoona-internal-auth\nv1\n"
+const MAC_CONTEXT = "cartoona-internal-auth\nv2\n"
 const SECRET_FORMAT = /^[0-9a-fA-F]{64,256}$/
 const B64URL = /^[A-Za-z0-9_-]+$/
 const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"])
 const PATH = /^(\/[A-Za-z0-9_-]+)+$/
-const PAYLOAD_KEYS = ["exp", "iat", "mth", "prv", "pth", "rid", "sub", "v"]
+const PAYLOAD_KEYS = ["aat", "exp", "iat", "mth", "prv", "pth", "rid", "sub", "v"]
 
 export class InternalAuthConfigError extends Error {
   constructor(message: string) {
@@ -78,6 +86,8 @@ export function readInternalAuthSecret(env: Record<string, string | undefined> =
 export interface AssertionClaims {
   provider: IdentityProvider
   subject: string
+  /** Provider-verified sign-in time, epoch ms (whole seconds). */
+  authenticatedAt: number
   requestId: string
   method: string
   path: string
@@ -87,6 +97,8 @@ export interface AssertionClaims {
 
 export interface SignAssertionInput {
   identity: VerifiedIdentity
+  /** Provider-verified sign-in time, epoch ms. Carried at second precision. */
+  authenticatedAt: number
   requestId: string
   method: string
   path: string
@@ -108,10 +120,15 @@ export function signAssertion(input: SignAssertionInput): string {
   if (!PATH.test(input.path)) throw new TypeError("assertion: invalid path")
 
   const iat = Math.floor((input.now ?? Date.now()) / 1000)
+  const aat = Math.floor(input.authenticatedAt / 1000)
+  if (!Number.isSafeInteger(aat) || aat <= 0 || aat > iat + ASSERTION_CLOCK_SKEW_SECONDS) {
+    throw new TypeError("assertion: invalid authenticatedAt")
+  }
   const payload = {
     v: ASSERTION_VERSION,
     prv: input.identity.provider,
     sub: input.identity.subject,
+    aat,
     iat,
     exp: iat + ASSERTION_LIFETIME_SECONDS,
     rid: input.requestId,
@@ -119,7 +136,7 @@ export function signAssertion(input: SignAssertionInput): string {
     pth: input.path,
   }
   const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")
-  return `v1.${encoded}.${mac(input.secret, encoded).toString("base64url")}`
+  return `v2.${encoded}.${mac(input.secret, encoded).toString("base64url")}`
 }
 
 export type AssertionFailure =
@@ -158,7 +175,7 @@ export function verifyAssertion(input: VerifyAssertionInput): VerifyResult {
   const parts = token.split(".")
   if (parts.length !== 3) return fail("malformed")
   const [version, encoded, signature] = parts
-  if (version !== "v1") return fail("unsupported_version")
+  if (version !== "v2") return fail("unsupported_version")
   if (!B64URL.test(encoded) || !B64URL.test(signature)) return fail("malformed")
 
   const expected = mac(input.secret, encoded)
@@ -179,14 +196,17 @@ export function verifyAssertion(input: VerifyAssertionInput): VerifyResult {
   if (Object.keys(payload).sort().join(",") !== PAYLOAD_KEYS.join(",")) return fail("invalid_claims")
   if (payload.v !== ASSERTION_VERSION) return fail("unsupported_version")
   if (!isIdentityProvider(payload.prv)) return fail("unsupported_provider")
-  const { prv, sub, iat, exp, rid, mth, pth } = payload as {
-    prv: IdentityProvider; sub: unknown; iat: unknown; exp: unknown; rid: unknown; mth: unknown; pth: unknown
+  const { prv, sub, aat, iat, exp, rid, mth, pth } = payload as {
+    prv: IdentityProvider; sub: unknown; aat: unknown; iat: unknown; exp: unknown; rid: unknown; mth: unknown; pth: unknown
   }
   if (!isValidSubject(prv, sub)) return fail("invalid_claims")
   if (!Number.isSafeInteger(iat) || !Number.isSafeInteger(exp)) return fail("invalid_claims")
   const issuedAt = iat as number
   const expiresAt = exp as number
   if (expiresAt <= issuedAt || expiresAt - issuedAt > ASSERTION_MAX_LIFETIME_SECONDS) return fail("invalid_claims")
+  if (!Number.isSafeInteger(aat) || (aat as number) <= 0 || (aat as number) > issuedAt + ASSERTION_CLOCK_SKEW_SECONDS) {
+    return fail("invalid_claims")
+  }
   if (!isSafeRequestId(rid)) return fail("invalid_claims")
   if (typeof mth !== "string" || !METHODS.has(mth) || typeof pth !== "string" || !PATH.test(pth)) return fail("invalid_claims")
 
@@ -198,6 +218,15 @@ export function verifyAssertion(input: VerifyAssertionInput): VerifyResult {
 
   return {
     ok: true,
-    claims: { provider: prv, subject: sub, requestId: rid, method: mth, path: pth, issuedAt, expiresAt },
+    claims: {
+      provider: prv,
+      subject: sub,
+      authenticatedAt: (aat as number) * 1000,
+      requestId: rid,
+      method: mth,
+      path: pth,
+      issuedAt,
+      expiresAt,
+    },
   }
 }

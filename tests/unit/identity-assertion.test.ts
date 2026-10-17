@@ -24,9 +24,11 @@ const IDENTITY: VerifiedIdentity = toVerifiedIdentity({ provider: "supabase", su
 const RID = "req-0123456789abcdef"
 const NOW = Date.UTC(2026, 9, 16, 12, 0, 0)
 const BIND = { method: "GET", path: "/v1/auth/me" }
+/** The verified sign-in time carried in v2 (an hour before NOW). */
+const AUTHENTICATED_AT = NOW - 3_600_000
 
 const sign = (over: Partial<Parameters<typeof signAssertion>[0]> = {}) =>
-  signAssertion({ identity: IDENTITY, requestId: RID, ...BIND, secret: SECRET, now: NOW, ...over })
+  signAssertion({ identity: IDENTITY, authenticatedAt: AUTHENTICATED_AT, requestId: RID, ...BIND, secret: SECRET, now: NOW, ...over })
 
 const verify = (token: unknown, over: Partial<Parameters<typeof verifyAssertion>[0]> = {}) =>
   verifyAssertion({ token, secret: SECRET, ...BIND, now: NOW, ...over })
@@ -37,18 +39,19 @@ const encode = (payload: unknown) => Buffer.from(JSON.stringify(payload)).toStri
 /** Re-sign an arbitrary payload with the real secret: proves checks beyond the MAC. */
 const resign = (payload: unknown, secret = SECRET) => {
   const encoded = encode(payload)
-  const mac = crypto.createHmac("sha256", secret).update("cartoona-internal-auth\nv1\n").update(encoded).digest("base64url")
-  return `v1.${encoded}.${mac}`
+  const mac = crypto.createHmac("sha256", secret).update("cartoona-internal-auth\nv2\n").update(encoded).digest("base64url")
+  return `v2.${encoded}.${mac}`
 }
 
 describe("1. a valid assertion verifies", () => {
-  it("round-trips provider, subject, request id and binding", () => {
+  it("round-trips provider, subject, sign-in time, request id and binding", () => {
     const result = verify(sign())
     expect(result).toEqual({
       ok: true,
       claims: {
         provider: "supabase",
         subject: SUBJECT,
+        authenticatedAt: AUTHENTICATED_AT,
         requestId: RID,
         method: "GET",
         path: "/v1/auth/me",
@@ -60,10 +63,11 @@ describe("1. a valid assertion verifies", () => {
 
   it("has the documented shape and a 30-second lifetime", () => {
     const [version, encoded, signature] = parts(sign())
-    expect(version).toBe("v1")
+    expect(version).toBe("v2")
     expect(Buffer.from(signature, "base64url")).toHaveLength(32) // HMAC-SHA256
     const payload = decode(encoded)
-    expect(Object.keys(payload).sort()).toEqual(["exp", "iat", "mth", "prv", "pth", "rid", "sub", "v"])
+    expect(Object.keys(payload).sort()).toEqual(["aat", "exp", "iat", "mth", "prv", "pth", "rid", "sub", "v"])
+    expect(payload.aat).toBe(AUTHENTICATED_AT / 1000)
     expect(payload.exp - payload.iat).toBe(30)
   })
 })
@@ -78,6 +82,7 @@ describe("2/3. tampering", () => {
       { pth: "/v1/admin" },
       { mth: "DELETE" },
       { rid: "another-request-id" },
+      { aat: payload.aat + 30 * 86400 }, // a forged, younger sign-in time
     ]) {
       expect(verify(`${v}.${encode({ ...payload, ...change })}.${sig}`)).toEqual({ ok: false, reason: "bad_signature" })
     }
@@ -92,7 +97,7 @@ describe("2/3. tampering", () => {
   })
 
   it("rejects malformed tokens before any parsing", () => {
-    for (const bad of [undefined, null, 42, "", "v1", "v1.abc", "v1.a.b.c", "v1.***.abc", "v1.a b.c", "x".repeat(2000), ["v1", "a", "b"]]) {
+    for (const bad of [undefined, null, 42, "", "v2", "v2.abc", "v2.a.b.c", "v2.***.abc", "v2.a b.c", "x".repeat(2000), ["v2", "a", "b"]]) {
       const result = verify(bad)
       expect(result.ok).toBe(false)
     }
@@ -134,9 +139,30 @@ describe("4/5. time", () => {
 describe("6/7. version and provider", () => {
   it("6. unsupported versions are rejected", () => {
     const [, encoded, sig] = parts(sign())
-    expect(verify(`v2.${encoded}.${sig}`)).toEqual({ ok: false, reason: "unsupported_version" })
+    expect(verify(`v3.${encoded}.${sig}`)).toEqual({ ok: false, reason: "unsupported_version" })
     const good = decode(encoded)
-    expect(verify(resign({ ...good, v: 2 }))).toEqual({ ok: false, reason: "unsupported_version" })
+    expect(verify(resign({ ...good, v: 3 }))).toEqual({ ok: false, reason: "unsupported_version" })
+  })
+
+  it("6b. a V0.1.42 v1 assertion (no session evidence) is rejected, even correctly signed", () => {
+    const good = decode(parts(sign())[1])
+    const v1Payload = { ...good, v: 1 }
+    delete v1Payload.aat
+    const enc = encode(v1Payload)
+    const mac = crypto.createHmac("sha256", SECRET).update("cartoona-internal-auth\nv1\n").update(enc).digest("base64url")
+    expect(verify(`v1.${enc}.${mac}`)).toEqual({ ok: false, reason: "unsupported_version" })
+    // and a v2 envelope without aat is incomplete
+    expect(verify(resign({ ...good, aat: undefined }))).toEqual({ ok: false, reason: "invalid_claims" })
+  })
+
+  it("6c. sign-in time: required, positive, whole seconds, never after issue (+ skew)", () => {
+    const good = decode(parts(sign())[1])
+    for (const aat of [0, -1, 1.5, "1700000000", null, good.iat + 6]) {
+      expect(verify(resign({ ...good, aat })), String(aat)).toEqual({ ok: false, reason: "invalid_claims" })
+    }
+    expect(verify(resign({ ...good, aat: good.iat + 5 })).ok).toBe(true)
+    expect(() => sign({ authenticatedAt: NOW + 60_000 })).toThrow(TypeError)
+    expect(() => sign({ authenticatedAt: 0 })).toThrow(TypeError)
   })
 
   it("7. unsupported providers are rejected, and signing refuses them", () => {
@@ -200,7 +226,7 @@ describe("10. no PII or tokens", () => {
     const text = JSON.stringify(payload)
     expect(text).not.toMatch(/@|phone|email|name|token|refresh|access|role|user_?id|profile/i)
     expect(payload).toEqual({
-      v: 1, prv: "supabase", sub: SUBJECT, iat: NOW / 1000, exp: NOW / 1000 + 30, rid: RID, mth: "GET", pth: "/v1/auth/me",
+      v: 2, prv: "supabase", sub: SUBJECT, aat: AUTHENTICATED_AT / 1000, iat: NOW / 1000, exp: NOW / 1000 + 30, rid: RID, mth: "GET", pth: "/v1/auth/me",
     })
   })
 

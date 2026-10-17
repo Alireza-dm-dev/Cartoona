@@ -6,7 +6,7 @@ import { logAuthLookup } from "@/lib/observability/auth-events"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
 import { isParentRole } from "@/lib/auth/parent-access"
-import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
+import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
 import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 import {
   toParentCandyPurchaseSummary,
@@ -52,7 +52,7 @@ async function handleGet() {
     return jsonError("شما مجوز انجام این عملیات را ندارید.", 403)
   }
 
-  const lifetime = await checkCurrentParentSessionLifetime(supabase)
+  const lifetime = await checkParentSessionLifetime(supabase, user.id)
   if (!lifetime.valid) {
     return createParentSessionFailureResponse(supabase, lifetime)
   }
@@ -244,7 +244,7 @@ async function handlePost(request: Request) {
     return jsonError("شما مجوز انجام این عملیات را ندارید.", 403)
   }
 
-  const lifetime = await checkCurrentParentSessionLifetime(supabase)
+  const lifetime = await checkParentSessionLifetime(supabase, user.id)
   if (!lifetime.valid) {
     return createParentSessionFailureResponse(supabase, lifetime)
   }

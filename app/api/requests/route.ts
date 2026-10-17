@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
-import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
+import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
 import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 import { parseAndValidateDraft } from "@/lib/requests/request-submission"
 import { mapRequestRpcError } from "@/lib/requests/request-rpc-error"
@@ -117,7 +117,7 @@ async function handlePost(request: Request) {
     return NextResponse.json({ error: "فقط حساب‌های والد می‌توانند درخواست ثبت کنند" }, { status: 403 })
   }
 
-  const lifetime = await checkCurrentParentSessionLifetime(supabase)
+  const lifetime = await checkParentSessionLifetime(supabase, user.id)
   if (!lifetime.valid) {
     return createParentSessionFailureResponse(supabase, lifetime)
   }

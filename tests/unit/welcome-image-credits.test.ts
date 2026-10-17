@@ -15,7 +15,8 @@ import {
 import { toSubmissionSuccess } from "@/lib/requests/submission-response"
 import { setLogSink, sanitizeFields, type LogRecord } from "@/lib/observability/logger"
 import { setRateLimitStore, InMemoryRateLimitStore } from "@/lib/rate-limit"
-import { createFakeSupabase, VALID_LIFETIME } from "../helpers/fake-supabase"
+import { createFakeSupabase } from "../helpers/fake-supabase"
+import { getSessionResult } from "../helpers/supabase-jwt"
 
 const root = process.cwd()
 const OID = "123e4567-e89b-42d3-a456-426614174000"
@@ -170,8 +171,8 @@ function submitClient() {
     select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: m.existingOrder, error: null }) }), maybeSingle: async () => ({ data, error: null }) }) }),
   })
   return {
-    auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), signOut: vi.fn() },
-    rpc: async () => ({ data: VALID_LIFETIME, error: null }),
+    auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), getSession: async () => getSessionResult("valid", "u1"), signOut: vi.fn() },
+    rpc: async () => ({ data: null, error: null }),
     from: (t: string) => t === "users" ? chain({ role: "parent" }) : t === "parent_profiles" ? chain({ id: "p1", consent_granted: true }) : chain(null),
     storage: { from: () => ({ upload: async () => ({ error: null }), remove: async () => ({ error: null }) }) },
   }
@@ -250,7 +251,6 @@ describe("GET /api/parent/welcome-credits", () => {
         parent_profiles: [{ id: "profile-1", user_id: "user-1" }],
         parent_welcome_credits: over.credit === null ? [] : [{ parent_id: "profile-1", ...(over.credit ?? { granted_count: 3, used_count: 1 }) }],
       },
-      rpc: { get_current_parent_session_policy: () => VALID_LIFETIME },
     })
     m.client = f.client
     return f

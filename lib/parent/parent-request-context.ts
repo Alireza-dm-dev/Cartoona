@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { isAuthRetryableFetchError } from "@supabase/supabase-js";
 import { isParentRole } from "@/lib/auth/parent-access";
 import {
-  checkCurrentParentSessionLifetime,
+  checkParentSessionLifetime,
   type ParentSessionLifetimeResult,
 } from "@/lib/auth/parent-session-lifetime";
 import { logAuthLookup } from "@/lib/observability/auth-events";
@@ -95,7 +95,7 @@ export async function resolveParentRequestContext(
   const [roleResult, profileResult, lifetime] = await Promise.all([
     supabase.from("users").select("role").eq("id", user.id).maybeSingle(),
     profileQuery,
-    checkCurrentParentSessionLifetime(supabase),
+    checkParentSessionLifetime(supabase, user.id),
   ]);
 
   // Order matters: an admin must never be treated as a parent, and a role

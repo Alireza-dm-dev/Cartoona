@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { isAdminRole } from "@/lib/auth/admin-role";
 import { isParentRole } from "@/lib/auth/parent-access";
-import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime";
+import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime";
 import { PageHeader } from "@/components/ui/page-header";
 import CompleteCreationRequest from "@/components/creation/complete-creation-request";
 
@@ -38,7 +38,7 @@ export default async function CompleteRequestPage() {
     redirect("/login?from=/complete-request");
   }
 
-  const lifetime = await checkCurrentParentSessionLifetime(supabase);
+  const lifetime = await checkParentSessionLifetime(supabase, user.id);
   if (!lifetime.valid) {
     // A failed lookup is not an expiry: do not send a valid session to the
     // login page labelled "expired". Fail closed with a retry message.

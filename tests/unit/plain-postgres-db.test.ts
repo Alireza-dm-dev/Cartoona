@@ -217,7 +217,7 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
         DATABASE_URL: `postgresql://cartoona@postgres:5432/${DB}`,
       },
     }))
-    expect(stdout).toMatch(/done - 10 applied/)
+    expect(stdout).toMatch(/done - 11 applied/)
 
     // The Supabase reference: real historical chain over the stub.
     await psql("", { db: REF, file: path.join(root, "tests/helpers/supabase-stub.sql") })
@@ -303,10 +303,13 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
       expect(d.onlyInSupabase).toEqual([])
     })
 
-    it("columns: identical except users.id, which now has a default", async () => {
+    it("columns: identical except users.id (now has a default) and the Cartoona-owned users.sessions_not_before (V0.1.43)", async () => {
       const d = diff(await catalog(DB, "columns"), await catalog(REF, "columns"))
       const added = d.onlyInPlain.filter((c) => !c.startsWith("user_identities.") && !c.startsWith("schema_migrations."))
-      expect(added).toEqual(["users.id uuid null=NO default=gen_random_uuid()"])
+      expect(added.sort()).toEqual([
+        "users.id uuid null=NO default=gen_random_uuid()",
+        "users.sessions_not_before timestamp with time zone null=YES default=",
+      ])
       expect(d.onlyInSupabase).toEqual(["users.id uuid null=NO default="])
     })
 

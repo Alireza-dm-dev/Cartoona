@@ -1,50 +1,72 @@
 import { describe, test, expect, vi, beforeEach } from "vitest"
 import { NextRequest } from "next/server"
 import { AuthRetryableFetchError, AuthApiError } from "@supabase/supabase-js"
-import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
+import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
 import {
   createParentSessionFailureResponse,
   SESSION_CHECK_UNAVAILABLE_BODY,
 } from "@/lib/auth/expired-parent-session-response"
+import { accessToken, DAY_MS, getSessionResult, type SessionKind } from "../helpers/supabase-jwt"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // A failed session-lifetime lookup (transient network / Supabase error) must
 // fail closed WITHOUT revoking the session. Only a definite expiry or missing
 // session may call signOut. These tests pin lookup_failed != expired.
+//
+// V0.1.43: the lifetime comes from the verified session's sign-in time (amr),
+// read locally through getSession() - no RPC, no auth.sessions.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const FUTURE = { is_valid: true, session_started_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-31T00:00:00Z" }
-const EXPIRED = { is_valid: false, session_started_at: "2025-01-01T00:00:00Z", expires_at: "2025-01-31T00:00:00Z" }
-const MISSING = { is_valid: false, session_started_at: null, expires_at: null }
+const USER = "u1"
 
-function rpcClient(outcomes: Array<{ data: unknown; error: { message: string } | null }>) {
-  const queue = [...outcomes]
+/** auth.getSession() answering each call from the queue (last entry repeats). */
+function sessionReader(kinds: SessionKind[], user = USER) {
+  const queue = [...kinds]
   return {
-    rpc: vi.fn(async () => queue.length > 1 ? queue.shift()! : queue[0]),
+    getSession: vi.fn(async () => getSessionResult(queue.length > 1 ? queue.shift()! : queue[0], user)),
   }
 }
-const TRANSIENT = { data: null, error: { message: "fetch failed" } }
 
-describe("checkCurrentParentSessionLifetime outcomes", () => {
-  test("valid", async () => {
-    const r = await checkCurrentParentSessionLifetime(rpcClient([{ data: [FUTURE], error: null }]))
-    expect(r.valid).toBe(true)
+describe("checkParentSessionLifetime outcomes", () => {
+  test("valid: started at the verified sign-in time, expires 30 days later", async () => {
+    const now = Date.UTC(2026, 9, 17, 12)
+    const authenticatedAt = now - 2 * DAY_MS
+    const getSession = vi.fn(async () => ({ data: { session: { access_token: accessToken({ sub: USER, authenticatedAt }) } }, error: null }))
+    const r = await checkParentSessionLifetime({ auth: { getSession } }, USER, now)
+    expect(r).toEqual({
+      valid: true,
+      sessionStartedAt: new Date(Math.floor(authenticatedAt / 1000) * 1000).toISOString(),
+      expiresAt: new Date(Math.floor(authenticatedAt / 1000) * 1000 + 30 * DAY_MS).toISOString(),
+    })
   })
-  test("expired", async () => {
-    const r = await checkCurrentParentSessionLifetime(rpcClient([{ data: [EXPIRED], error: null }]))
-    expect(r).toEqual({ valid: false, reason: "expired" })
+  test("expired (signed in 31 days ago)", async () => {
+    expect(await checkParentSessionLifetime({ auth: sessionReader(["expired"]) }, USER)).toEqual({ valid: false, reason: "expired" })
   })
-  test("missing_session", async () => {
-    const r = await checkCurrentParentSessionLifetime(rpcClient([{ data: [MISSING], error: null }]))
-    expect(r).toEqual({ valid: false, reason: "missing_session" })
+  test("missing_session (no session)", async () => {
+    expect(await checkParentSessionLifetime({ auth: sessionReader(["missing"]) }, USER)).toEqual({ valid: false, reason: "missing_session" })
   })
-  test("RPC/network failure is lookup_failed, never expired", async () => {
-    const r = await checkCurrentParentSessionLifetime(rpcClient([TRANSIENT]))
-    expect(r).toEqual({ valid: false, reason: "lookup_failed" })
+  test("session read/refresh failure is lookup_failed, never expired", async () => {
+    expect(await checkParentSessionLifetime({ auth: sessionReader(["transient"]) }, USER)).toEqual({ valid: false, reason: "lookup_failed" })
   })
-  test("malformed payload is lookup_failed", async () => {
-    const r = await checkCurrentParentSessionLifetime(rpcClient([{ data: [], error: null }]))
-    expect(r).toEqual({ valid: false, reason: "lookup_failed" })
+  test("a thrown session read is lookup_failed", async () => {
+    const getSession = vi.fn(async () => { throw new TypeError("fetch failed") })
+    expect(await checkParentSessionLifetime({ auth: { getSession } }, USER)).toEqual({ valid: false, reason: "lookup_failed" })
+  })
+  test("a token for ANOTHER user than the verified one is missing_session (fail closed)", async () => {
+    expect(await checkParentSessionLifetime({ auth: sessionReader(["valid"], "someone-else") }, USER)).toEqual({ valid: false, reason: "missing_session" })
+  })
+  test.each([
+    ["no amr", []],
+    ["string-only amr (no timestamps)", ["otp"]],
+    ["amr with only a token_refresh entry", [{ method: "token_refresh", timestamp: 1_700_000_000 }]],
+  ])("%s -> missing_session (no usable sign-in evidence: sign in again)", async (_label, amr) => {
+    const getSession = vi.fn(async () => ({ data: { session: { access_token: accessToken({ sub: USER, authenticatedAt: Date.now(), amr }) } }, error: null }))
+    expect(await checkParentSessionLifetime({ auth: { getSession } }, USER)).toEqual({ valid: false, reason: "missing_session" })
+  })
+  test("makes no network call of its own (one local session read)", async () => {
+    const reader = sessionReader(["valid"])
+    await checkParentSessionLifetime({ auth: reader }, USER)
+    expect(reader.getSession).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -100,21 +122,20 @@ vi.mock("@/lib/parent/gallery/queries", () => ({
 describe("API route: lookup_failed fails closed, keeps session, retry works", () => {
   beforeEach(() => galleryMocks.getParentGalleryMedia.mockReset())
 
-  function sessionClient(rpcOutcomes: Array<{ data: unknown; error: { message: string } | null }>) {
-    const rpc = rpcClient(rpcOutcomes)
+  function sessionClient(kinds: SessionKind[]) {
     return {
       auth: {
         getUser: vi.fn(async () => ({ data: { user: { id: "u1" } }, error: null })),
+        ...sessionReader(kinds),
         signOut: vi.fn(async () => ({})),
       },
-      rpc: rpc.rpc,
     }
   }
 
   test("lookup_failed: 503, no signOut, no protected data; retry on SAME session succeeds", async () => {
     const { GET } = await import("@/app/api/parent/gallery/route")
     galleryMocks.getParentGalleryMedia.mockResolvedValue({ ok: true, media: [{ id: "m1" }] })
-    const client = sessionClient([TRANSIENT, { data: [FUTURE], error: null }])
+    const client = sessionClient(["transient", "valid"])
     galleryMocks.client = client
 
     const first = await GET(new Request("http://x/api/parent/gallery"))
@@ -132,7 +153,7 @@ describe("API route: lookup_failed fails closed, keeps session, retry works", ()
 
   test("definite expiry still returns 401 and signs out", async () => {
     const { GET } = await import("@/app/api/parent/gallery/route")
-    const client = sessionClient([{ data: [EXPIRED], error: null }])
+    const client = sessionClient(["expired"])
     galleryMocks.client = client
     const res = await GET(new Request("http://x/api/parent/gallery"))
     expect(res.status).toBe(401)
@@ -144,13 +165,13 @@ describe("API route: lookup_failed fails closed, keeps session, retry works", ()
   test("valid session -> allowed", async () => {
     const { GET } = await import("@/app/api/parent/gallery/route")
     galleryMocks.getParentGalleryMedia.mockResolvedValue({ ok: true, media: [] })
-    galleryMocks.client = sessionClient([{ data: [FUTURE], error: null }])
+    galleryMocks.client = sessionClient(["valid"])
     expect((await GET(new Request("http://x/api/parent/gallery"))).status).toBe(200)
   })
 
   test("no user -> 401 authentication failure (unchanged), no signOut", async () => {
     const { GET } = await import("@/app/api/parent/gallery/route")
-    const client = sessionClient([{ data: [FUTURE], error: null }])
+    const client = sessionClient(["valid"])
     client.auth.getUser = vi.fn(async () => ({ data: { user: null }, error: { message: "no" } })) as never
     galleryMocks.client = client
     expect((await GET(new Request("http://x/api/parent/gallery"))).status).toBe(401)
@@ -167,19 +188,20 @@ interface FakeOpts {
   getUserError?: unknown
   getUserThrows?: boolean
   role?: string | null
-  rpcOutcomes?: Array<{ data: unknown; error: { message: string } | null }>
+  sessions?: SessionKind[]
 }
 function fakeSupabase(o: FakeOpts) {
-  const rpc = rpcClient(o.rpcOutcomes ?? [{ data: [FUTURE], error: null }])
+  const reader = sessionReader(o.sessions ?? ["valid"])
   const client = {
     auth: {
       getUser: vi.fn(async () => {
         if (o.getUserThrows) throw new TypeError("fetch failed")
         return { data: { user: o.user === undefined ? { id: "u1" } : o.user }, error: o.getUserError ?? null }
       }),
+      ...reader,
       signOut: vi.fn(async () => ({})),
     },
-    rpc: rpc.rpc,
+    rpc: vi.fn(),
     from: vi.fn(() => ({
       select: () => ({
         eq: () => ({
@@ -210,7 +232,7 @@ describe("middleware", () => {
   })
 
   test("expired -> signOut + login redirect with session_expired (existing UX)", async () => {
-    const c = fakeSupabase({ rpcOutcomes: [{ data: [EXPIRED], error: null }] })
+    const c = fakeSupabase({ sessions: ["expired"] })
     const { middleware } = await import("@/middleware")
     const res = await middleware(req("/dashboard/orders"))
     expect(res.status).toBe(307)
@@ -221,7 +243,7 @@ describe("middleware", () => {
   })
 
   test("missing_session -> login redirect (unauthenticated behaviour kept)", async () => {
-    const c = fakeSupabase({ rpcOutcomes: [{ data: [MISSING], error: null }] })
+    const c = fakeSupabase({ sessions: ["missing"] })
     const { middleware } = await import("@/middleware")
     const res = await middleware(req("/dashboard"))
     expect(res.status).toBe(307)
@@ -230,7 +252,7 @@ describe("middleware", () => {
   })
 
   test("lookup_failed -> 503, signOut NOT called, no content, no redirect, no cookie clearing", async () => {
-    const c = fakeSupabase({ rpcOutcomes: [TRANSIENT] })
+    const c = fakeSupabase({ sessions: ["transient"] })
     const { middleware } = await import("@/middleware")
     const res = await middleware(req("/dashboard/orders"))
     expect(res.status).toBe(503)
@@ -243,7 +265,7 @@ describe("middleware", () => {
   })
 
   test("lookup_failed then healthy backend: same session passes with no re-login", async () => {
-    const c = fakeSupabase({ rpcOutcomes: [TRANSIENT, { data: [FUTURE], error: null }] })
+    const c = fakeSupabase({ sessions: ["transient", "valid"] })
     const { middleware } = await import("@/middleware")
     expect((await middleware(req("/dashboard/orders"))).status).toBe(503)
     const retry = await middleware(req("/dashboard/orders")) // identical cookie
@@ -253,7 +275,7 @@ describe("middleware", () => {
   })
 
   test("lookup_failed also protects /complete-request", async () => {
-    const c = fakeSupabase({ rpcOutcomes: [TRANSIENT] })
+    const c = fakeSupabase({ sessions: ["transient"] })
     const { middleware } = await import("@/middleware")
     const res = await middleware(req("/complete-request"))
     expect(res.status).toBe(503)
@@ -285,12 +307,13 @@ describe("middleware", () => {
     expect(c.auth.signOut).not.toHaveBeenCalled()
   })
 
-  test("admin route unaffected: no parent lifetime RPC, admin passes", async () => {
-    const c = fakeSupabase({ role: "admin", rpcOutcomes: [TRANSIENT] })
+  test("admin route unaffected: no parent lifetime check, admin passes", async () => {
+    const c = fakeSupabase({ role: "admin", sessions: ["transient"] })
     const { middleware } = await import("@/middleware")
     const res = await middleware(req("/admin/requests"))
     expect(res.status).toBe(200)
     expect(c.rpc).not.toHaveBeenCalled()
+    expect(c.auth.getSession).not.toHaveBeenCalled()
     expect(c.auth.signOut).not.toHaveBeenCalled()
   })
 

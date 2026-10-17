@@ -26,10 +26,12 @@ import { BackendClientError } from "./errors"
  *   logged with allow-listed fields: request id, operation, status, duration,
  *   category. Never the URL, headers, response body or the raw exception.
  *
- * Authenticated calls (V0.1.42): pass the `identity` an auth adapter verified.
- * The client signs a short-lived internal assertion bound to this method, path
- * and request id (lib/identity/assertion.ts) and sends it in
- * X-Cartoona-Internal-Auth. No provider token, cookie or user id is forwarded.
+ * Authenticated calls (V0.1.42; session evidence V0.1.43): pass the `auth`
+ * context an auth adapter verified. The client signs a short-lived internal
+ * assertion (v2) carrying the provider subject and the verified sign-in time,
+ * bound to this method, path and request id (lib/identity/assertion.ts), and
+ * sends it in X-Cartoona-Internal-Auth. No provider token, cookie or user id is
+ * forwarded.
  *
  * Only GET + JSON exists today; write methods arrive with the first write route.
  */
@@ -48,8 +50,8 @@ export interface BackendGetRequest<T> {
   parse: (json: unknown, status: number) => T
   /** Non-2xx statuses whose JSON body the caller wants (e.g. 401/403 auth outcomes). */
   acceptStatuses?: readonly number[]
-  /** A VERIFIED identity to assert to the backend; omit for public endpoints. */
-  identity?: VerifiedIdentity
+  /** A VERIFIED auth context to assert to the backend; omit for public endpoints. */
+  auth?: { identity: VerifiedIdentity; authenticatedAt: number }
 }
 
 export interface BackendResponse<T> {
@@ -93,11 +95,12 @@ export async function backendGetJson<T>(
   }
 
   const headers: Record<string, string> = { accept: "application/json", [REQUEST_ID_HEADER]: requestId }
-  if (request.identity) {
+  if (request.auth) {
     try {
       const secret = readInternalAuthSecret(deps.env)
       headers[INTERNAL_AUTH_HEADER] = signAssertion({
-        identity: request.identity,
+        identity: request.auth.identity,
+        authenticatedAt: request.auth.authenticatedAt,
         requestId,
         method: "GET",
         path: request.path,

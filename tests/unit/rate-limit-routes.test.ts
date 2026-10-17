@@ -3,6 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { InMemoryRateLimitStore, setRateLimitStore } from "@/lib/rate-limit"
 import { setLogSink, type LogRecord } from "@/lib/observability/logger"
+import { getSessionResult } from "../helpers/supabase-jwt"
 
 const MiB = 1024 * 1024
 const KEY = "11111111-1111-4111-8111-111111111111"
@@ -48,7 +49,7 @@ const chain = (data: unknown) => ({
 })
 function healthyClient() {
   return {
-    auth: { getUser: async () => ({ data: { user: { id: m.userId } }, error: null }), signOut: vi.fn() },
+    auth: { getUser: async () => ({ data: { user: { id: m.userId } }, error: null }), getSession: async () => getSessionResult("valid", m.userId), signOut: vi.fn() },
     rpc: async () => ({ data: [{ is_valid: true, session_started_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-31T00:00:00Z" }], error: null }),
     from: (t: string) => t === "users" ? chain({ role: m.role }) : t === "parent_profiles" ? chain({ id: "p1", consent_granted: true }) : chain(null),
     storage: { from: () => ({ upload: m.upload, remove: async () => ({ error: null }) }) },

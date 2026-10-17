@@ -2,32 +2,35 @@ import { describe, it, expect } from "vitest"
 import { AuthRetryableFetchError, AuthApiError } from "@supabase/supabase-js"
 import { resolveParentRequestContext } from "@/lib/parent/parent-request-context"
 import { getParentOrderDetail } from "@/lib/parent/orders/detail-queries"
-import { createFakeSupabase, VALID_LIFETIME, uuid, ts } from "../helpers/fake-supabase"
+import { createFakeSupabase, uuid, ts } from "../helpers/fake-supabase"
+import type { SessionKind } from "../helpers/supabase-jwt"
 
 const ME = "profile-me"
 const USER = { id: "user-1" }
 
-function world(over: { role?: string; lifetime?: unknown; profile?: boolean; auth?: object } = {}) {
+function world(over: { role?: string; session?: SessionKind; profile?: boolean; auth?: object } = {}) {
   return createFakeSupabase({
     ...(over.auth ?? { user: USER }),
     tables: {
       users: [{ id: USER.id, role: over.role ?? "parent" }],
       parent_profiles: over.profile === false ? [] : [{ id: ME, user_id: USER.id }],
     },
-    rpc: { get_current_parent_session_policy: () => over.lifetime ?? VALID_LIFETIME },
+    session: over.session,
   })
 }
 
 describe("ParentRequestContext (full)", () => {
-  it("resolves user, role, profile and lifetime with exactly one call each", async () => {
+  it("resolves user, role and profile with one network call each; the lifetime needs none (V0.1.43)", async () => {
     const { client, calls } = world()
     const r = await resolveParentRequestContext(client, { verify: "full" })
     expect(r).toEqual({ ok: true, context: { userId: USER.id, role: "parent", parentProfileId: ME } })
     expect(calls.getUser).toBe(1)
     expect(calls.from.users).toBe(1)
     expect(calls.from.parent_profiles).toBe(1)
-    expect(calls.rpc.filter((c) => c.fn === "get_current_parent_session_policy")).toHaveLength(1)
-    expect(calls.total()).toBe(4)
+    // The lifetime is read from the verified session locally: no RPC any more.
+    expect(calls.rpc).toHaveLength(0)
+    expect(calls.getSession).toBe(1)
+    expect(calls.total()).toBe(3)
   })
 
   it("is request-scoped: a second resolve is a fresh lookup, nothing is cached between calls", async () => {
@@ -38,20 +41,20 @@ describe("ParentRequestContext (full)", () => {
   })
 
   it("expired session -> session_invalid carrying the expired lifetime (existing 401 + signOut path)", async () => {
-    const { client } = world({ lifetime: [{ is_valid: false, session_started_at: "2025-01-01T00:00:00Z", expires_at: "2025-01-31T00:00:00Z" }] })
+    const { client } = world({ session: "expired" })
     const r = await resolveParentRequestContext(client, { verify: "full" })
     expect(r).toMatchObject({ ok: false, reason: "session_invalid", lifetime: { valid: false, reason: "expired" } })
   })
 
   it("lookup_failed stays retryable: session_invalid/lookup_failed, never reported as expired", async () => {
-    const { client } = world({ lifetime: [] })
+    const { client } = world({ session: "transient" })
     const r = await resolveParentRequestContext(client, { verify: "full" })
     expect(r).toMatchObject({ ok: false, reason: "session_invalid", lifetime: { reason: "lookup_failed" } })
   })
 
   it("never signs out on any outcome", async () => {
-    for (const lifetime of [[], [{ is_valid: false, session_started_at: null, expires_at: null }]]) {
-      const { client } = world({ lifetime })
+    for (const session of ["transient", "missing", "expired"] as const) {
+      const { client } = world({ session })
       let signedOut = false
       ;(client as unknown as { auth: { signOut: () => Promise<unknown> } }).auth.signOut = async () => ((signedOut = true), {})
       await resolveParentRequestContext(client, { verify: "full" })
@@ -91,7 +94,7 @@ describe("ParentRequestContext (full)", () => {
   })
 
   it("a failed role read is read_failed, not 'not_parent'", async () => {
-    const f = createFakeSupabase({ user: USER, tables: { users: [], parent_profiles: [{ id: ME, user_id: USER.id }] }, tableErrors: { users: { message: "timeout" } }, rpc: { get_current_parent_session_policy: () => VALID_LIFETIME } })
+    const f = createFakeSupabase({ user: USER, tables: { users: [], parent_profiles: [{ id: ME, user_id: USER.id }] }, tableErrors: { users: { message: "timeout" } } })
     expect(await resolveParentRequestContext(f.client, { verify: "full" })).toEqual({ ok: false, reason: "read_failed" })
   })
 })

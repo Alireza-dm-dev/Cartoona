@@ -54,7 +54,7 @@ migrations.
 |---|---|---|
 | `GET /health` | **Liveness.** The process serves HTTP. No database, no env, no dependency. | 200 `{"status":"ok"}` |
 | `GET /ready` | **Readiness.** `SELECT 1` succeeds **and** the session is a restricted `cartoona_app` login. The role check passes once and is then cached; the ping runs every time. | 200 `{"status":"ready"}`, 503 `{"status":"unavailable"}` |
-| `GET /v1/auth/me` | **Authenticated** (V0.1.42): who the signed internal assertion resolves to, from `user_identities` + `users`. Proof of the identity chain; see [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md). | 200 `{"authenticated":true,"userId":"…","role":"parent"}`; 401 `unauthenticated`; 403 `identity_not_linked` / `forbidden`; 503 `service_unavailable`; all `no-store` |
+| `GET /v1/auth/me` | **Authenticated** (V0.1.42; session policy V0.1.43): who the signed v2 assertion resolves to, from `user_identities` + `users`, after the 30-day and `sessions_not_before` checks. Proof of the identity chain; see [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md). | 200 `{"authenticated":true,"userId":"…","role":"parent"}`; 401 `unauthenticated` / `session_expired` / `session_invalidated`; 403 `identity_not_linked` / `forbidden`; 503 `service_unavailable`; all `no-store` |
 | `GET /v1/creation-pricing` | Public price catalog from PostgreSQL (`getActiveCreationPrices`). Same contract as the Next route `GET /api/creation-pricing`. | 200 `{"prices":{…}}` with `Cache-Control: public, s-maxage=60, stale-while-revalidate=300`; 503 `{"error":"<Persian message>","code":"CREATION_PRICING_UNAVAILABLE"}` with `no-store` for a DB failure or an invalid or empty catalog |
 | anything else | | 404 `{"error":"not_found"}` |
 
@@ -238,6 +238,11 @@ route --> repositories({ parentProfileId, ... })   (explicit ids, from the princ
   Supabase.
 - The role comes from `public.users`. An unlinked identity is 403
   `identity_not_linked`; nothing is created on the fly.
+- Session policy (V0.1.43): the v2 assertion carries the provider-verified
+  sign-in time (`aat`). `requireAuth` refuses sessions ≥ 30 days old
+  (`session_expired`) and sessions that signed in before
+  `users.sessions_not_before` (`session_invalidated`), from the same identity
+  query.
 - Use it with `{ preHandler: requireAuth(deps) }` and, where needed,
   `requireRole("parent")`. Read `request.authPrincipal`; never take a caller
   id from the query or the body.
@@ -265,10 +270,13 @@ Desktop. These are **not production estimates**.
 
 ## Before the first authenticated route cuts over
 
-1. **Identity:** done in V0.1.42 (adapter, signed assertion, `requireAuth`,
-   `user_identities`). Still open: the session-lifetime replacement
-   ([AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md#session-lifetime-replacement-decision))
-   and the `user_identities` backfill as part of the data copy.
+1. **Identity and session policy:** done (V0.1.42 adapter, assertion,
+   `requireAuth`; V0.1.43 Cartoona session policy, assertion v2,
+   `sessions_not_before`). Still open: the `user_identities` backfill as part
+   of the data copy, and the pre-production `amr` check against the
+   disposable Supabase project (**not yet verified; the project was
+   unreachable on 2026-10-17**,
+   [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md#where-authenticatedat-comes-from)).
 2. **Data:** the domain's data in PostgreSQL, through the copy procedure in
    PLAIN_POSTGRES.md or dual writes. The local database holds only the seeded
    reference data today.

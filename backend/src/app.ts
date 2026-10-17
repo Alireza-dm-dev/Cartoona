@@ -32,6 +32,8 @@ export interface BackendDeps {
   closeDb: () => Promise<void>
   /** Key for internal assertions; read per request (CARTOONA_INTERNAL_AUTH_SECRET by default). */
   authSecret: () => Buffer
+  /** Clock for the session policy, epoch ms; injectable for tests. */
+  now: () => number
 }
 
 export function buildBackendApp(overrides: Partial<BackendDeps> = {}): FastifyInstance {
@@ -39,6 +41,7 @@ export function buildBackendApp(overrides: Partial<BackendDeps> = {}): FastifyIn
     db: overrides.db ?? getPool,
     closeDb: overrides.closeDb ?? closePool,
     authSecret: overrides.authSecret ?? (() => readInternalAuthSecret()),
+    now: overrides.now ?? Date.now,
   }
 
   const app = Fastify({

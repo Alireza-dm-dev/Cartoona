@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { checkCurrentParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
+import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
 import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 
 function jsonError(message: string, status: number, code?: string): NextResponse {
@@ -35,7 +35,7 @@ export async function GET() {
     return jsonError("شما مجوز انجام این عملیات را ندارید.", 403)
   }
 
-  const lifetime = await checkCurrentParentSessionLifetime(supabase)
+  const lifetime = await checkParentSessionLifetime(supabase, user.id)
   if (!lifetime.valid) {
     return createParentSessionFailureResponse(supabase, lifetime)
   }

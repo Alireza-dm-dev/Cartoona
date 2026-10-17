@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import { NextRequest } from "next/server"
 import { AuthRetryableFetchError } from "@supabase/supabase-js"
 import { setLogSink, type LogRecord } from "@/lib/observability/logger"
+import { getSessionResult } from "../helpers/supabase-jwt"
 
 // Middleware + a timed-out auth/session check: must be a retryable 503 and must
 // never sign the user out or clear auth cookies.
@@ -15,9 +16,13 @@ vi.mock("@supabase/ssr", () => ({
 
 const timeoutError = new AuthRetryableFetchError("Request timed out after 10000ms", 0)
 
-function client(over: { getUser?: unknown; rpc?: unknown }) {
+function client(over: { getUser?: unknown; rpc?: unknown; getSession?: unknown }) {
   return {
-    auth: { getUser: over.getUser, signOut: vi.fn(async () => ({})) },
+    auth: {
+      getUser: over.getUser,
+      getSession: over.getSession ?? vi.fn(async () => getSessionResult("valid", "u1")),
+      signOut: vi.fn(async () => ({})),
+    },
     rpc: over.rpc,
     from: () => ({
       select: () => ({
@@ -45,10 +50,11 @@ describe("middleware with timed-out Supabase calls", () => {
     expect(c.rpc).not.toHaveBeenCalled()
   })
 
-  it("session-lifetime RPC timeout -> 503, signOut NOT called", async () => {
+  it("session-lifetime read timeout (refresh) -> 503, signOut NOT called", async () => {
     const c = client({
       getUser: async () => ({ data: { user: { id: "u1" } }, error: null }),
-      rpc: vi.fn(async () => ({ data: null, error: { message: "Request timed out after 10000ms" } })),
+      getSession: vi.fn(async () => getSessionResult("transient", "u1")),
+      rpc: vi.fn(),
     })
     m.client = c
     const { middleware } = await import("@/middleware")
@@ -58,17 +64,20 @@ describe("middleware with timed-out Supabase calls", () => {
     expect(c.auth.signOut).not.toHaveBeenCalled()
   })
 
-  it("the middleware client is built with the timeout-aware fetch", async () => {
+  it("the middleware client is built with a bounded fetch (Auth calls share the deadline; others keep their bound)", async () => {
     m.client = client({ getUser: async () => ({ data: { user: null }, error: timeoutError }), rpc: vi.fn() })
     const { middleware } = await import("@/middleware")
     await middleware(new NextRequest("http://x/dashboard"))
     const { supabaseTimeoutFetch } = await import("@/lib/supabase/timeout-fetch")
-    expect((m.options as { global: { fetch: unknown } }).global.fetch).toBe(supabaseTimeoutFetch)
+    const fetchImpl = (m.options as { global: { fetch: unknown } }).global.fetch
+    expect(typeof fetchImpl).toBe("function")
+    expect(fetchImpl).not.toBe(supabaseTimeoutFetch)
+    expect(fetchImpl).not.toBe(globalThis.fetch)
   })
 })
 
 describe("middleware session-check deadline (V0.1.42)", () => {
-  it("a getUser() that never settles (auth-js retrying a refresh) -> 503 at 10 s, not ~26-30 s; no sign-out", async () => {
+  it("a getUser() that never settles (auth-js retrying a refresh) -> 503 at 5 s, not ~26-30 s; no sign-out", async () => {
     vi.useFakeTimers()
     try {
       const c = client({ getUser: () => new Promise(() => {}), rpc: vi.fn() })
@@ -76,7 +85,7 @@ describe("middleware session-check deadline (V0.1.42)", () => {
       const { middleware } = await import("@/middleware")
       let settled: Response | null = null
       const pending = middleware(new NextRequest("http://x/dashboard")).then((r) => (settled = r))
-      await vi.advanceTimersByTimeAsync(9_999)
+      await vi.advanceTimersByTimeAsync(4_999)
       expect(settled).toBeNull()
       await vi.advanceTimersByTimeAsync(1)
       await pending
@@ -102,7 +111,8 @@ describe("middleware observability", () => {
     const restore = setLogSink((r) => records.push(r))
     m.client = client({
       getUser: async () => ({ data: { user: { id: "u1" } }, error: null }),
-      rpc: vi.fn(async () => ({ data: null, error: { message: "Request timed out after 10000ms" } })),
+      getSession: vi.fn(async () => getSessionResult("transient", "u1")),
+      rpc: vi.fn(),
     })
     const { middleware } = await import("@/middleware")
     const req = new NextRequest("http://x/dashboard", { headers: { cookie: "sb-access-token=SECRETJWT", "x-request-id": "edge-req-00001" } })

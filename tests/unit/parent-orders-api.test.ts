@@ -3,7 +3,8 @@ import { AuthRetryableFetchError } from "@supabase/supabase-js"
 import { setLogSink, type LogRecord } from "@/lib/observability/logger"
 import { REQUEST_ID_HEADER } from "@/lib/observability/request-id"
 import { encodeOrdersCursor } from "@/lib/parent/orders/pagination"
-import { createFakeSupabase, VALID_LIFETIME, uuid, ts } from "../helpers/fake-supabase"
+import { createFakeSupabase, uuid, ts } from "../helpers/fake-supabase"
+import type { SessionKind } from "../helpers/supabase-jwt"
 
 const m = vi.hoisted(() => ({ client: null as unknown }))
 vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient: async () => m.client }))
@@ -14,7 +15,7 @@ let restore: () => void
 beforeEach(() => { records = []; restore = setLogSink((r) => records.push(r)) })
 afterEach(() => restore())
 
-function world(over: { role?: string; lifetime?: unknown; profile?: boolean; auth?: object; count?: number } = {}) {
+function world(over: { role?: string; session?: SessionKind; profile?: boolean; auth?: object; count?: number } = {}) {
   const rows = Array.from({ length: over.count ?? 45 }, (_, i) => ({
     id: uuid(i + 1), parent_id: ME, type: "image", status: "pending_review", title: `SECRET-TITLE-${i}`, candy_cost: 1, created_at: ts(i + 1),
   }))
@@ -26,8 +27,8 @@ function world(over: { role?: string; lifetime?: unknown; profile?: boolean; aut
       parent_profiles: over.profile === false ? [] : [{ id: ME, user_id: "user-1" }],
       orders: rows,
     },
+    session: over.session,
     rpc: {
-      get_current_parent_session_policy: () => over.lifetime ?? VALID_LIFETIME,
       get_parent_orders_delivered_at: () => [],
     },
   })
@@ -84,7 +85,9 @@ describe("GET /api/parent/orders", () => {
     expect(f.calls.getUser).toBe(1)
     expect(f.calls.from.users).toBe(1)
     expect(f.calls.from.parent_profiles).toBe(1)
-    expect(f.calls.rpc.filter((c) => c.fn === "get_current_parent_session_policy")).toHaveLength(1)
+    // V0.1.43: the lifetime is evaluated from the verified session, locally.
+    expect(f.calls.rpc.filter((c) => c.fn !== "get_parent_orders_delivered_at")).toHaveLength(0)
+    expect(f.calls.getSession).toBe(1)
   })
 
   it("401 when unauthenticated; no data", async () => {
@@ -102,13 +105,13 @@ describe("GET /api/parent/orders", () => {
   })
 
   it("lifetime lookup_failed -> 503 with NO signOut; definite expiry -> existing 401 + local signOut", async () => {
-    const a = world({ lifetime: [] })
+    const a = world({ session: "transient" })
     const signOutA = vi.spyOn((a.client as unknown as { auth: { signOut: () => Promise<unknown> } }).auth, "signOut")
     const res = await GET()
     expect(res.status).toBe(503)
     expect(signOutA).not.toHaveBeenCalled()
 
-    const b = world({ lifetime: [{ is_valid: false, session_started_at: "2025-01-01T00:00:00Z", expires_at: "2025-01-31T00:00:00Z" }] })
+    const b = world({ session: "expired" })
     const signOutB = vi.spyOn((b.client as unknown as { auth: { signOut: () => Promise<unknown> } }).auth, "signOut")
     const res2 = await GET()
     expect(res2.status).toBe(401)
@@ -151,7 +154,7 @@ describe("GET /api/parent/orders", () => {
   })
 
   it("a database failure is one generic 500 with a safe error event", async () => {
-    const f = createFakeSupabase({ user: { id: "user-1" }, tables: { users: [{ id: "user-1", role: "parent" }], parent_profiles: [{ id: ME, user_id: "user-1" }], orders: [] }, tableErrors: { orders: { message: "relation orders: password=hunter2" } }, rpc: { get_current_parent_session_policy: () => VALID_LIFETIME } })
+    const f = createFakeSupabase({ user: { id: "user-1" }, tables: { users: [{ id: "user-1", role: "parent" }], parent_profiles: [{ id: ME, user_id: "user-1" }], orders: [] }, tableErrors: { orders: { message: "relation orders: password=hunter2" } } })
     m.client = f.client
     const res = await GET()
     expect(res.status).toBe(500)
