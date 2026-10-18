@@ -138,4 +138,8 @@ Since V0.1.43 it also carries the provider-verified sign-in time, and the
 backend enforces Cartoona's session policy: a 30-day lifetime and
 `users.sessions_not_before`. The Supabase session-lifetime RPC is gone.
 **No business route uses it yet.** The first candidate is the parent orders
-list. It still needs real data in PostgreSQL. See [BACKEND.md](BACKEND.md#before-the-first-authenticated-route-cuts-over).
+list. Since V0.1.44 the data copy exists as local/testing tooling
+([DATA_MIGRATION.md](DATA_MIGRATION.md)): copied data passes `requireAuth` and
+the PostgreSQL parent-orders repository locally, but no route reads it and no
+production data has been copied. Production cutover stays blocked on the
+V0.1.43 `amr` verification. See [BACKEND.md](BACKEND.md#before-the-first-authenticated-route-cuts-over).

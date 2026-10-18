@@ -272,14 +272,15 @@ Desktop. These are **not production estimates**.
 
 1. **Identity and session policy:** done (V0.1.42 adapter, assertion,
    `requireAuth`; V0.1.43 Cartoona session policy, assertion v2,
-   `sessions_not_before`). Still open: the `user_identities` backfill as part
-   of the data copy, and the pre-production `amr` check against the
+   `sessions_not_before`; V0.1.44 `user_identities` backfill in the data-copy
+   tool). Still open: the pre-production `amr` check against the
    disposable Supabase project (**not yet verified; the project was
    unreachable on 2026-10-17**,
    [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md#where-authenticatedat-comes-from)).
-2. **Data:** the domain's data in PostgreSQL, through the copy procedure in
-   PLAIN_POSTGRES.md or dual writes. The local database holds only the seeded
-   reference data today.
+2. **Data:** the copy tool exists and is proven locally (V0.1.44,
+   [DATA_MIGRATION.md](DATA_MIGRATION.md)); a rehearsal on a real Supabase
+   export and the production copy itself are still open. The local `cartoona`
+   database holds only the seeded reference data.
 3. **Frontend to backend client:** GET is done (V0.1.41), and forwarding a
    verified identity is done (V0.1.42, `identity:` option). Non-GET support
    and a one-time nonce (assertion replay) are still needed for the first

@@ -9,7 +9,8 @@ helpers or Supabase database roles**.
 > Auth and Storage, except `/api/creation-pricing` (below). V0.1.39 added a data-access layer (`lib/db`, `lib/repositories`;
 > see [POSTGRES_DATA_ACCESS.md](POSTGRES_DATA_ACCESS.md)), and since V0.1.41
 > the Fastify backend serves one route (`/api/creation-pricing`) from it
-> ([ROUTE_CUTOVER.md](ROUTE_CUTOVER.md)). No production data has been copied.
+> ([ROUTE_CUTOVER.md](ROUTE_CUTOVER.md)). No production data has been copied;
+> the V0.1.44 copy tool ([DATA_MIGRATION.md](DATA_MIGRATION.md)) is local/testing only.
 
 ## Why a new baseline
 
@@ -400,31 +401,24 @@ Checked mechanically by `plain-postgres-db.test.ts` against the live Supabase ch
 | Storage buckets (5) | **deferred** | storage provider configuration, not database rows |
 | Reference rows | **identical values** | fresh ids per environment, as in Supabase |
 
-## Data-copy mapping (design only, nothing copied)
+## Data-copy mapping (V0.1.44)
 
-Copy order follows foreign keys. **Every primary key is copied unchanged**:
-orders, media, ledger entries, purchases, payment attempts, coupons, referral
-rows and audit entries are all referenced by id: from each other, from storage
-object keys (`<user id>/<order id>/…`, `orders/<order id>/final/…`), from
-payment providers and from URLs.
+Implemented as local/testing tooling in `scripts/db/data-copy/` (`npm run
+db:copy`). The full table mapping, copy order, identity backfill, trigger
+handling, reconciliation rules, rerun semantics and the (unexecuted) production
+plan are in [DATA_MIGRATION.md](DATA_MIGRATION.md). Two corrections to the
+earlier design notes that stood here:
 
-| Supabase source | Plain target | Notes |
-|---|---|---|
-| `auth.users` × `public.users` | `public.users` | copy `public.users` as-is: `id` is the auth user id and **must stay identical**, because storage keys and every FK use it |
-| `auth.users.id` | `user_identities ('supabase', id)` | one row per user. Phone and email credentials stay with the auth provider. |
-| `parent_profiles`, `child_profiles` | same | disable the `AFTER INSERT` triggers during the copy (`session_replication_role = replica`), otherwise a second wallet, grant and referral code would be generated; copy `candy_wallets`, `parent_welcome_credits` and `referral_code` from the source |
-| `characters`, `creation_pricing`, `candy_packages`, `referral_program_settings`, `homepage_*` | same | **replace** the baseline's reference rows (truncate first); orders and purchases reference production ids |
-| `orders`, `video_requests`, `drawing_animation_requests` | same | ids unchanged; `submission_key` preserved for idempotency |
-| `media_assets` | same | `file_url` keys unchanged; objects are copied to the new storage provider under the **same keys** |
-| `order_status_history` | same | copy with triggers disabled (append-only blocks nothing on INSERT, but keep one copy path) |
-| `candy_wallets`, `candy_transactions` | same | ledger copied verbatim; verify `balance = sum(amount)` per wallet after the copy |
-| `parent_welcome_credits`, `parent_welcome_credit_usages` | same | verify `used_count = count(usages)` per parent |
-| `candy_purchases`, `payment_attempts`, `payment_webhook_events` | same | provider references unchanged |
-| `coupons`, `coupon_package_rules`, `coupon_redemptions` | same | |
-| `referral_*` | same | |
-| `audit_logs`, `moderation_logs` | same | INSERT only; the append-only triggers permit it |
-| `storage.objects` (5 buckets) | object storage, not the database | copy objects under unchanged keys |
-| `auth.sessions`, `auth.identities`, other auth tables | not copied | sessions are re-established with the new auth layer |
+- Triggers are **not** disabled with `session_replication_role = replica`:
+  that also turns off foreign-key enforcement. The tool disables exactly
+  `assign_parent_referral_code`, `ensure_parent_candy_wallet`,
+  `grant_parent_welcome_image_credits` (and `candy_purchases_set_updated_at`
+  for one FK-cycle update) by name, inside the phase transaction.
+- History tables need no bypass at all: the append-only guards block UPDATE,
+  DELETE and TRUNCATE, never INSERT, so they stay active for the whole import.
+
+Every primary key is copied unchanged, and users keep id = their Supabase auth
+UUID. No production data has been copied.
 
 ## Remaining blockers before the app can use this database
 
@@ -432,5 +426,5 @@ payment providers and from URLs.
 2. **Call-site changes:** the 8 renamed explicit-actor functions, and `p_file_mime_type` supplied by the request route after storage verification.
 3. **Auth:** user creation and identity resolution (`user_identities`), plus a replacement for the parent session-lifetime check and its 15 call sites. Supabase Auth can stay in front temporarily, with its user id resolved through `user_identities`.
 4. **Storage:** the object-storage provider, signed URLs, and the storage access rules above.
-5. **Data copy:** the copy procedure above, with balance, credit and history verification.
+5. **Data copy:** tooling done and proven locally in V0.1.44 ([DATA_MIGRATION.md](DATA_MIGRATION.md)); not yet rehearsed on a real Supabase export, and no production copy has run.
 6. **Mirroring:** any Supabase migration added before cutover must get a matching `database/migrations` file; the parity test enforces this.

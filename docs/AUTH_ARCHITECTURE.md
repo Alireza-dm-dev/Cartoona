@@ -142,25 +142,21 @@ signature, subject, user id, tokens, cookies, email or phone.
 (`database/migrations/0003_identity.sql`). There is no foreign key to
 `auth.users`.
 
-**Existing users (migration backfill).** Cartoona ids were created from the
-Supabase auth uid by the `on_auth_user_created` trigger, so every migrated user
-keeps their id and gets one identity row:
+**Existing users (migration backfill, V0.1.44).** Cartoona ids were created
+from the Supabase auth uid by the `on_auth_user_created` trigger, so every
+migrated user keeps their id and gets one identity row. The data-copy tool
+writes it (`scripts/db/data-copy/identity.ts`, [DATA_MIGRATION.md](DATA_MIGRATION.md#identity-backfill)):
+`('supabase', users.id::text) → users.id`, with a derived row id and
+`created_at = users.created_at`, so it is deterministic. A subject mapped to a
+different user, or a user with a second supabase subject, is refused with
+nothing written; there is no `ON CONFLICT DO NOTHING` that could hide one.
+Deleted users get their row too and are still refused (403) on `deleted_at`.
 
-```sql
--- After the users data copy, in the same maintenance window. Idempotent.
-INSERT INTO public.user_identities (user_id, provider, provider_subject)
-SELECT u.id, 'supabase', u.id::text
-FROM public.users u
-ON CONFLICT (provider, provider_subject) DO NOTHING;
-
--- Verify: every user has exactly one supabase identity, and it is their own id.
-SELECT count(*) FROM public.users u
-LEFT JOIN public.user_identities i ON i.user_id = u.id AND i.provider = 'supabase'
-WHERE i.id IS NULL OR i.provider_subject <> u.id::text;   -- expect 0
-```
-
-This is proven locally on fixtures in `tests/unit/auth-chain-db.test.ts`. No
-production data has been copied.
+Proven locally on a copied Supabase-shaped fixture in
+`tests/unit/data-copy-db.test.ts` (requireAuth → copied user and role; deleted
+→ 403; unknown subject → `identity_not_linked`). No production data has been
+copied. The copy does not depend on the open `amr` check below, but production
+cutover does.
 
 **No silent creation.** A verified identity with no mapping is
 `identity_not_linked`. Reads never create users or identities, and

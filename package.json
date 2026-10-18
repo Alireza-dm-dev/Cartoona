@@ -12,7 +12,8 @@
     "backend:dev": "node backend/build.mjs --dev",
     "backend:build": "node backend/build.mjs",
     "backend:start": "node backend/dist/server.cjs",
-    "backend:typecheck": "tsc --noEmit -p backend/tsconfig.json"
+    "backend:typecheck": "tsc --noEmit -p backend/tsconfig.json",
+    "db:copy": "node scripts/db/copy-supabase-to-plain.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
