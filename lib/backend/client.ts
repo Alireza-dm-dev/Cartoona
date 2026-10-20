@@ -34,6 +34,8 @@ import { BackendClientError } from "./errors"
  * forwarded.
  *
  * Only GET + JSON exists today; write methods arrive with the first write route.
+ * Callers (V0.1.45): /api/creation-pricing (public), /api/auth/backend-me and
+ * the parent orders LIST (/api/parent/orders + the /dashboard/orders first page).
  */
 
 export interface BackendGetRequest<T> {
@@ -41,6 +43,13 @@ export interface BackendGetRequest<T> {
   operation: string
   /** Absolute path on the backend, e.g. "/v1/creation-pricing". No query string. */
   path: string
+  /**
+   * Query parameters (V0.1.45). Undefined values are omitted. Names are
+   * constants in route handlers; values are caller input already validated
+   * by the route and are URL-encoded here. The assertion binds method + path,
+   * not the query: a query only selects within the caller's own data.
+   */
+  query?: Record<string, string | undefined>
   /** The inbound request's id. Replaced by a fresh UUID when absent or unsafe. */
   requestId?: string
   /**
@@ -72,6 +81,21 @@ export const BACKEND_MAX_BODY_CHARS = 256 * 1024
 
 // Segments of [A-Za-z0-9_-] only: no "//", ".", "..", query or fragment.
 const PATH = /^(\/[A-Za-z0-9_-]+)+$/
+const QUERY_NAME = /^[a-z][a-zA-Z0-9_]{0,31}$/
+const QUERY_VALUE_MAX = 512
+
+function queryString(query: Record<string, string | undefined> | undefined): string {
+  if (!query) return ""
+  const params = new URLSearchParams()
+  for (const [name, value] of Object.entries(query)) {
+    if (!QUERY_NAME.test(name)) throw new TypeError("backend client: invalid query name")
+    if (value === undefined) continue
+    if (typeof value !== "string" || value.length > QUERY_VALUE_MAX) throw new TypeError("backend client: invalid query value")
+    params.append(name, value)
+  }
+  const text = params.toString()
+  return text ? `?${text}` : ""
+}
 
 export async function backendGetJson<T>(
   request: BackendGetRequest<T>,
@@ -84,6 +108,7 @@ export async function backendGetJson<T>(
     // A programming error, not input: paths are constants in route handlers.
     throw new TypeError("backend client: invalid path")
   }
+  const search = queryString(request.query)
 
   let config
   try {
@@ -129,7 +154,7 @@ export async function backendGetJson<T>(
   let response: Response
   try {
     response = await fetchWithTimeout(
-      `${config.baseUrl}${request.path}`,
+      `${config.baseUrl}${request.path}${search}`,
       {
         method: "GET",
         headers,

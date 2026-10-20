@@ -10,12 +10,11 @@ import {
 } from "@/components/dashboard/orders/orders-states";
 import { NewRequestActions } from "@/components/dashboard/new-request-actions";
 import { OrdersLoadMore } from "@/components/dashboard/orders/orders-load-more";
-import { getParentOrdersPage } from "@/lib/parent/orders/queries";
 import {
-  resolveParentRequestContext,
-  type ParentContextResult,
-} from "@/lib/parent/parent-request-context";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+  fetchParentOrdersPage,
+  verifyParentOrdersCaller,
+  type ParentOrdersCaller,
+} from "@/lib/parent/orders/backend-orders";
 
 /**
  * /dashboard/orders — the parent's own requests.
@@ -30,17 +29,22 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
  * `[orderId]` route, and the resulting stream flushes a 200 before that page
  * can call `notFound()` — which would turn every missing order into a 200.
  * Keeping the boundary local to this list preserves a real 404 there.
+ *
+ * V0.1.45: the list is read through the backend (Fastify -> PostgreSQL), the
+ * same path as the "load more" API, so every page comes from one database.
+ * This page performs no Supabase table or RPC read; Supabase only verifies the
+ * session (lib/parent/orders/backend-orders.ts).
  */
 export const dynamic = "force-dynamic";
 
 export default async function OrdersPage() {
-  // Identity is resolved ONCE, before the boundary, so an expired session
-  // still produces a real redirect rather than a streamed 200, and the list
-  // below reuses it instead of asking the auth backend again. "identity" level:
-  // middleware has already enforced role and session lifetime on this request.
-  const supabase = await createServerSupabaseClient();
-  const identity = await resolveParentRequestContext(supabase, { verify: "identity" });
-  if (!identity.ok && identity.reason === "unauthenticated") {
+  // The session is verified ONCE, before the boundary, so a signed-out or
+  // expired session still produces a real redirect rather than a streamed
+  // 200; the list below reuses the verified caller. Middleware has already
+  // checked this request too (see docs/ROUTE_CUTOVER.md on the remaining
+  // duplicate verification).
+  const caller = await verifyParentOrdersCaller();
+  if (!caller.ok && caller.reason !== "auth_unavailable") {
     redirect("/login?from=/dashboard/orders");
   }
 
@@ -61,32 +65,32 @@ export default async function OrdersPage() {
       </Card>
 
       <Suspense fallback={<OrdersLoadingState />}>
-        <OrdersList supabase={supabase} identity={identity} />
+        <OrdersList caller={caller} />
       </Suspense>
     </div>
   );
 }
 
 /** Streamed separately so the list can show a skeleton while it resolves. */
-async function OrdersList({
-  supabase,
-  identity,
-}: {
-  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>;
-  identity: ParentContextResult;
-}) {
-  if (!identity.ok) {
-    // A missing profile is a real, explainable state; anything else (including
-    // an auth backend that could not be reached) is a retryable error, never a
-    // false "logged out".
-    if (identity.reason === "no_parent_profile") return <OrdersNoProfileState />;
-    return <OrdersErrorState />;
-  }
+async function OrdersList({ caller }: { caller: ParentOrdersCaller }) {
+  // An auth backend that could not be reached is a retryable error, never a
+  // false "logged out".
+  if (!caller.ok) return <OrdersErrorState />;
 
   // First page only: pageSize + 1 rows, never the parent's whole history.
-  const result = await getParentOrdersPage(supabase, identity.context);
+  const result = await fetchParentOrdersPage(caller.context, { cursor: null, limit: null });
 
-  if (!result.ok) return <OrdersErrorState />;
+  if (!result.ok) {
+    // Signed in before a forced invalidation: sign in again.
+    if (result.reason === "session_invalidated" || result.reason === "session_expired") {
+      redirect("/login?from=/dashboard/orders");
+    }
+    // A missing profile is a real, explainable state. Admin accounts, which
+    // middleware lets into /dashboard but which own no orders, keep seeing it
+    // as before (they never had a parent profile).
+    if (result.reason === "no_parent_profile" || result.reason === "forbidden") return <OrdersNoProfileState />;
+    return <OrdersErrorState />;
+  }
 
   if (result.orders.length === 0 && result.nextCursor === null) return <OrdersEmptyState />;
 

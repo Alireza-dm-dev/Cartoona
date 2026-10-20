@@ -65,7 +65,7 @@ interface OrderRow {
 }
 
 /**
- * Plain-PostgreSQL port of `getParentOrdersPage` (lib/parent/orders/queries.ts).
+ * Plain-PostgreSQL port of the former Supabase `getParentOrdersPage` (removed in V0.1.45).
  * Same contract: keyset pagination on (created_at DESC, id DESC), default 20,
  * max 50, pageSize + 1 rows read to detect a next page, the same opaque cursor
  * codec, the same row mapper, and a cursor that follows the last row READ.

@@ -229,6 +229,13 @@ cluster, because roles are cluster-wide.
 
 ## Before the first route cuts over
 
+**Status:** pricing (V0.1.41) and the parent orders LIST (V0.1.45) are served
+from this layer through the backend. The orders list uses
+`findParentProfileIdByUserId` and `getParentOrdersPage` and nothing else; the
+SELECT grants of 0009 already cover them (`users`, `parent_profiles`, `orders`,
+`order_status_history`; `user_identities` from 0010), so no migration was
+added. Items 1–5 below are done for those reads; item 6 (writes) is open.
+
 1. **Identity bridge:** a route still learns who the caller is from Supabase
    Auth. Cutover needs the Supabase user id resolved to a plain `users.id`,
    through `user_identities` or the same UUIDs carried over by the data copy.

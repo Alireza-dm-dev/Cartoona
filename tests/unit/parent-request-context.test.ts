@@ -215,20 +215,3 @@ describe("order detail reuses the context", () => {
     expect(await getParentOrderDetail(f.client, OID, { parentProfileId: ME })).toEqual({ ok: false, reason: "read_failed" })
   })
 })
-
-describe("backend-call accounting (code-path count, not a latency claim)", () => {
-  it("orders list page: 5 sequential backend calls before -> 4 after (getUser x2 -> x1), with no extra auth calls", async () => {
-    const { getParentOrdersPage } = await import("@/lib/parent/orders/queries")
-    const f = createFakeSupabase({
-      user: USER,
-      tables: { users: [{ id: USER.id, role: "parent" }], parent_profiles: [{ id: ME, user_id: USER.id }], orders: [{ id: uuid(1), parent_id: ME, type: "image", status: "pending_review", title: "t", candy_cost: 1, created_at: ts(1) }] },
-      rpc: { get_parent_orders_delivered_at: (a) => (a.p_order_ids as string[]).map((id) => ({ order_id: id, delivered_at: "2026-03-02T00:00:00Z" })) },
-    })
-    const ctx = await resolveParentRequestContext(f.client, { verify: "identity" })
-    if (!ctx.ok) throw new Error()
-    await getParentOrdersPage(f.client, ctx.context)
-    // getUser, parent_profiles, orders, delivered_at RPC
-    expect(f.calls.total()).toBe(4)
-    expect(f.calls.getUser).toBe(1)
-  })
-})

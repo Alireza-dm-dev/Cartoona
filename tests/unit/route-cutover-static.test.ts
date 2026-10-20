@@ -30,22 +30,83 @@ const compose = withoutYamlComments(read("compose.yml"))
 const frontend = composeService(compose, "frontend")
 const backend = composeService(compose, "backend")
 
-// The only frontend routes that call the backend: the migrated public read
-// (V0.1.41) and the auth-chain proof (V0.1.42). No business route is authenticated through it yet.
-const BACKEND_ROUTES = ["app/api/auth/backend-me/route.ts", "app/api/creation-pricing/route.ts"]
+// The only frontend code that calls the backend: the migrated public read
+// (V0.1.41), the auth-chain proof (V0.1.42) and the parent orders LIST loader
+// (V0.1.45), which serves exactly two surfaces: GET /api/parent/orders and the
+// /dashboard/orders first page.
+const BACKEND_CLIENT_USERS = ["app/api/auth/backend-me/route.ts", "app/api/creation-pricing/route.ts", "lib/parent/orders/backend-orders.ts"]
+const ORDERS_LIST_SURFACES = ["app/(dashboard)/dashboard/orders/page.tsx", "app/api/parent/orders/route.ts"]
+const BACKEND_ROUTES = ["app/api/auth/backend-me/route.ts", "app/api/creation-pricing/route.ts", "app/api/parent/orders/route.ts"]
 
-describe("scope: creation pricing is the only migrated business route", () => {
-  it("only the pricing route and the auth proof route use the backend client", () => {
+describe("scope: creation pricing and the parent orders LIST are the only migrated business reads", () => {
+  it("only the pricing route, the auth proof route and the orders-list loader use the backend client", () => {
     const users = frontendFiles
       .filter((f) => !f.startsWith("lib/backend/"))
       .filter((f) => /@\/lib\/backend\//.test(read(f)))
-    expect(users.sort()).toEqual(BACKEND_ROUTES)
+    expect(users.sort()).toEqual(BACKEND_CLIENT_USERS)
   })
 
-  it("the other pricing/billing/order/auth/storage routes still read Supabase and never the backend", () => {
+  it("the orders-list loader is used by the list route and the list page only", () => {
+    const users = frontendFiles.filter((f) => /@\/lib\/parent\/orders\/backend-orders/.test(read(f)))
+    expect(users.sort()).toEqual(ORDERS_LIST_SURFACES)
+  })
+
+  it("every other route (order detail, final media, gallery, billing, writes...) never reaches the backend", () => {
     const routes = walk("app/api").filter((f) => !BACKEND_ROUTES.includes(f) && f !== "app/api/health/route.ts")
     expect(routes.length).toBeGreaterThan(10)
-    for (const route of routes) expect(read(route)).not.toMatch(/@\/lib\/backend|BACKEND_INTERNAL_URL/)
+    expect(routes).toContain("app/api/parent/orders/[orderId]/final-media/route.ts")
+    for (const route of routes) expect(read(route)).not.toMatch(/@\/lib\/backend|BACKEND_INTERNAL_URL|backend-orders/)
+    for (const page of walk("app").filter((f) => f.endsWith("page.tsx") && !ORDERS_LIST_SURFACES.includes(f))) {
+      expect(read(page), page).not.toMatch(/@\/lib\/backend|backend-orders/)
+    }
+  })
+
+  it("the backend exposes exactly the migrated routes, and only GETs", () => {
+    const routes = walk("backend/src/routes").map((f) => read(f)).join("\n")
+    const registered = [...routes.matchAll(/app\.(get|post|put|patch|delete|route)\(\s*"([^"]+)"/g)].map((m) => `${m[1].toUpperCase()} ${m[2]}`)
+    expect(registered.sort()).toEqual(["GET /health", "GET /ready", "GET /v1/auth/me", "GET /v1/creation-pricing", "GET /v1/parent/orders"])
+  })
+})
+
+describe("the parent orders LIST reads no Supabase data", () => {
+  const surfaces = [...ORDERS_LIST_SURFACES, "lib/parent/orders/backend-orders.ts"]
+
+  it("no Supabase table/RPC query, no pg, lib/db or repositories in the route, page or loader", () => {
+    for (const file of surfaces) {
+      const src = code(file)
+      expect(src, file).not.toMatch(/\.from\(|\.rpc\(|from "pg"|@\/lib\/(db|repositories)\/|resolveParentRequestContext|get_parent_orders_delivered_at/)
+    }
+    // Supabase stays only as the identity provider: session verification and the local sign-out.
+    expect(code("app/api/parent/orders/route.ts")).not.toMatch(/createServerSupabaseClient\(\)/)
+    expect(code("lib/parent/orders/backend-orders.ts")).toMatch(/verifySupabaseIdentity\(\)/)
+  })
+
+  it("the old Supabase list query is gone, and nothing else used it", () => {
+    expect(fs.existsSync(path.join(root, "lib/parent/orders/queries.ts"))).toBe(false)
+    for (const file of frontendFiles) expect(read(file), file).not.toMatch(/@\/lib\/parent\/orders\/queries"/)
+  })
+
+  it("the browser still calls only Next for orders, never the backend", () => {
+    const loadMore = read("components/dashboard/orders/orders-load-more.tsx")
+    expect(loadMore).toMatch(/fetch\(`\/api\/parent\/orders\?cursor=/)
+    expect(loadMore).not.toMatch(/backend|4000|\/v1\//i)
+  })
+
+  it("the backend route takes the caller from requireAuth only, is parent-only, and resolves the profile itself", () => {
+    const route = code("backend/src/routes/parent-orders.ts")
+    expect(route).toMatch(/preHandler: \[requireAuth\(deps\), requireRole\("parent"\)\]/)
+    expect(route).toMatch(/request\.authPrincipal!\.userId/)
+    expect(route).toMatch(/findParentProfileIdByUserId\(deps\.db\(\), \{ userId \}\)/)
+    expect(route).toMatch(/rejectUnknown: true/)
+    expect(route).not.toMatch(/request\.(headers|body|cookies)|x-user-id|x-role|authorization|parentProfileId:\s*request/i)
+    expect(route).toMatch(/Cache-Control", "no-store"/)
+  })
+
+  it("the Next route forwards no browser identity and is dynamic and uncached", () => {
+    const route = code("app/api/parent/orders/route.ts")
+    expect(route).toMatch(/export const dynamic = "force-dynamic"/)
+    expect(route).toMatch(/"Cache-Control": "no-store"/)
+    expect(route).not.toMatch(/request\.headers|x-user-id|x-role|parentProfileId|cookies\(/i)
   })
 })
 

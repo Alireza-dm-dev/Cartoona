@@ -8,6 +8,7 @@ import { registerObservability, requestIdFor } from "./plugins/observability"
 import { registerAuthRoutes } from "./routes/auth"
 import { registerCreationPricingRoutes } from "./routes/creation-pricing"
 import { registerHealthRoutes } from "./routes/health"
+import { registerParentOrdersRoutes } from "./routes/parent-orders"
 
 /**
  * The backend HTTP app (V0.1.40), built WITHOUT listening: tests call
@@ -60,6 +61,7 @@ export function buildBackendApp(overrides: Partial<BackendDeps> = {}): FastifyIn
   registerHealthRoutes(app, deps)
   registerCreationPricingRoutes(app, deps)
   registerAuthRoutes(app, deps)
+  registerParentOrdersRoutes(app, deps)
 
   app.addHook("onClose", async () => {
     await deps.closeDb()

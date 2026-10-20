@@ -11,7 +11,7 @@ import {
   isKnownOrderType,
   parentTypeLabel,
 } from "@/lib/parent/orders/type-mapping";
-import { toParentOrderSummary } from "@/lib/parent/orders/queries";
+import { toParentOrderSummary } from "@/lib/parent/orders/summary";
 import { ALL_ORDER_STATUSES } from "@/lib/admin/requests/workflow";
 
 /**

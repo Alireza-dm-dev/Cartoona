@@ -425,16 +425,17 @@ read-only on the source. Today any mode other than `local` throws
 - **After the first write route moves:** a rollback then needs a reverse sync,
   which is out of scope here. That route's cutover must define it.
 
-## Remaining blockers before V0.1.45 (parent orders cutover)
+## Remaining blockers
 
-1. **AMR verification** against real Supabase tokens (V0.1.43). This is
-   still the hard production blocker.
+V0.1.45 cut the parent orders LIST over locally, on data copied by this tool
+([ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0145-parent-orders-list)). Production
+remains blocked by:
+
+1. **AMR verification** against real Supabase tokens (V0.1.43). This is still
+   the hard production blocker.
 2. **A rehearsal** of the export → staging → copy path on a real
    (disposable/staging) Supabase export. It has only been done with the local
    Supabase-shaped build, not with a `pg_dump` from a hosted project.
-3. **Storage:** the parent orders list returns no media, but the order detail
-   and gallery do. Signed URLs need the object-storage migration.
-4. **The `/v1` parent-orders route itself:** `requireAuth` → profile →
-   `getParentOrdersPage`, plus the frontend switch and its failure policy.
-   Only the repository-level proof exists today.
-5. **Deployment of the backend** outside local compose (BACKEND.md).
+3. **Storage:** the orders list returns no media, but order detail and the
+   gallery do. Signed URLs need the object-storage migration.
+4. **Deployment of the backend** outside local compose (BACKEND.md).

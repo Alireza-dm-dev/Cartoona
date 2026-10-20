@@ -56,6 +56,7 @@ migrations.
 | `GET /ready` | **Readiness.** `SELECT 1` succeeds **and** the session is a restricted `cartoona_app` login. The role check passes once and is then cached; the ping runs every time. | 200 `{"status":"ready"}`, 503 `{"status":"unavailable"}` |
 | `GET /v1/auth/me` | **Authenticated** (V0.1.42; session policy V0.1.43): who the signed v2 assertion resolves to, from `user_identities` + `users`, after the 30-day and `sessions_not_before` checks. Proof of the identity chain; see [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md). | 200 `{"authenticated":true,"userId":"…","role":"parent"}`; 401 `unauthenticated` / `session_expired` / `session_invalidated`; 403 `identity_not_linked` / `forbidden`; 503 `service_unavailable`; all `no-store` |
 | `GET /v1/creation-pricing` | Public price catalog from PostgreSQL (`getActiveCreationPrices`). Same contract as the Next route `GET /api/creation-pricing`. | 200 `{"prices":{…}}` with `Cache-Control: public, s-maxage=60, stale-while-revalidate=300`; 503 `{"error":"<Persian message>","code":"CREATION_PRICING_UNAVAILABLE"}` with `no-store` for a DB failure or an invalid or empty catalog |
+| `GET /v1/parent/orders` | **Authenticated, parent only** (V0.1.45): the caller's orders LIST. `requireAuth` + `requireRole("parent")` → profile from `principal.userId` → `getParentOrdersPage`. Query: `cursor`, `limit` (1..50) only. See [ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0145-parent-orders-list). | 200 `{"orders":[…],"nextCursor":…}`; 400 `invalid_request`; 401/403 as `requireAuth`/`requireRole`; 404 `parent_profile_not_found`; 503 `service_unavailable`; all `no-store` |
 | anything else | | 404 `{"error":"not_found"}` |
 
 Every response carries `X-Request-Id` and `X-Content-Type-Options: nosniff`.
@@ -270,6 +271,10 @@ Desktop. These are **not production estimates**.
 
 ## Before the first authenticated route cuts over
 
+**Status (V0.1.45):** the first authenticated route, the parent orders LIST, is
+cut over locally ([ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0145-parent-orders-list)).
+The items below remain open for production and for writes.
+
 1. **Identity and session policy:** done (V0.1.42 adapter, assertion,
    `requireAuth`; V0.1.43 Cartoona session policy, assertion v2,
    `sessions_not_before`; V0.1.44 `user_identities` backfill in the data-copy
@@ -278,11 +283,14 @@ Desktop. These are **not production estimates**.
    unreachable on 2026-10-17**,
    [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md#where-authenticatedat-comes-from)).
 2. **Data:** the copy tool exists and is proven locally (V0.1.44,
-   [DATA_MIGRATION.md](DATA_MIGRATION.md)); a rehearsal on a real Supabase
-   export and the production copy itself are still open. The local `cartoona`
-   database holds only the seeded reference data.
-3. **Frontend to backend client:** GET is done (V0.1.41), and forwarding a
-   verified identity is done (V0.1.42, `identity:` option). Non-GET support
+   [DATA_MIGRATION.md](DATA_MIGRATION.md)), and the orders list is proven on
+   copied data. A rehearsal on a real Supabase export and the production copy
+   itself are still open. The local `cartoona` database holds only the seeded
+   reference data.
+3. **Frontend to backend client:** GET is done (V0.1.41), forwarding a
+   verified identity is done (V0.1.42, `auth:` option), and validated query
+   parameters are done (V0.1.45, `query:` option; the assertion binds method
+   and path). Non-GET support
    and a one-time nonce (assertion replay) are still needed for the first
    write route.
 4. **Grants:** EXECUTE on the `*_trusted` functions a write route needs, in a

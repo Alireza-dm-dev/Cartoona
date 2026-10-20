@@ -136,6 +136,22 @@ cleared, and there is no automatic redirect to login. Logs carry the request
 id, the category and a coarse reason. They never contain the assertion,
 signature, subject, user id, tokens, cookies, email or phone.
 
+## First business route (V0.1.45)
+
+`GET /v1/parent/orders` is the first business route behind this chain:
+`requireAuth` → `requireRole("parent")` → profile from `principal.userId`.
+Its Next callers (`GET /api/parent/orders` and the `/dashboard/orders` first
+page) use `verifySupabaseIdentity` and the backend client exactly as
+`/api/auth/backend-me` does, and map the outcomes in the same way:
+
+- a definite `session_expired` or `session_invalidated` clears the session
+  cookies with a bounded local sign-out;
+- `auth_unavailable`, a backend outage, or our own assertion being rejected
+  is a 503 that never signs anyone out.
+
+See [ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0145-parent-orders-list). The `amr`
+pre-production check below still blocks any production use.
+
 ## Identity mapping and bootstrap
 
 `user_identities(provider, provider_subject) UNIQUE → users.id`

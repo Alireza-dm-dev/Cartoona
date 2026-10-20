@@ -4,6 +4,10 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["tests/unit/**/*.test.ts"],
+    // The opt-in PostgreSQL suites create, clone and drop databases in
+    // parallel; a DROP DATABASE waits for a checkpoint and can exceed the 10 s
+    // default under that load. Fast hooks are unaffected.
+    hookTimeout: 60_000,
   },
   resolve: {
     alias: {
