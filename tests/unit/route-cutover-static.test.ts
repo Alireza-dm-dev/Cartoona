@@ -31,15 +31,28 @@ const frontend = composeService(compose, "frontend")
 const backend = composeService(compose, "backend")
 
 // The only frontend code that calls the backend: the migrated public read
-// (V0.1.41), the auth-chain proof (V0.1.42) and the parent orders LIST loader
-// (V0.1.45), which serves exactly two surfaces: GET /api/parent/orders and the
-// /dashboard/orders first page.
-const BACKEND_CLIENT_USERS = ["app/api/auth/backend-me/route.ts", "app/api/creation-pricing/route.ts", "lib/parent/orders/backend-orders.ts"]
+// (V0.1.41), the auth-chain proof (V0.1.42), the parent orders LIST loader
+// (V0.1.45; GET /api/parent/orders and the /dashboard/orders first page) and
+// the parent ACCOUNT loader (V0.1.46; the welcome-credits and account-summary
+// routes and the public header's name).
+const BACKEND_CLIENT_USERS = [
+  "app/api/auth/backend-me/route.ts",
+  "app/api/creation-pricing/route.ts",
+  "lib/parent/account/backend-account.ts",
+  "lib/parent/orders/backend-orders.ts",
+]
 const ORDERS_LIST_SURFACES = ["app/(dashboard)/dashboard/orders/page.tsx", "app/api/parent/orders/route.ts"]
-const BACKEND_ROUTES = ["app/api/auth/backend-me/route.ts", "app/api/creation-pricing/route.ts", "app/api/parent/orders/route.ts"]
+const ACCOUNT_SURFACES = ["app/api/parent/account-summary/route.ts", "app/api/parent/welcome-credits/route.ts", "lib/auth/public-header-account.ts"]
+const BACKEND_ROUTES = [
+  "app/api/auth/backend-me/route.ts",
+  "app/api/creation-pricing/route.ts",
+  "app/api/parent/account-summary/route.ts",
+  "app/api/parent/orders/route.ts",
+  "app/api/parent/welcome-credits/route.ts",
+]
 
-describe("scope: creation pricing and the parent orders LIST are the only migrated business reads", () => {
-  it("only the pricing route, the auth proof route and the orders-list loader use the backend client", () => {
+describe("scope: creation pricing, the parent orders LIST and the parent account reads are the only migrated business reads", () => {
+  it("only the pricing route, the auth proof route, the orders-list loader and the account loader use the backend client", () => {
     const users = frontendFiles
       .filter((f) => !f.startsWith("lib/backend/"))
       .filter((f) => /@\/lib\/backend\//.test(read(f)))
@@ -51,13 +64,22 @@ describe("scope: creation pricing and the parent orders LIST are the only migrat
     expect(users.sort()).toEqual(ORDERS_LIST_SURFACES)
   })
 
+  it("the account loader is used by the two account routes and the public header only", () => {
+    const users = frontendFiles.filter((f) => /@\/lib\/parent\/account\/backend-account/.test(read(f)))
+    expect(users.sort()).toEqual(ACCOUNT_SURFACES)
+  })
+
   it("every other route (order detail, final media, gallery, billing, writes...) never reaches the backend", () => {
     const routes = walk("app/api").filter((f) => !BACKEND_ROUTES.includes(f) && f !== "app/api/health/route.ts")
     expect(routes.length).toBeGreaterThan(10)
     expect(routes).toContain("app/api/parent/orders/[orderId]/final-media/route.ts")
-    for (const route of routes) expect(read(route)).not.toMatch(/@\/lib\/backend|BACKEND_INTERNAL_URL|backend-orders/)
+    // Storage-backed and write routes in particular:
+    for (const r of ["app/api/parent/gallery/route.ts", "app/api/requests/route.ts", "app/api/candy-purchases/route.ts", "app/api/referrals/route.ts", "app/api/parent/password/route.ts"]) {
+      expect(routes, r).toContain(r)
+    }
+    for (const route of routes) expect(read(route), route).not.toMatch(/@\/lib\/backend|BACKEND_INTERNAL_URL|backend-orders|backend-account|backend-caller/)
     for (const page of walk("app").filter((f) => f.endsWith("page.tsx") && !ORDERS_LIST_SURFACES.includes(f))) {
-      expect(read(page), page).not.toMatch(/@\/lib\/backend|backend-orders/)
+      expect(read(page), page).not.toMatch(/@\/lib\/backend|backend-orders|backend-account|backend-caller/)
     }
   })
 
@@ -65,6 +87,20 @@ describe("scope: creation pricing and the parent orders LIST are the only migrat
     const routes = walk("backend/src/routes").map((f) => read(f)).join("\n")
     const registered = [...routes.matchAll(/app\.(get|post|put|patch|delete|route)\(\s*"([^"]+)"/g)].map((m) => `${m[1].toUpperCase()} ${m[2]}`)
     expect(registered.sort()).toEqual(["GET /health", "GET /ready", "GET /v1/auth/me", "GET /v1/creation-pricing", "GET /v1/parent/orders"])
+    // The account routes are registered from a table of exactly three read paths, each a GET.
+    const account = code("backend/src/routes/parent-account.ts")
+    expect([...account.matchAll(/^\s+"(\/v1\/[^"]+)": \{/gm)].map((m) => m[1]).sort()).toEqual(["/v1/parent/candy-balance", "/v1/parent/profile", "/v1/parent/welcome-credits"])
+    expect(account).toMatch(/app\.get\(path, \{ preHandler: \[requireAuth\(deps\), requireRole\("parent"\)\] \}/)
+    expect(account).not.toMatch(/app\.(post|put|patch|delete|route)\(/)
+  })
+
+  it("no backend route writes, touches Storage or calls a trusted write function", () => {
+    for (const file of walk("backend/src")) {
+      expect(code(file), file).not.toMatch(/\b(INSERT|UPDATE|DELETE)\s|storage\.|_trusted\b|\.rpc\(/)
+    }
+    for (const file of ["lib/repositories/parent-profiles.ts", "lib/repositories/candy-wallets.ts", "lib/repositories/welcome-credits.ts"]) {
+      expect(code(file), file).not.toMatch(/\b(INSERT|UPDATE|DELETE)\s/)
+    }
   })
 })
 
@@ -78,7 +114,8 @@ describe("the parent orders LIST reads no Supabase data", () => {
     }
     // Supabase stays only as the identity provider: session verification and the local sign-out.
     expect(code("app/api/parent/orders/route.ts")).not.toMatch(/createServerSupabaseClient\(\)/)
-    expect(code("lib/parent/orders/backend-orders.ts")).toMatch(/verifySupabaseIdentity\(\)/)
+    expect(code("lib/parent/orders/backend-orders.ts")).toMatch(/verifyParentCaller/)
+    expect(code("lib/parent/backend-caller.ts")).toMatch(/verifySupabaseIdentity\(\)/)
   })
 
   it("the old Supabase list query is gone, and nothing else used it", () => {
@@ -107,6 +144,71 @@ describe("the parent orders LIST reads no Supabase data", () => {
     expect(route).toMatch(/export const dynamic = "force-dynamic"/)
     expect(route).toMatch(/"Cache-Control": "no-store"/)
     expect(route).not.toMatch(/request\.headers|x-user-id|x-role|parentProfileId|cookies\(/i)
+  })
+})
+
+describe("the parent account reads (V0.1.46) read no Supabase data", () => {
+  const loaders = ["lib/parent/account/backend-account.ts", "lib/parent/account/account-response.ts", "lib/parent/backend-caller.ts", "lib/auth/parent-account.ts"]
+  const surfaces = [...ACCOUNT_SURFACES, ...loaders]
+
+  it("no Supabase table/RPC query, no pg, lib/db or repositories in the routes, the header or the loaders", () => {
+    for (const file of surfaces) {
+      const src = code(file)
+      expect(src, file).not.toMatch(/\.from\(["'`]|\.rpc\(|from "pg"|@\/lib\/(db|repositories)\/|resolveParentRequestContext|readWelcomeImageCredits|FROM public\./i)
+      expect(src, file).not.toMatch(/createServerSupabaseClient\(\)|createAdminSupabaseClient/)
+    }
+  })
+
+  it("the old Supabase reads of these values are gone: the credits reader, and the wallet/credits reads in GET /api/candy-purchases", () => {
+    for (const file of frontendFiles) expect(code(file), file).not.toMatch(/readWelcomeImageCredits/)
+    const purchases = code("app/api/candy-purchases/route.ts")
+    expect(purchases).not.toMatch(/candy_wallets|parent_welcome_credits|welcomeImageCreditsRemaining|wallet:/)
+    // The header no longer reads users.role or parent_profiles itself.
+    expect(code("lib/auth/public-header-account.ts")).not.toMatch(/\.from\(|getUser\(/)
+  })
+
+  it("the values are not read from Supabase anywhere else in the parent UI", () => {
+    const parentUi = [...walk("app/(dashboard)"), ...walk("app/(marketing)"), ...walk("app/(creation)"), ...walk("components")]
+    for (const file of parentUi) {
+      expect(code(file), file).not.toMatch(/from\(["']candy_wallets["']\)|from\(["']parent_welcome_credits["']\)|select\(["']full_name/)
+    }
+  })
+
+  it("the browser calls only Next for these values, never the backend", () => {
+    const billing = code("lib/candy-purchases/billing-client.ts")
+    expect(billing).toMatch(/"\/api\/parent\/account-summary"/)
+    expect(code("components/creation/complete-creation-request.tsx")).toMatch(/fetch\("\/api\/parent\/welcome-credits"/)
+    for (const file of ["lib/candy-purchases/billing-client.ts", "components/dashboard/billing/candy-billing-dashboard.tsx", "components/creation/complete-creation-request.tsx"]) {
+      expect(code(file), file).not.toMatch(/backend|:4000|\/v1\//i)
+    }
+  })
+
+  it("the backend routes take the caller from requireAuth only, are parent-only, refuse parameters and resolve the profile themselves", () => {
+    const route = code("backend/src/routes/parent-account.ts")
+    expect(route).toMatch(/request\.authPrincipal!\.userId/)
+    expect(route).toMatch(/findParentProfileIdByUserId\(deps\.db\(\), \{ userId \}\)/)
+    expect(route).toMatch(/getParentProfileDisplay\(deps\.db\(\), \{ userId \}\)/)
+    expect(route).toMatch(/Object\.keys\(\(request\.query \?\? \{\}\)[^)]*\)\.length > 0/)
+    expect(route).not.toMatch(/request\.(headers|body|cookies|params)|x-user-id|x-role|authorization|parentProfileId:\s*request/i)
+    expect(route).toMatch(/Cache-Control", "no-store"/)
+  })
+
+  it("the Next routes forward no browser identity and are dynamic and uncached", () => {
+    for (const file of ["app/api/parent/welcome-credits/route.ts", "app/api/parent/account-summary/route.ts"]) {
+      const route = code(file)
+      expect(route, file).toMatch(/export const dynamic = "force-dynamic"/)
+      expect(route, file).toMatch(/"Cache-Control": "no-store"/)
+      expect(route, file).not.toMatch(/request\.headers|x-user-id|x-role|parentProfileId|cookies\(/i)
+    }
+  })
+
+  it("no Client Component imports the account loader or the shared caller", () => {
+    for (const file of frontendFiles.filter((f) => /^["']use client["']/m.test(read(f)))) {
+      expect(read(file), file).not.toMatch(/backend-account|backend-caller|public-header-account/)
+    }
+    for (const file of ["lib/parent/account/backend-account.ts", "lib/parent/backend-caller.ts", "lib/auth/public-header-account.ts", "lib/auth/end-parent-session.ts"]) {
+      expect(read(file), file).toMatch(/^import "server-only"/m)
+    }
   })
 })
 

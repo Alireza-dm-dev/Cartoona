@@ -57,6 +57,9 @@ migrations.
 | `GET /v1/auth/me` | **Authenticated** (V0.1.42; session policy V0.1.43): who the signed v2 assertion resolves to, from `user_identities` + `users`, after the 30-day and `sessions_not_before` checks. Proof of the identity chain; see [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md). | 200 `{"authenticated":true,"userId":"…","role":"parent"}`; 401 `unauthenticated` / `session_expired` / `session_invalidated`; 403 `identity_not_linked` / `forbidden`; 503 `service_unavailable`; all `no-store` |
 | `GET /v1/creation-pricing` | Public price catalog from PostgreSQL (`getActiveCreationPrices`). Same contract as the Next route `GET /api/creation-pricing`. | 200 `{"prices":{…}}` with `Cache-Control: public, s-maxage=60, stale-while-revalidate=300`; 503 `{"error":"<Persian message>","code":"CREATION_PRICING_UNAVAILABLE"}` with `no-store` for a DB failure or an invalid or empty catalog |
 | `GET /v1/parent/orders` | **Authenticated, parent only** (V0.1.45): the caller's orders LIST. `requireAuth` + `requireRole("parent")` → profile from `principal.userId` → `getParentOrdersPage`. Query: `cursor`, `limit` (1..50) only. See [ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0145-parent-orders-list). | 200 `{"orders":[…],"nextCursor":…}`; 400 `invalid_request`; 401/403 as `requireAuth`/`requireRole`; 404 `parent_profile_not_found`; 503 `service_unavailable`; all `no-store` |
+| `GET /v1/parent/profile` | **Authenticated, parent only** (V0.1.46): the caller's profile name. `requireAuth` + `requireRole("parent")` → `getParentProfileDisplay(principal.userId)`. No parameters. Serves the public header. See [ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0146-parent-account-reads). | 200 `{"fullName":"…"\|null}`; 400 `invalid_request` (any query); 401/403 as `requireAuth`/`requireRole`; 404 `parent_profile_not_found`; 503 `service_unavailable`; all `no-store` |
+| `GET /v1/parent/candy-balance` | **Authenticated, parent only** (V0.1.46): profile from `principal.userId` → `getCandyBalance`. No wallet row reads 0. No parameters. | 200 `{"balance":n}`; 400/401/403/404/503 as above; all `no-store` |
+| `GET /v1/parent/welcome-credits` | **Authenticated, parent only** (V0.1.46): profile from `principal.userId` → `getWelcomeImageCreditsRemaining` (`max(granted − used, 0)`, no row → 0). No parameters. | 200 `{"welcomeImageCreditsRemaining":n}`; 400/401/403/404/503 as above; all `no-store` |
 | anything else | | 404 `{"error":"not_found"}` |
 
 Every response carries `X-Request-Id` and `X-Content-Type-Options: nosniff`.
@@ -268,12 +271,18 @@ Desktop. These are **not production estimates**.
 | `tests/unit/backend-app.test.ts` | fake | build without listening; /health without DB; /ready 200/503 incl. unsafe roles; pricing contract; safe DB errors; request ids; logs; 404/500/400/413; no CORS; config |
 | `tests/unit/backend-container.test.ts` | none | Dockerfile (base, non-root, PID 1, 0.0.0.0, two files), dockerignore, compose (loopback, restricted URL, no env_file), frontend independence, import boundaries, scripts |
 | `tests/unit/backend-db.test.ts` | opt-in `CARTOONA_PLAIN_PG=docker` | the real pool as a script-provisioned login role: /ready, live pricing, refusal of non-member and owning roles, unreachable DB, and the role's denied privileges |
+| `tests/unit/backend-parent-orders.test.ts` | fake | `GET /v1/parent/orders` (V0.1.45): caller from the assertion only, parent only, query validation, error mapping |
+| `tests/unit/backend-parent-account.test.ts` | fake | the three V0.1.46 account routes: values and zero states, caller from the assertion only, no parameters, forged headers ignored, roles, unlinked, expired, no profile, DB failure with category-only logs |
+| `tests/unit/parent-account-cutover-db.test.ts` | opt-in `CARTOONA_PLAIN_PG=docker` | copied data → Fastify on a login role → the Next routes and the header (V0.1.46) |
 
 ## Before the first authenticated route cuts over
 
-**Status (V0.1.45):** the first authenticated route, the parent orders LIST, is
-cut over locally ([ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0145-parent-orders-list)).
-The items below remain open for production and for writes.
+**Status (V0.1.46):** the authenticated reads cut over locally are the
+parent orders LIST (V0.1.45) and the parent account reads: profile name,
+candy balance, welcome credits (V0.1.46,
+[ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0146-parent-account-reads)). Every
+backend route is a GET; no write route exists. The items below remain open
+for production and for writes.
 
 1. **Identity and session policy:** done (V0.1.42 adapter, assertion,
    `requireAuth`; V0.1.43 Cartoona session policy, assertion v2,
@@ -284,7 +293,7 @@ The items below remain open for production and for writes.
    [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md#where-authenticatedat-comes-from)).
 2. **Data:** the copy tool exists and is proven locally (V0.1.44,
    [DATA_MIGRATION.md](DATA_MIGRATION.md)), and the orders list is proven on
-   copied data. A rehearsal on a real Supabase export and the production copy
+   copied data, as are the account reads (V0.1.46). A rehearsal on a real Supabase export and the production copy
    itself are still open. The local `cartoona` database holds only the seeded
    reference data.
 3. **Frontend to backend client:** GET is done (V0.1.41), forwarding a

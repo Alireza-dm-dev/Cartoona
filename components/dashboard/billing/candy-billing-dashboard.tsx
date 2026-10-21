@@ -18,6 +18,7 @@ import type {
   CandyPurchaseCompleteResponse,
   CandyBillingDashboardPhase,
 } from "@/lib/candy-purchases/types"
+import { loadBilling, refreshBillingData } from "@/lib/candy-purchases/billing-client"
 
 function LoadingSkeleton() {
   return (
@@ -83,35 +84,24 @@ export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBilli
     setPhase("loading")
     setPurchaseError(null)
     setSuccessMessage(null)
-    try {
-      const [pkgResp, billingResp] = await Promise.all([
-        fetch("/api/candy-packages", { cache: "no-store" }),
-        fetch("/api/candy-purchases", { cache: "no-store" }),
-      ])
+    const result = await loadBilling()
 
-      if (pkgResp.status === 401 || billingResp.status === 401) {
-        window.location.href = "/login?reason=session_expired&from=/dashboard/billing"
-        return
-      }
-      if (pkgResp.status === 403 || billingResp.status === 403) {
-        window.location.href = "/login?from=/dashboard/billing"
-        return
-      }
-
-      if (!pkgResp.ok || !billingResp.ok) {
-        setPhase("error")
-        return
-      }
-
-      const pkgData = await pkgResp.json()
-      const billingDataParsed: ParentCandyBillingResponse = await billingResp.json()
-
-      setPackages(pkgData.packages || [])
-      setBillingData(billingDataParsed)
-      setPhase("success")
-    } catch {
-      setPhase("error")
+    if (result.kind === "session_expired") {
+      window.location.href = "/login?reason=session_expired&from=/dashboard/billing"
+      return
     }
+    if (result.kind === "forbidden") {
+      window.location.href = "/login?from=/dashboard/billing"
+      return
+    }
+    if (result.kind === "error") {
+      setPhase("error")
+      return
+    }
+
+    setPackages(result.packages)
+    setBillingData(result.billing)
+    setPhase("success")
   }
 
   function handleSelectPackage(pkg: CandyPackageSummary) {
@@ -125,11 +115,8 @@ export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBilli
   }
 
   async function refreshBilling() {
-    const billingResp = await fetch("/api/candy-purchases", { cache: "no-store" })
-    if (billingResp.ok) {
-      const billingDataParsed: ParentCandyBillingResponse = await billingResp.json()
-      setBillingData(billingDataParsed)
-    }
+    const refreshed = await refreshBillingData()
+    if (refreshed) setBillingData(refreshed)
   }
 
   async function handleConfirmPurchase() {

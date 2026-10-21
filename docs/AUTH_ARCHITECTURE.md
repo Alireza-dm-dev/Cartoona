@@ -152,6 +152,32 @@ page) use `verifySupabaseIdentity` and the backend client exactly as
 See [ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0145-parent-orders-list). The `amr`
 pre-production check below still blocks any production use.
 
+## Parent account reads (V0.1.46)
+
+`GET /v1/parent/profile`, `/candy-balance` and `/welcome-credits` use the same
+chain and the same outcome mapping. Their Next callers are
+`GET /api/parent/welcome-credits`, `GET /api/parent/account-summary` and the
+public header (`getPublicHeaderAccount`).
+
+- `lib/parent/backend-caller.ts` (`verifyParentCaller`, `mapBackendRejection`)
+  is shared with the orders LIST. A request verifies the session once and passes
+  the verified context explicitly to each backend read. Each read signs its own
+  assertion, bound to its own path. Nothing is cached across requests.
+- The header resolves the account with React `cache()`: once per server
+  render (the homepage used to look it up twice). It now honours the 30-day
+  and `sessions_not_before` policy (anonymous header) and still never signs
+  anyone out.
+- The account routes keep their pre-cutover session bodies: 401
+  `PARENT_SESSION_EXPIRED` with a bounded local sign-out
+  (`lib/auth/end-parent-session.ts`, shared with the orders route), and 503
+  `SESSION_CHECK_UNAVAILABLE` with no sign-out.
+- **Middleware → page hand-off: still not implemented.** Middleware verifies
+  `/dashboard*` with Supabase (`getUser` + `users.role`), and pages and APIs
+  verify again. A safe hand-off would need middleware to mint a request-bound
+  internal assertion. That means a request id middleware does not have today,
+  plus a role read moved off Supabase. Assessed and deferred (see
+  [ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#round-trips-and-remaining-duplicate-auth)).
+
 ## Identity mapping and bootstrap
 
 `user_identities(provider, provider_subject) UNIQUE → users.id`
@@ -387,7 +413,7 @@ Its results, and each caller's reaction, are unchanged:
 | Kind | Caller | Runs after | On expiry | On lookup failure |
 |---|---|---|---|---|
 | middleware | `middleware.ts` (`/dashboard*`, `/complete-request`, `/parent-consent`; not `/admin`) | getUser + role | local signOut, redirect `/login?reason=session_expired` | 503 `sessionCheckUnavailable` |
-| parent auth helper | `lib/parent/parent-request-context.ts` (`verify: "full"`, the orders API) | getUser; in parallel with the role and profile reads | `session_invalid`: 401 + signOut | `session_invalid`: 503 |
+| parent auth helper | `lib/parent/parent-request-context.ts` (since V0.1.46 its only caller is the order detail page, `verify: "identity"`; the orders and welcome-credits APIs moved to the backend) | getUser; in parallel with the role and profile reads | `session_invalid`: 401 + signOut | `session_invalid`: 503 |
 | server component | `app/(auth)/complete-request/page.tsx` | getUser + role | redirect `/login?reason=session_expired` (no sign-out, as before) | in-page retry message, no redirect |
 | route handlers (11 files, 12 calls) | `api/candy-purchases` (GET and POST), `candy-purchases/[id]/complete`, `candy-purchases/[id]/coupon`, `coupons/validate`, `parent-consent`, `parent/gallery`, `parent/password`, `referrals`, `referrals/bind`, `requests` | getUser + role | `createParentSessionFailureResponse`: 401 + signOut | 503 `SESSION_CHECK_UNAVAILABLE` |
 | route handler | `api/parent/orders/[orderId]/final-media` | ownership check (its own getUser), with `ownership.userId` | same | same |

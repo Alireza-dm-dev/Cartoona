@@ -24,9 +24,15 @@ export interface StubAuthOptions {
   userId: string
   userMode?: UserMode
   refreshMode?: RefreshMode
-  /** Rows PostgREST returns for `users` and `parent_profiles` (header lookup). */
+  /** Rows PostgREST returns for `users` and `parent_profiles` (role gate, profile id). */
   role?: string
   fullName?: string
+  /**
+   * Rows for other PostgREST tables (V0.1.46), e.g. empty `candy_packages` and
+   * `candy_purchases`, so a page whose remaining Supabase reads are out of
+   * scope can still render around the parts served by the backend.
+   */
+  tables?: Record<string, unknown[]>
 }
 
 interface IssuedSession {
@@ -62,6 +68,7 @@ export async function startStubAuth(initial: StubAuthOptions): Promise<StubAuth>
     refreshMode: "ok",
     role: "parent",
     fullName: "Test Parent",
+    tables: {},
     ...initial,
   }
   const requests: StubAuth["requests"] = []
@@ -133,6 +140,8 @@ export async function startStubAuth(initial: StubAuthOptions): Promise<StubAuth>
 
       if (path === "/rest/v1/users") return json(res, 200, [{ role: options.role }])
       if (path === "/rest/v1/parent_profiles") return json(res, 200, [{ full_name: options.fullName }])
+      const table = path.startsWith("/rest/v1/") ? options.tables[path.slice("/rest/v1/".length)] : undefined
+      if (table) return json(res, 200, table)
       json(res, 404, {})
     })
   })

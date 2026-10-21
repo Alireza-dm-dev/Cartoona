@@ -1,53 +1,64 @@
 import { NextResponse } from "next/server"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
-import {
-  createParentSessionFailureResponse,
-  createSessionCheckUnavailableResponse,
-} from "@/lib/auth/expired-parent-session-response"
-import { resolveParentRequestContext } from "@/lib/parent/parent-request-context"
-import { readWelcomeImageCredits } from "@/lib/credits/welcome-image-credits"
-import { withObservability, log } from "@/lib/observability/request-context"
+import { endParentSession } from "@/lib/auth/end-parent-session"
+import { SESSION_CHECK_UNAVAILABLE_BODY } from "@/lib/auth/expired-parent-session-response"
+import { loadParentWelcomeCredits } from "@/lib/parent/account/backend-account"
+import { withObservability } from "@/lib/observability/request-context"
 
 /**
  * GET /api/parent/welcome-credits
  *
  * { welcomeImageCreditsRemaining: number } for the signed-in parent. A display
- * hint for the creation review and billing screens; the request RPC remains the
- * authority on what actually pays. Nothing about the ledger (ids, grant or usage
- * rows) is exposed.
+ * hint for the creation review; the request RPC remains the authority on what
+ * actually pays. Nothing about the ledger (ids, grant or usage rows) is
+ * exposed.
+ *
+ * V0.1.46: served by the backend.
+ *
+ *   browser -> this route (BFF) -> Supabase Auth verification -> signed v2
+ *   assertion -> Fastify GET /v1/parent/welcome-credits -> PostgreSQL
+ *
+ * This route reads no business data itself (no Supabase table or RPC, no pg,
+ * no repository), and nothing the browser sends can name the caller.
+ *
+ *   200 { welcomeImageCreditsRemaining }   a parent with no profile or no grant row: 0
+ *   401 code unauthenticated               no or rejected session
+ *   401 code PARENT_SESSION_EXPIRED        expired or invalidated session (local sign-out), body unchanged
+ *   403 code identity_not_linked|forbidden not a linked parent account
+ *   503 code SESSION_CHECK_UNAVAILABLE     identity provider down/slow (no sign-out), body unchanged
+ *   503 code service_unavailable           backend or database down/slow/malformed (was a 500)
  */
 export const dynamic = "force-dynamic"
+export const runtime = "nodejs"
 
 const NO_STORE = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } as const
 
-export const GET = withObservability("GET /api/parent/welcome-credits", handleGet)
+const LOGIN = "لطفاً ابتدا وارد حساب خود شوید"
+const SIGN_IN_AGAIN = "برای ادامه دوباره وارد حساب شوید."
+const NOT_ALLOWED = "شما مجوز انجام این عملیات را ندارید."
+const UNAVAILABLE = "اعتبار رایگان در دسترس نیست."
 
 async function handleGet() {
-  const supabase = await createServerSupabaseClient()
-  const ctx = await resolveParentRequestContext(supabase, { verify: "full" })
+  const result = await loadParentWelcomeCredits()
+  if (result.ok) return NextResponse.json({ welcomeImageCreditsRemaining: result.value }, { headers: NO_STORE })
 
-  if (!ctx.ok) {
-    switch (ctx.reason) {
-      case "unauthenticated":
-        return NextResponse.json({ error: "لطفاً ابتدا وارد حساب خود شوید" }, { status: 401, headers: NO_STORE })
-      case "auth_unavailable":
-        return createSessionCheckUnavailableResponse()
-      case "not_parent":
-        return NextResponse.json({ error: "شما مجوز انجام این عملیات را ندارید." }, { status: 403, headers: NO_STORE })
-      case "session_invalid":
-        return createParentSessionFailureResponse(supabase, ctx.lifetime)
-      case "no_parent_profile":
-        return NextResponse.json({ welcomeImageCreditsRemaining: 0 }, { headers: NO_STORE })
-      default:
-        return NextResponse.json({ error: "اعتبار رایگان در دسترس نیست." }, { status: 500, headers: NO_STORE })
-    }
+  switch (result.reason) {
+    case "no_parent_profile":
+      // Unchanged: a parent who has not finished signup has no credits yet.
+      return NextResponse.json({ welcomeImageCreditsRemaining: 0 }, { headers: NO_STORE })
+    case "unauthenticated":
+      return NextResponse.json({ error: LOGIN, code: "unauthenticated" }, { status: 401, headers: NO_STORE })
+    case "session_expired":
+    case "session_invalidated":
+      await endParentSession()
+      return NextResponse.json({ error: SIGN_IN_AGAIN, code: "PARENT_SESSION_EXPIRED" }, { status: 401, headers: NO_STORE })
+    case "identity_not_linked":
+    case "forbidden":
+      return NextResponse.json({ error: NOT_ALLOWED, code: result.reason }, { status: 403, headers: NO_STORE })
+    case "auth_unavailable":
+      return NextResponse.json(SESSION_CHECK_UNAVAILABLE_BODY, { status: 503, headers: { ...NO_STORE, "Retry-After": "2" } })
+    case "service_unavailable":
+      return NextResponse.json({ error: UNAVAILABLE, code: "service_unavailable" }, { status: 503, headers: { ...NO_STORE, "Retry-After": "2" } })
   }
-
-  const remaining = await readWelcomeImageCredits(supabase, ctx.context.parentProfileId)
-  if (remaining === null) {
-    log("warn", "WELCOME_CREDITS_READ_FAILED", { subsystem: "database", errorCode: "DATABASE_UNAVAILABLE" })
-    return NextResponse.json({ error: "اعتبار رایگان در دسترس نیست." }, { status: 500, headers: NO_STORE })
-  }
-
-  return NextResponse.json({ welcomeImageCreditsRemaining: remaining }, { headers: NO_STORE })
 }
+
+export const GET = withObservability("GET /api/parent/welcome-credits", handleGet)

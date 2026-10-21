@@ -11,7 +11,7 @@ const SELECT_CREDITS = `
 /**
  * Welcome image credits left for one parent: max(granted_count - used_count, 0).
  *
- * Plain-PostgreSQL counterpart of `readWelcomeImageCredits`, using the same
+ * Served by GET /v1/parent/welcome-credits (V0.1.46). Uses the same
  * `normalizeRemaining` rule. A parent with no row has 0. Only the count leaves
  * this function - no ledger or usage ids. A read failure throws `DbError`; the
  * caller turns that into "unknown" (null), never into a number.

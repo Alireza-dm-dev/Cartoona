@@ -6,12 +6,28 @@ Routes served through the Fastify backend instead of Supabase:
 |---|---|---|
 | V0.1.41 | `GET /api/creation-pricing` | public read |
 | V0.1.45 | `GET /api/parent/orders` + the `/dashboard/orders` first page | **authenticated** read, the parent orders **LIST** only ([below](#v0145-parent-orders-list)) |
+| V0.1.46 | `GET /api/parent/welcome-credits`, `GET /api/parent/account-summary` (new), the public header's parent name | **authenticated** reads: welcome credits, candy balance, profile name ([below](#v0146-parent-account-reads)) |
 
-Everything else (order detail, final media, gallery, profile, candy balance,
-welcome credits, billing, referrals, coupons, request submission and every
-write) still runs on Supabase. A static guard (`route-cutover-static.test.ts`)
-fails if any other route or page reaches the backend, and lists the backend's
-exact routes (all GET).
+### Migration status
+
+| Surface | Data | Status |
+|---|---|---|
+| creation pricing | `creation_pricing` | **PostgreSQL** (V0.1.41) |
+| parent orders list (page 1 + load more) | `orders`, `order_status_history` | **PostgreSQL** (V0.1.45) |
+| parent profile name (public header) | `parent_profiles.full_name` | **PostgreSQL** (V0.1.46) |
+| candy balance (billing) | `candy_wallets.balance` | **PostgreSQL** (V0.1.46) |
+| welcome image credits (billing, creation review) | `parent_welcome_credits` | **PostgreSQL** (V0.1.46) |
+| billing purchase history | `candy_purchases`, `payment_attempts`, `coupon_redemptions`, `coupons` | Supabase (old path) |
+| candy package catalog | `candy_packages` | Supabase (old path) |
+| consent gate (middleware, `/complete-request`) | `parent_profiles.consent_granted` | Supabase (old path) |
+| referral summary | RPC `get_current_parent_referral_summary` | Supabase (old path) |
+| order detail, final media, gallery | orders + Storage | Supabase (old path) |
+| every write (requests, purchases, coupons, referrals, profile, password, consent) | | Supabase (old path) |
+| identity / session | Supabase Auth | Supabase Auth (provider; by design until replaced) |
+
+Everything marked "old path" still runs on Supabase. A static guard
+(`route-cutover-static.test.ts`) fails if any other route or page reaches the
+backend, and lists the backend's exact routes (all GET).
 
 ## V0.1.41: `GET /api/creation-pricing`
 
@@ -270,8 +286,12 @@ Warm local timings, first page of 20 (localhost, **not production estimates**):
   intermittently (2 failed `afterAll` hooks in one run, none in the next), always
   in the `DROP DATABASE ... WITH (force)` teardown of the opt-in suites, which run in
   parallel against one cluster. No test assertion failed.
-- No hook hangs: after the timed-out runs the cluster held only `cartoona`
-  (no scratch databases or roles left), and the 60 s run passed 2322 tests.
+- No hook hangs: the hooks are slow, not stuck, and the 60 s run passed 2322
+  tests. **Correction (2026-10-21):** a timed-out hook is cut off mid-teardown.
+  After the 10 s run the scratch databases were gone, but three roles from the
+  two cut-off hooks (`cartoona_app_a…`, `_b…`, `_o…`) were still in the cluster.
+  They were found and dropped during V0.1.46. This strengthens the decision:
+  at 10 s, cleanup was not just reported late, it was left incomplete.
 - A genuinely hung hook still fails: a probe `afterAll` that never resolves failed with
   "Hook timed out" (probe removed). Cleanup stays deterministic and a broken
   teardown is still reported.
@@ -290,10 +310,298 @@ that would be a real problem, not load.
 - a production deployment of the backend and PostgreSQL;
 - the storage migration (order detail and gallery need signed URLs).
 
+## V0.1.46: parent account reads
+
+### Audit (before any change)
+
+| # | Read path | Surface | Supabase calls before | Auth / profile | Page render bypasses an API? | Storage | Writes in the same endpoint | Class |
+|---|---|---|---|---|---|---|---|---|
+| 1 | welcome credits | `GET /api/parent/welcome-credits` (creation review, client fetch) | `getUser`, `users.role` ‖ `parent_profiles` + lifetime, `parent_welcome_credits` | `resolveParentRequestContext({ verify: "full" })` | no (client only) | no | no | **A** |
+| 2 | candy balance + welcome credits | `GET /api/candy-purchases` (billing page, client fetch on load and after each purchase step) | `getUser`, `users.role`, lifetime, `parent_profiles`, `parent_welcome_credits`, `candy_wallets`, then the history reads | inline in the route | no (client only) | no | `POST` in the same file (separate handler) | **A** for balance/credits |
+| 3 | billing purchase history | same `GET /api/candy-purchases` | `candy_purchases`, `payment_attempts`, `coupon_redemptions`, `coupons` (admin client), `candy_packages` | same | no | no | payment state, coupons | **D**: payment/coupon state, an admin-client read, not an account read |
+| 4 | parent profile name | public header (`getPublicHeaderAccount`: marketing layout, homepage, creation layout) | `getUser`, `users.role`, `parent_profiles.full_name` | inline; no lifetime check | server render only; the homepage resolved it **twice** (layout + page) | no | no | **A** |
+| 5 | settings / "profile" | `/dashboard/settings` | none from the database: `getUser().user_metadata.password_set` (Auth metadata); the profile card is a TODO with no data | n/a | n/a | no | password form posts elsewhere | **D**: no database read exists; Auth metadata stays with the provider |
+| 6 | consent flag | middleware (`/complete-request`) + `/complete-request` page | `parent_profiles.consent_granted` | middleware | yes (both read it) | no | no | **D**: an access gate inside middleware; moving the page alone would split one value across two databases |
+| 7 | referral summary | `GET /api/referrals` | RPC `get_current_parent_referral_summary` (SECURITY DEFINER aggregate) | inline | no | no | the page also binds codes (write) | **D**: not requested, porting an aggregate RPC |
+| 8 | candy package catalog | `GET /api/candy-packages` | `candy_packages` | none (public) | no | no | no | **D**: public catalog, not an account read |
+| 9 | order detail, gallery, final media | `ParentRequestContext` and others | orders + Storage | various | yes | **yes** | no | **C** |
+| 10 | complete-signup, password, consent, purchases, coupons, referrals bind, requests | POST routes | | | | some | **yes** | **B** |
+
+No dashboard page renders an account value on the server and then refreshes
+it through an API, so the V0.1.45 page-1 trap does not occur here. The
+equivalent risk was row 2: the billing page reads the balance on load and
+again after every purchase step. Both reads now use the same route.
+
+### Scope
+
+**Migrated:** welcome image credits (row 1), the candy balance and welcome
+credits on billing (row 2), and the parent profile name (row 4). **Not
+migrated:** rows 3 and 5–10. The settings page has no profile data to move
+(its profile card is an unbuilt TODO), so the only profile value the parent UI
+shows is the header greeting.
+
+### Flows
+
+```
+Before
+  creation review  ─> /api/parent/welcome-credits ─> getUser ─> users.role ‖ parent_profiles (+ lifetime) ─> parent_welcome_credits      [Supabase]
+  billing page     ─> /api/candy-purchases (GET)   ─> getUser ─> users.role ─> lifetime ─> parent_profiles ─> parent_welcome_credits
+                                                      ─> candy_wallets ─> candy_purchases ─> payment_attempts ─> coupon_redemptions ...  [Supabase]
+  public header    ─> getUser ─> users.role ─> parent_profiles.full_name                                                         [Supabase]
+
+After
+  creation review  ─> Next /api/parent/welcome-credits ─┐
+  billing page     ─> Next /api/parent/account-summary ─┤  verifySupabaseIdentity (1 provider call, 4 s bound)  ONCE per request
+  public header    ─> getPublicHeaderAccount ───────────┘  signed v2 assertion per backend path; one attempt each, 3 s bound
+                          v
+                    Fastify  GET /v1/parent/welcome-credits | /v1/parent/candy-balance | /v1/parent/profile
+                          │  requireAuth (user_identities + users: role, deleted, sessions_not_before)
+                          │  requireRole("parent")
+                          │  findParentProfileIdByUserId(principal.userId)   (profile route: getParentProfileDisplay(userId))
+                          │  getWelcomeImageCreditsRemaining | getCandyBalance | full_name
+                          v
+                    PostgreSQL 17   (cartoona_app_login: SELECT only; no grant added)
+
+  billing page     ─> /api/candy-purchases (GET) ─> purchase history only, still Supabase
+```
+
+The billing page now makes three parallel requests: `/api/candy-packages`,
+`/api/candy-purchases` (history, Supabase) and `/api/parent/account-summary`
+(balance and credits, PostgreSQL). Its first load and every refresh after a
+purchase step use the same three (`lib/candy-purchases/billing-client.ts`), so
+the displayed balance always has one source. Purchase creation, completion and
+coupons still POST to the Supabase routes.
+
+**Consistency until writes move.** The balance and credits are now read from
+PostgreSQL. Purchases (which credit the wallet) and request submission (which
+spends credits and candy) still write to Supabase. On one running system the two would drift
+apart: a completed purchase would not change the PostgreSQL balance. This is the same condition
+the orders list has had since V0.1.45. It is acceptable only because none of
+this is deployed. Production needs either all of these writes moved before
+the switch or a final copy at the cutover freeze
+([DATA_MIGRATION.md](DATA_MIGRATION.md)).
+
+> **Do NOT deploy this branch** until either (a) the related writes (candy
+> purchases and completion, request submission, coupons) also write to
+> PostgreSQL, or (b) a final production data copy under a write freeze is part
+> of the cutover. Deploying earlier makes balances and credits shown to
+> parents diverge from what Supabase records.
+
+### Contracts
+
+| Situation | Fastify (`/v1/parent/...`) | `/api/parent/welcome-credits` | `/api/parent/account-summary` | public header |
+|---|---|---|---|---|
+| value | 200 `{ welcomeImageCreditsRemaining }` / `{ balance }` / `{ fullName }` | 200 `{ welcomeImageCreditsRemaining }` | 200 `{ wallet: { balance }, welcomeImageCreditsRemaining? }` | `{ displayName, initials }` |
+| zero / empty | credits `max(granted − used, 0)`, no row → 0; no wallet row → balance 0; no name → `fullName: null` | 0 | balance 0; credits 0 (the note hides itself) | "حساب والد" |
+| any query parameter | 400 `invalid_request` | ignored (never forwarded) | ignored | n/a |
+| no / rejected session | 401 `unauthenticated` | 401 `unauthenticated` | 401 `unauthenticated` | anonymous |
+| older than 30 days / before `sessions_not_before` | 401 `session_expired` / `session_invalidated` | 401 `PARENT_SESSION_EXPIRED` + local sign-out (body unchanged) | same | anonymous, nothing signed out |
+| identity provider down/slow | n/a | 503 `SESSION_CHECK_UNAVAILABLE` (body unchanged), no sign-out | same | anonymous |
+| verified, not linked | 403 `identity_not_linked` | 403 `identity_not_linked` | 403 `identity_not_linked` | anonymous |
+| admin, super_admin, deleted | 403 `forbidden` | 403 `forbidden` | 403 `forbidden` | anonymous |
+| parent without a profile | 404 `parent_profile_not_found` | **200 `{ welcomeImageCreditsRemaining: 0 }`** (unchanged) | **400 "پروفایل والد یافت نشد."** (billing's existing answer) | "حساب والد" (unchanged) |
+| database down | 503 `service_unavailable` | 503 `service_unavailable` | 503 `service_unavailable` | anonymous |
+| backend down/slow/malformed, or our assertion rejected | n/a | 503 `service_unavailable`, no sign-out | same | anonymous |
+
+All Fastify and Next responses are `Cache-Control: no-store`; both Next routes
+are `force-dynamic`. Persian messages are the ones these values were served
+with before.
+
+**Deliberate contract changes:**
+
+1. **`GET /api/candy-purchases` no longer returns `wallet` or
+   `welcomeImageCreditsRemaining`.** They moved, with the same names and shapes, to
+   `GET /api/parent/account-summary`. The only consumer, the billing page,
+   merges the two. `ParentCandyBillingResponse` is unchanged.
+2. **A balance that cannot be read is now a 503**, which shows the billing
+   page's retry card. Before, a failed `candy_wallets` read was ignored and
+   shown as a balance of **0**.
+3. **Welcome credits: a database failure is a 503**, where it was a 500. A
+   failed credits read inside the account summary still only omits the field,
+   as before.
+4. **Error bodies gain a stable `code`** where they had none (the 401/403
+   answers). The Persian `error` strings are unchanged.
+5. **The public header is anonymous for an expired or invalidated session.**
+   Before, it greeted the parent until the dashboard signed them out, because
+   it never checked the session lifetime. It still never signs anyone out.
+6. **The header is anonymous when the backend is unavailable.** Before, it
+   depended on Supabase being available instead.
+
+### Identity
+
+The caller comes only from `requireAuth`. None of the three backend routes
+takes a parameter: any query string, including `parentProfileId`, is a 400. They read no header,
+body or cookie for identity, and the Next side forwards none (`X-User-Id`,
+`X-Role`, `X-Parent-Profile-Id`, a forged `X-Cartoona-Internal-Auth`,
+cookies). Each read resolves the profile from `principal.userId`, and every
+query is parameterised on that id. Proven on copied data with three parents
+whose names, balances and credits all differ.
+
+### Shared verification (request-local)
+
+`lib/parent/backend-caller.ts` holds `verifyParentCaller()`, the step V0.1.45
+had inside the orders loader, and `mapBackendRejection()`. The orders and
+account loaders share both. A verified caller is passed explicitly to every
+backend read made for the same request:
+
+- `/api/parent/account-summary` verifies the session **once**, then reads the
+  balance and the credits **in parallel**, each with its own assertion.
+- The public header uses React `cache()` for the default call. The homepage
+  (layout + page) therefore resolves the account **once per server render**
+  instead of twice. `cache` is scoped to one render: nothing is shared across
+  requests or visitors, and middleware state is never trusted.
+
+### Removed
+
+- `readWelcomeImageCredits` (the Supabase reader in
+  `lib/credits/welcome-image-credits.ts`). Its two callers were migrated.
+- The `parent_welcome_credits` and `candy_wallets` reads in `GET
+  /api/candy-purchases`.
+- `getParentAccountSummary(supabase)` (header: `users.role` +
+  `parent_profiles.full_name` through Supabase). `toParentAccountSummary`
+  keeps the display rule.
+- `resolveParentRequestContext` is now used only by the order detail page.
+
+Kept, because non-migrated code still uses them: `parent_profiles` reads in
+middleware, `/complete-request` and the purchase/coupon/referral routes.
+
+### Round trips and remaining duplicate auth
+
+| | Before (Supabase) | After |
+|---|---|---|
+| creation review credits | `getUser` → [`users.role` ‖ `parent_profiles`] → `parent_welcome_credits`: 4 Supabase requests, 3 sequential stages | 1 provider request → 1 backend call → 3 local DB queries (identity, profile id, credits) |
+| billing account values | inside `/api/candy-purchases`: `getUser` → `users.role` → `parent_profiles` → `parent_welcome_credits` → `candy_wallets` (then the history) | `/api/parent/account-summary` in parallel with the history: 1 provider request → 2 parallel backend calls → 3 DB queries each |
+| public header | `getUser` → `users.role` → `parent_profiles`: 3 sequential; **twice** on the homepage | 1 provider request → 1 backend call → 2 DB queries (identity, profile); once per render |
+
+**Sequential auth calls after V0.1.46, per surface:**
+
+- **`/dashboard/billing` navigation:** middleware `getUser` (1 provider call),
+  then `users.role` (Supabase). The page itself does no auth. In the browser,
+  three requests run in parallel. `/api/candy-purchases` makes 1 provider call
+  plus its Supabase reads, and `/api/parent/account-summary` makes 1 provider
+  call plus 2 backend calls. That is **3 provider calls per billing load**
+  (V0.1.45: 2). Two of them run in parallel, so the sequential depth is unchanged.
+  The extra call disappears when the purchase history moves.
+- **creation review (creation routes):** the layout's header lookup is 1
+  provider call and 1 backend call. The client then fetches welcome credits:
+  1 provider call and 1 backend call.
+- **homepage / marketing pages:** 1 provider call and 1 backend call (was 2×3
+  Supabase requests on the homepage).
+- **`/dashboard/orders`:** unchanged from V0.1.45 (middleware + page each
+  verify; 2 provider calls).
+
+**Middleware → page hand-off: not implemented.** Middleware verifies with
+Supabase (`getUser` + `users.role`) and the dashboard pages verify again.
+Removing one verification would need a signed, request-scoped hand-off. That
+would mean middleware minting an internal assertion that the page trusts,
+bound to the request id, and middleware does not know that id today. It
+would also mean moving middleware's role read off Supabase. That is a
+middleware rewrite with a security boundary. It was assessed and left out:
+the account surfaces gain nothing from it (billing renders on the client; the
+header runs on pages without middleware).
+
+### Verified locally (2026-10-21)
+
+- `parent-account-cutover-db.test.ts` (opt-in, 19 tests). Data is copied from
+  `supabase-source-fixture.sql` + `parent-orders-extra.sql` +
+  `parent-account-extra.sql` (a third parent signed up through the real
+  triggers) through the V0.1.44 copy. The chain is the stub provider (real
+  `@supabase/ssr`), the real Next handlers and header loader, and a listening
+  Fastify on a script-provisioned login role. Coverage:
+  - Each parent's name, balance and credits equal both the copied target and the
+    source.
+  - The three parents are pairwise distinct on every surface.
+  - Forged identity headers and query values are ignored.
+  - admin, super_admin and deleted accounts get 403; unlinked gets 403
+    `identity_not_linked`; a parent without a profile gets each surface's
+    unchanged answer.
+  - Expired and invalidated sessions get 401 with the cookies cleared (the
+    header clears nothing).
+  - Provider, backend, database and malformed-response outages get 503 with
+    no sign-out.
+  - The account summary makes exactly 1 provider call and 6 DB queries.
+- **Docker** (frontend + backend + postgres, all healthy). Setup:
+  - Copied data from the same three fixtures sat in a scratch database with its
+    own script-provisioned login role.
+  - A scratch override aimed the backend at that database and the frontend at
+    the local stub provider, with a separately tagged frontend image (the stub
+    also served empty `candy_packages`/`candy_purchases`, which are still
+    Supabase reads).
+
+  Results in headless Chromium:
+  - **Parent C:** `/dashboard/billing` showed balance ۰ and the note
+    "اعتبار رایگان ساخت تصویر: ۳".
+  - **Parent A:** ۳۴۸ and no note (0 credits). Both match the copied database.
+  - `/api/parent/account-summary` returned 200 `no-store`.
+  - The homepage header showed each parent's copied name. One homepage render made
+    **one** `GET /v1/parent/profile` (48 calls for 45 homepage loads plus the
+    browser runs; it was two lookups per render before).
+  - The browser made requests to `localhost:3000` only, and the pages contained
+    no backend address, internal path or assertion.
+  - One request id covered the Next route and both of its Fastify reads.
+
+  Security checks on the containers:
+  - The frontend had every database variable blank and no copy of the
+    scratch role's password.
+  - The backend had no Supabase variable.
+  - The internal auth secret, assertions, subjects, names and the database password
+    appeared in neither the browser bundle nor either container's logs.
+  - The backend stayed published on `127.0.0.1:4000` only.
+
+  On the first load after `compose up`, both backend reads hit the 3 s client
+  bound and billing showed its retry card (503, no sign-out). The backend
+  logged neither request. It did not recur in two retries, a backend restart
+  (first request 110–150 ms) or a forced recreate of both containers (first
+  request 143 ms).
+
+  **Startup audit (2026-10-21).** Ten further clean cycles (`compose down`, then
+  `up -d` five times, `up --build -d` twice, and three runs polling
+  account-summary every 250 ms from the first frontend response until the
+  backend answered) produced no `BACKEND_TIMEOUT`. They did show the expected,
+  by-design window: the frontend has no `depends_on: backend`, and the backend
+  waits for PostgreSQL to be healthy, so for the first seconds the frontend
+  answers while the backend is not listening yet. In that window every
+  backend read fails fast (4–50 ms, `BACKEND_UNAVAILABLE`, i.e. connection
+  refused) and billing shows its retry card; once the backend is up the first
+  request takes 80–260 ms. A 3 s timeout needs a connection that is accepted
+  and then never answered, which no cycle produced. The anomaly is therefore
+  recorded as a **non-reproducible startup transient**: no retry was added and
+  the 3 s bound was not raised.
+
+Warm local timings (localhost, **not production estimates**):
+
+| Path | median | p90 |
+|---|---|---|
+| Fastify directly, in-process test: profile / candy-balance / welcome-credits | 3.1 / 3.7 / 4.0 ms | 3.6 / 5.3 / 5.1 ms |
+| Fastify directly, Docker (host → `127.0.0.1:4000`): profile / candy-balance / welcome-credits | 3.3 / 3.3 / 3.6 ms | 4.9 / 5.7 / 5.7 ms |
+| Next handler → Fastify → PostgreSQL, in-process (incl. stub provider): welcome-credits | 5.2 ms | 6.8 ms |
+| same: account-summary (2 parallel reads) | 5.3 ms | 6.1 ms |
+| same: public header lookup | 5.0 ms | 6.1 ms |
+| Docker, real Next server: `/api/parent/welcome-credits` | 7.1 ms | 11.2 ms |
+| Docker, real Next server: `/api/parent/account-summary` | 7.7 ms | 14.3 ms |
+| Docker, real Next server: `/dashboard/billing` HTML (middleware + shell; data loads in the browser) | 7.1 ms | 9.6 ms |
+| Docker, real Next server: `/` homepage (header lookup + CMS reads against the stub) | 14.7 ms | 29.7 ms |
+
+Structurally the old flows were 3–5 sequential Supabase requests over the
+internet per surface (and the header ran twice on the homepage). The new ones
+are 1 provider request plus 1 (or 2 parallel) local backend calls of 2–3
+queries each. The provider round trip is the part a localhost measurement
+cannot show.
+
+### Production status
+
+**Not deployable**, for the same four reasons as V0.1.45: the `amr`
+verification, a real `pg_dump` rehearsal, the backend/PostgreSQL deployment,
+and the storage migration. In addition, the read/write split above
+(balance and credits read from PostgreSQL while purchases and requests write
+to Supabase) is a **fifth blocker**: do NOT deploy before the writes move or a
+final copy under a write freeze closes it.
+
 ## Next
 
-V0.1.46 (parent account reads) follows the same pattern: one shared loader per
-surface, `requireAuth` + `requireRole("parent")`, the profile resolved on the
-backend, and SELECT grants only. Writes need non-GET client support, a
-one-time nonce against assertion replay, and EXECUTE grants first
-([BACKEND.md](BACKEND.md#before-the-first-authenticated-route-cuts-over)).
+V0.1.47 (write security) is next: non-GET client support, a one-time nonce
+against assertion replay, EXECUTE grants on the `*_trusted` functions a route
+needs, and a rollback/reverse-sync plan for the first write that lands only in
+PostgreSQL ([BACKEND.md](BACKEND.md#before-the-first-authenticated-route-cuts-over)).
+The purchase history, request submission and purchase completion are the
+writes that close the V0.1.46 read/write split.

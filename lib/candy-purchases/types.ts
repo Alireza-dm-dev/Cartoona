@@ -84,7 +84,8 @@ export function toParentCandyPurchaseSummary(row: PurchaseReadModelRow, packageN
   }
 }
 
-export interface ParentCandyBillingResponse {
+/** GET /api/parent/account-summary (V0.1.46: PostgreSQL through the backend). */
+export interface ParentAccountSummaryResponse {
   wallet: {
     balance: number
   }
@@ -93,8 +94,15 @@ export interface ParentCandyBillingResponse {
    * usable for image requests only. Absent when it could not be read.
    */
   welcomeImageCreditsRemaining?: number
+}
+
+/** GET /api/candy-purchases (still Supabase): the purchase history only. */
+export interface CandyPurchasesListResponse {
   purchases: ParentCandyPurchaseSummary[]
 }
+
+/** What the billing page renders: the two responses above, merged. */
+export type ParentCandyBillingResponse = ParentAccountSummaryResponse & CandyPurchasesListResponse
 
 export interface CandyPurchaseCreateRequest {
   package_id: string

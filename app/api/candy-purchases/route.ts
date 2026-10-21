@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server"
-import { readWelcomeImageCredits } from "@/lib/credits/welcome-image-credits"
 import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { withObservability } from "@/lib/observability/request-context"
 import { logAuthLookup } from "@/lib/observability/auth-events"
@@ -10,6 +9,7 @@ import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
 import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 import {
   toParentCandyPurchaseSummary,
+  type CandyPurchasesListResponse,
   type CouponAppliedStatus,
   type PurchaseReadModelRow,
 } from "@/lib/candy-purchases/types"
@@ -26,6 +26,12 @@ function jsonError(message: string, status: number): NextResponse {
   )
 }
 
+/**
+ * GET /api/candy-purchases - the signed-in parent's purchase history
+ * ({ purchases }). Still on Supabase (purchases, payment attempts, coupon
+ * redemptions). The balance and welcome credits moved to
+ * GET /api/parent/account-summary in V0.1.46.
+ */
 export const GET = withObservability("GET /api/candy-purchases", handleGet)
 
 async function handleGet() {
@@ -66,16 +72,6 @@ async function handleGet() {
   if (!parentProfile) {
     return jsonError("پروفایل والد یافت نشد.", 400)
   }
-
-  // Welcome image credits are NOT candy: a separate, display-only count. A failed
-  // read omits the field (null) instead of breaking billing or claiming a number.
-  const welcomeImageCreditsRemaining = await readWelcomeImageCredits(supabase, parentProfile.id)
-
-  const { data: wallet } = await supabase
-    .from("candy_wallets")
-    .select("balance")
-    .eq("parent_id", parentProfile.id)
-    .maybeSingle()
 
   const { data: purchases, error: purchasesError } = await supabase
     .from("candy_purchases")
@@ -168,9 +164,11 @@ async function handleGet() {
     }
   }
 
-  const result = {
-    wallet: { balance: wallet?.balance ?? 0 },
-    ...(welcomeImageCreditsRemaining !== null ? { welcomeImageCreditsRemaining } : {}),
+  // V0.1.46: the candy balance and the welcome image credits are no longer
+  // part of this response. They are read from PostgreSQL through the backend
+  // by GET /api/parent/account-summary; this route keeps the purchase history,
+  // which (with payment attempts and coupons) is still on Supabase.
+  const result: CandyPurchasesListResponse = {
     purchases: (purchases || []).map((p) => {
       const redemption = redemptionByPurchase.get(p.id)
       const row: PurchaseReadModelRow = {

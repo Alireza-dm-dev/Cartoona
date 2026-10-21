@@ -8,14 +8,12 @@ import {
   creditNoticeFor,
   toPaymentSource,
   normalizeRemaining,
-  readWelcomeImageCredits,
   WELCOME_IMAGE_CREDIT_GRANT,
   type RequestKind,
 } from "@/lib/credits/welcome-image-credits"
 import { toSubmissionSuccess } from "@/lib/requests/submission-response"
 import { setLogSink, sanitizeFields, type LogRecord } from "@/lib/observability/logger"
 import { setRateLimitStore, InMemoryRateLimitStore } from "@/lib/rate-limit"
-import { createFakeSupabase } from "../helpers/fake-supabase"
 import { getSessionResult } from "../helpers/supabase-jwt"
 
 const root = process.cwd()
@@ -101,20 +99,9 @@ describe("normalisation helpers", () => {
   })
 })
 
-describe("readWelcomeImageCredits (persistence adapter)", () => {
-  const client = (result: { data: unknown; error: unknown }) => ({
-    from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => result }) }) }),
-  })
-  it("returns remaining = granted - used", async () => {
-    expect(await readWelcomeImageCredits(client({ data: { granted_count: 3, used_count: 1 }, error: null }), "p")).toBe(2)
-  })
-  it("no row means 0 (account without a grant), not an error", async () => {
-    expect(await readWelcomeImageCredits(client({ data: null, error: null }), "p")).toBe(0)
-  })
-  it("a read failure is null - never shown as a number", async () => {
-    expect(await readWelcomeImageCredits(client({ data: null, error: { message: "boom" } }), "p")).toBeNull()
-  })
-})
+// The Supabase reader (readWelcomeImageCredits) was removed in V0.1.46. Its
+// PostgreSQL replacement is pinned by tests/unit/repositories.test.ts and the
+// welcome-image-credits/parent-account cutover DB suites.
 
 // ── Response contract ────────────────────────────────────────────────────────
 
@@ -242,47 +229,9 @@ describe("POST /api/requests payment source", () => {
   })
 })
 
-describe("GET /api/parent/welcome-credits", () => {
-  function world(over: { role?: string; credit?: { granted_count: number; used_count: number } | null; auth?: object } = {}) {
-    const f = createFakeSupabase({
-      ...(over.auth ?? { user: { id: "user-1" } }),
-      tables: {
-        users: [{ id: "user-1", role: over.role ?? "parent" }],
-        parent_profiles: [{ id: "profile-1", user_id: "user-1" }],
-        parent_welcome_credits: over.credit === null ? [] : [{ parent_id: "profile-1", ...(over.credit ?? { granted_count: 3, used_count: 1 }) }],
-      },
-    })
-    m.client = f.client
-    return f
-  }
-  const GET = async () => (await import("@/app/api/parent/welcome-credits/route")).GET(new Request("http://x/api/parent/welcome-credits"))
-
-  it("returns only the remaining count, no-store, with a request id", async () => {
-    world()
-    const res = await GET()
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ welcomeImageCreditsRemaining: 2 })
-    expect(res.headers.get("Cache-Control")).toBe("no-store")
-    expect(res.headers.get("X-Request-Id")).toBeTruthy()
-  })
-
-  it("an account with no grant row has 0; 401 / 403 are preserved", async () => {
-    world({ credit: null })
-    expect(await (await GET()).json()).toEqual({ welcomeImageCreditsRemaining: 0 })
-    world({ auth: { user: null } })
-    expect((await GET()).status).toBe(401)
-    world({ role: "admin" })
-    expect((await GET()).status).toBe(403)
-  })
-
-  it("is observability-wrapped and logs nothing sensitive", async () => {
-    world()
-    await GET()
-    const done = records.find((r) => r.event === "REQUEST_COMPLETED")!
-    expect(done).toMatchObject({ route: "GET /api/parent/welcome-credits", method: "GET", status: 200 })
-    expect(JSON.stringify(records)).not.toMatch(/user-1|profile-1/)
-  })
-})
+// GET /api/parent/welcome-credits is served by the backend since V0.1.46:
+// tests/unit/parent-account-api.test.ts (BFF contract) and
+// parent-account-cutover-db.test.ts (copied data, real chain).
 
 // ── UI ───────────────────────────────────────────────────────────────────────
 

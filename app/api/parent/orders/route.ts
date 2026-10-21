@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server"
-import { createAuthDeadlineFetch, withDeadline } from "@/lib/auth/auth-deadline"
+import { endParentSession } from "@/lib/auth/end-parent-session"
 import { loadParentOrdersPage, type ParentOrdersListFailure } from "@/lib/parent/orders/backend-orders"
 import { parseOrdersListQuery } from "@/lib/parent/orders/list-query"
 import { log, withObservability } from "@/lib/observability/request-context"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
 
 /**
  * GET /api/parent/orders?cursor=&limit= - one page of the signed-in parent's
@@ -34,7 +33,6 @@ export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 const NO_STORE = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } as const
-const SIGN_OUT_DEADLINE_MS = 2_000
 
 const LOGIN = "لطفاً ابتدا وارد حساب خود شوید"
 const SIGN_IN_AGAIN = "برای ادامه دوباره وارد حساب شوید."
@@ -52,20 +50,6 @@ const FAILURES: Record<Exclude<ParentOrdersListFailure, "no_parent_profile">, { 
   forbidden: { status: 403, error: NOT_ALLOWED },
   auth_unavailable: { status: 503, error: SESSION_CHECK_UNAVAILABLE },
   service_unavailable: { status: 503, error: UNAVAILABLE },
-}
-
-/**
- * A definite end of session (expired / invalidated) clears the session
- * cookies, as the pre-cutover route did. Bounded; if the provider does not
- * answer the response is still 401. Never called for an outage.
- */
-async function endSession(): Promise<void> {
-  try {
-    const supabase = await createServerSupabaseClient({ fetch: createAuthDeadlineFetch(Date.now() + SIGN_OUT_DEADLINE_MS) })
-    await withDeadline(supabase.auth.signOut({ scope: "local" }), SIGN_OUT_DEADLINE_MS)
-  } catch {
-    // Fail closed: the 401 stands either way.
-  }
 }
 
 async function handleGet(request: Request) {
@@ -89,7 +73,7 @@ async function handleGet(request: Request) {
     // Unchanged contract: a parent who has not finished signup has no orders yet.
     return NextResponse.json({ orders: [], nextCursor: null }, { headers: NO_STORE })
   }
-  if (result.reason === "session_expired" || result.reason === "session_invalidated") await endSession()
+  if (result.reason === "session_expired" || result.reason === "session_invalidated") await endParentSession()
 
   const failure = FAILURES[result.reason]
   const headers = failure.status === 503 ? { ...NO_STORE, "Retry-After": "2" } : NO_STORE

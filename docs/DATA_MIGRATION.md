@@ -388,12 +388,14 @@ cutover is blocked by the AMR check. Prerequisites:
    the auth proof (a signed assertion for a known staff test account →
    `/v1/auth/me`).
 8. **Application deploy:** the release that reads the cut-over domain from
-   PostgreSQL (V0.1.45 is read-only parent orders), with the backend's
+   PostgreSQL (V0.1.45 read-only parent orders; V0.1.46 read-only profile
+   name, candy balance and welcome credits), with the backend's
    `cartoona_app` login provisioned on the target.
 9. **Smoke tests:** `/ready` (role check), parent orders list and pagination
-   for a staff test parent, a soft-deleted account → 403, pricing.
+   for a staff test parent, its balance, welcome credits and header name, a
+   soft-deleted account → 403, pricing.
 10. **Rollback point:** the point of no return is the **first write that lands
-   only in plain PostgreSQL**. V0.1.45 is read-only, so until a write route
+   only in plain PostgreSQL**. V0.1.45 and V0.1.46 are read-only, so until a write route
    moves, rollback is redeploying the previous release: Supabase stayed the
    source of truth and was never written by the new path.
 
@@ -420,16 +422,19 @@ read-only on the source. Today any mode other than `local` throws
 - **Copy failed mid-way:** a resumable run continues from the first
   uncommitted phase. A `failed_validation` or changed-source target is dropped
   and re-created; it is never patched in place.
-- **After a read-only cutover (V0.1.45):** redeploy the previous release.
+- **After a read-only cutover (V0.1.45, V0.1.46):** redeploy the previous release.
   There is nothing to reconcile.
 - **After the first write route moves:** a rollback then needs a reverse sync,
   which is out of scope here. That route's cutover must define it.
 
 ## Remaining blockers
 
-V0.1.45 cut the parent orders LIST over locally, on data copied by this tool
-([ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0145-parent-orders-list)). Production
-remains blocked by:
+V0.1.45 cut the parent orders LIST over locally, and V0.1.46 the parent account
+reads (profile name, candy balance, welcome credits), both on data copied by
+this tool ([ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0146-parent-account-reads)).
+The V0.1.46 proof adds `tests/fixtures/data-copy/parent-account-extra.sql`
+(a third parent signed up through the real triggers, so names, balances and
+credits all differ between parents). Production remains blocked by:
 
 1. **AMR verification** against real Supabase tokens (V0.1.43). This is still
    the hard production blocker.
@@ -439,3 +444,9 @@ remains blocked by:
 3. **Storage:** the orders list returns no media, but order detail and the
    gallery do. Signed URLs need the object-storage migration.
 4. **Deployment of the backend** outside local compose (BACKEND.md).
+5. **The read/write split.** The cut-over reads (orders list, balance, welcome
+   credits, profile name) come from PostgreSQL. The writes that change them
+   (request submission, purchase completion, profile creation) still go to
+   Supabase. On one running system the two diverge, so production needs those
+   writes moved or a final copy at the cutover freeze before switching any of
+   these reads.

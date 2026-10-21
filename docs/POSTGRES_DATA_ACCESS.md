@@ -119,8 +119,9 @@ bad id throws `RepositoryInputError`.
 | Function | Actor | Ports | Returns |
 |---|---|---|---|
 | `getParentOrdersPage(db, { parentProfileId }, { cursor, limit })` | parent | `lib/parent/orders/queries.ts` | `{ ok, orders, nextCursor }` or `invalid_cursor` |
-| `getWelcomeImageCreditsRemaining(db, { parentProfileId })` | parent | `readWelcomeImageCredits` | `max(granted − used, 0)`; 0 when there is no row |
-| `getCandyBalance(db, { parentProfileId })` | parent | `candy_wallets` read in `/api/candy-purchases` | balance, or null when there is no wallet |
+| `getWelcomeImageCreditsRemaining(db, { parentProfileId })` | parent | `readWelcomeImageCredits` (removed V0.1.46) | `max(granted − used, 0)`; 0 when there is no row. Served by `GET /v1/parent/welcome-credits` |
+| `getCandyBalance(db, { parentProfileId })` | parent | `candy_wallets` read in `/api/candy-purchases` (removed V0.1.46) | balance, or null when there is no wallet. Served by `GET /v1/parent/candy-balance` (null → 0) |
+| `getParentProfileDisplay(db, { userId })` | user (V0.1.46) | `parent_profiles.full_name` read of the public header | `{ fullName }` (null when unnamed) or null (no profile). One query on `user_id`; no id, consent or referral code. Served by `GET /v1/parent/profile` |
 | `getActiveCreationPrices(db)` | public | `GET /api/creation-pricing` | `{ ok, prices }` or `invalid_catalog` (same rejection rules as the route) |
 | `resolveUserIdentity(db, { provider, providerSubject })` | verified external identity (V0.1.42) | new: `user_identities` join `users` | `{ userId, role, deleted, sessionsNotBefore }` or null (identity not linked). One query; `sessionsNotBefore` (V0.1.43) is epoch ms or null. Read-only; never creates a user |
 | `getUserById(db, { userId })` | user | role lookup in `ParentRequestContext` | `{ id, role, deleted }` or null |
@@ -229,12 +230,16 @@ cluster, because roles are cluster-wide.
 
 ## Before the first route cuts over
 
-**Status:** pricing (V0.1.41) and the parent orders LIST (V0.1.45) are served
-from this layer through the backend. The orders list uses
-`findParentProfileIdByUserId` and `getParentOrdersPage` and nothing else; the
-SELECT grants of 0009 already cover them (`users`, `parent_profiles`, `orders`,
-`order_status_history`; `user_identities` from 0010), so no migration was
-added. Items 1–5 below are done for those reads; item 6 (writes) is open.
+**Status:** pricing (V0.1.41), the parent orders LIST (V0.1.45) and the
+parent account reads (V0.1.46: profile name, candy balance, welcome credits)
+are served from this layer through the backend. The orders list uses
+`findParentProfileIdByUserId` and `getParentOrdersPage`. The account reads use
+`findParentProfileIdByUserId`, `getCandyBalance`,
+`getWelcomeImageCreditsRemaining` and `getParentProfileDisplay`. The SELECT
+grants of 0009 already cover all of them (`users`, `parent_profiles`,
+`candy_wallets`, `parent_welcome_credits`, `orders`, `order_status_history`;
+`user_identities` from 0010), so no migration was added in either release.
+No INSERT/UPDATE/DELETE or EXECUTE grant was added. Items 1–5 below are done for those reads; item 6 (writes) is open.
 
 1. **Identity bridge:** a route still learns who the caller is from Supabase
    Auth. Cutover needs the Supabase user id resolved to a plain `users.id`,

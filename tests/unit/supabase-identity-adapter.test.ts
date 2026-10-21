@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
+import http from "node:http"
 import net from "node:net"
 
 vi.mock("next/headers", () => ({ cookies: async () => ({ getAll: () => [], set: () => {} }) }))
@@ -7,7 +8,6 @@ import { createServerClient } from "@supabase/ssr"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { AUTH_VERIFY_DEADLINE_MS, verifySupabaseIdentity } from "@/lib/auth/supabase-identity-adapter"
 import { getPublicHeaderAccount, PUBLIC_HEADER_AUTH_DEADLINE_MS } from "@/lib/auth/public-header-account"
-import { getParentAccountSummary } from "@/lib/auth/parent-account"
 import { disablePostgrestRetries } from "@/lib/supabase/postgrest-retry"
 import { supabaseTimeoutFetch } from "@/lib/supabase/timeout-fetch"
 import { cookieJar, sessionCookie, startStubAuth, type StubAuth } from "../helpers/stub-supabase-auth"
@@ -221,10 +221,26 @@ describe("verifySupabaseIdentity: one bounded deadline, never a sign-out on outa
 })
 
 describe("public header lookup: bounded, degrades to anonymous", () => {
-  it("valid parent session -> the name summary", async () => {
-    stub = await startStubAuth({ userId: USER_ID, fullName: "Sara Ahmadi" })
-    const account = await getPublicHeaderAccount({ createClient: clientFactory(stub.url, cookieJar([stub.cookie()])) })
-    expect(account).toEqual({ displayName: "Sara Ahmadi", initials: "SA" })
+  it("valid parent session -> the name summary, read from the backend (V0.1.46)", async () => {
+    stub = await startStubAuth({ userId: USER_ID })
+    // Stands in for Fastify GET /v1/parent/profile; the full chain is parent-account-cutover-db.test.ts.
+    const paths: string[] = []
+    const backend = http.createServer((req, res) => {
+      paths.push(String(req.url))
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ fullName: "Sara Ahmadi" }))
+    })
+    await new Promise<void>((r) => backend.listen(0, "127.0.0.1", () => r()))
+    vi.stubEnv("BACKEND_INTERNAL_URL", `http://127.0.0.1:${(backend.address() as net.AddressInfo).port}`)
+    vi.stubEnv("CARTOONA_INTERNAL_AUTH_SECRET", "55".repeat(32))
+    try {
+      const account = await getPublicHeaderAccount({ createClient: clientFactory(stub.url, cookieJar([stub.cookie()])) })
+      expect(account).toEqual({ displayName: "Sara Ahmadi", initials: "SA" })
+      expect(paths).toEqual(["/v1/parent/profile"])
+    } finally {
+      vi.unstubAllEnvs()
+      await new Promise((r) => backend.close(r))
+    }
   })
 
   it.each([
@@ -261,7 +277,8 @@ describe.skipIf(process.env.CARTOONA_MEASURE_AUTH_STALL !== "1")("baseline: the 
     stub = await startStubAuth({ userId: USER_ID, refreshMode })
     const jar = cookieJar([stub.cookie({ expired: true })])
     const supabase = await clientFactory(stub.url, jar)(supabaseTimeoutFetch)
-    const { result, ms } = await timed(getParentAccountSummary(supabase))
+    // The pre-V0.1.42 lookup started with an unbounded getUser(); that is where it stalled.
+    const { result, ms } = await timed(supabase.auth.getUser().then(({ data }) => data.user?.id ?? null, () => null))
     process.stderr.write(`[auth stall baseline] ${label}: ${(ms / 1000).toFixed(1)} s, ${refreshCalls(stub)} refresh attempts, result=${JSON.stringify(result)}\n`)
     expect(result).toBeNull()
   }, 90_000)

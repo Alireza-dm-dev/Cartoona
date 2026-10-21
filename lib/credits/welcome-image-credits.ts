@@ -13,12 +13,11 @@
  *    row lock, in the same transaction as the order insert. The RPC is the
  *    authority; this module mirrors it for display and is pinned to it by the
  *    real-SQL tests (tests/unit/welcome-image-credits-db.test.ts).
- *  - PERSISTENCE ADAPTER (readWelcomeImageCredits below): the only code that
- *    knows the credits live in `parent_welcome_credits`.
+ *  - READ (V0.1.46): lib/repositories/welcome-credits.ts on PostgreSQL, served
+ *    by the backend's GET /v1/parent/welcome-credits. The Supabase read
+ *    (`readWelcomeImageCredits`) was removed with the cutover.
  *
- * If the persistence layer ever changes, replace: the migration's tables,
- * trigger and RPC branch, and `readWelcomeImageCredits`. Routes, UI and the
- * rule here do not change.
+ * Routes, UI and the rule here do not depend on where the counts live.
  */
 
 export const WELCOME_IMAGE_CREDIT_GRANT = 3
@@ -79,42 +78,4 @@ export function normalizeRemaining(granted: unknown, used: unknown): number {
   if (typeof granted !== "number" || typeof used !== "number") return 0
   if (!Number.isFinite(granted) || !Number.isFinite(used)) return 0
   return Math.max(0, Math.trunc(granted) - Math.trunc(used))
-}
-
-// ── Persistence adapter ──────────────────────────────────────────────────────
-
-interface CreditReader {
-  from(table: "parent_welcome_credits"): {
-    select(columns: string): {
-      eq(column: string, value: string): {
-        maybeSingle(): PromiseLike<{
-          data: { granted_count?: unknown; used_count?: unknown } | null
-          error: unknown
-        }>
-      }
-    }
-  }
-}
-
-/**
- * Remaining welcome image credits for a parent, read through the caller's own
- * session client (RLS: a parent can read only their own row).
- *
- * `null` means "could not be determined" and must never be shown as a number: a
- * read failure must not turn into "0 left" or "3 left". A parent with no row
- * (account predates the grant, or never provisioned) has 0.
- */
-export async function readWelcomeImageCredits(
-  supabase: unknown,
-  parentProfileId: string,
-): Promise<number | null> {
-  const { data, error } = await (supabase as CreditReader)
-    .from("parent_welcome_credits")
-    .select("granted_count, used_count")
-    .eq("parent_id", parentProfileId)
-    .maybeSingle()
-
-  if (error) return null
-  if (!data) return 0
-  return normalizeRemaining(data.granted_count, data.used_count)
 }
