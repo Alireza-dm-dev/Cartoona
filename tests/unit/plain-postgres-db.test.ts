@@ -217,7 +217,7 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
         DATABASE_URL: `postgresql://cartoona@postgres:5432/${DB}`,
       },
     }))
-    expect(stdout).toMatch(/done - 11 applied/)
+    expect(stdout).toMatch(/done - 13 applied/)
 
     // The Supabase reference: real historical chain over the stub.
     await psql("", { db: REF, file: path.join(root, "tests/helpers/supabase-stub.sql") })
@@ -297,15 +297,15 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
   })
 
   describe("B. schema parity with the migrated Supabase schema", () => {
-    it("tables: identical, plus user_identities and schema_migrations", async () => {
+    it("tables: identical, plus user_identities, schema_migrations and internal_write_nonces (V0.1.47)", async () => {
       const d = diff(await catalog(DB, "tables"), await catalog(REF, "tables"))
-      expect(d.onlyInPlain.sort()).toEqual(["schema_migrations", "user_identities"])
+      expect(d.onlyInPlain.sort()).toEqual(["internal_write_nonces", "schema_migrations", "user_identities"])
       expect(d.onlyInSupabase).toEqual([])
     })
 
     it("columns: identical except users.id (now has a default) and the Cartoona-owned users.sessions_not_before (V0.1.43)", async () => {
       const d = diff(await catalog(DB, "columns"), await catalog(REF, "columns"))
-      const added = d.onlyInPlain.filter((c) => !c.startsWith("user_identities.") && !c.startsWith("schema_migrations."))
+      const added = d.onlyInPlain.filter((c) => !/^(user_identities|schema_migrations|internal_write_nonces)\./.test(c))
       expect(added.sort()).toEqual([
         "users.id uuid null=NO default=gen_random_uuid()",
         "users.sessions_not_before timestamp with time zone null=YES default=",
@@ -325,13 +325,13 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
         expect(refChild?.replace("(((char_length(child_name) >= 1) AND (char_length(child_name) <= 60)) AND", "((char_length(child_name) >= 1) AND (char_length(child_name) <= 60) AND")).toBe(plainChild)
       }
       const rest = (rows: string[]) => rows.filter((c) => !c.startsWith(reassociated))
-      expect(rest(d.onlyInPlain).every((c) => /^(user_identities|schema_migrations) /.test(c))).toBe(true)
+      expect(rest(d.onlyInPlain).every((c) => /^(user_identities|schema_migrations|internal_write_nonces) /.test(c))).toBe(true)
       expect(rest(d.onlyInSupabase)).toEqual(["users users_id_fkey FOREIGN KEY (id) REFERENCES auth.users(id) ON DELETE CASCADE"])
     })
 
     it("indexes: identical", async () => {
       const d = diff(await catalog(DB, "indexes"), await catalog(REF, "indexes"))
-      expect(d.onlyInPlain.every((c) => /^(user_identities|schema_migrations)_/.test(c))).toBe(true)
+      expect(d.onlyInPlain.every((c) => /^(user_identities|schema_migrations|internal_write_nonces)_/.test(c))).toBe(true)
       expect(d.onlyInSupabase).toEqual([])
     })
 
@@ -378,7 +378,8 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
         [...dropped, ...Object.keys(renamed), ...modified].sort(),
       )
       expect([...new Set(d.onlyInPlain.map(fnName))].sort()).toEqual(
-        [...Object.values(renamed), ...modified, "append_only_guard"].sort(),
+        // consume_internal_write_nonce: target-only replay protection (V0.1.47, 0012).
+        [...Object.values(renamed), ...modified, "append_only_guard", "consume_internal_write_nonce"].sort(),
       )
       // Every other function body is byte-identical (same md5 of prosrc).
       const unchanged = ref.filter((r) => !d.onlyInSupabase.includes(r))

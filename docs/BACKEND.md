@@ -60,6 +60,7 @@ migrations.
 | `GET /v1/parent/profile` | **Authenticated, parent only** (V0.1.46): the caller's profile name. `requireAuth` + `requireRole("parent")` → `getParentProfileDisplay(principal.userId)`. No parameters. Serves the public header. See [ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0146-parent-account-reads). | 200 `{"fullName":"…"\|null}`; 400 `invalid_request` (any query); 401/403 as `requireAuth`/`requireRole`; 404 `parent_profile_not_found`; 503 `service_unavailable`; all `no-store` |
 | `GET /v1/parent/candy-balance` | **Authenticated, parent only** (V0.1.46): profile from `principal.userId` → `getCandyBalance`. No wallet row reads 0. No parameters. | 200 `{"balance":n}`; 400/401/403/404/503 as above; all `no-store` |
 | `GET /v1/parent/welcome-credits` | **Authenticated, parent only** (V0.1.46): profile from `principal.userId` → `getWelcomeImageCreditsRemaining` (`max(granted − used, 0)`, no row → 0). No parameters. | 200 `{"welcomeImageCreditsRemaining":n}`; 400/401/403/404/503 as above; all `no-store` |
+| `PATCH /v1/parent/profile` | **The first WRITE** (V0.1.47), backend only (no Next route or UI calls it yet). `requireWriteAuth(deps, "parent")`: v3 assertion bound to method, path and the exact body bytes, then the nonce consumed once. Body exactly `{"fullName": string \| null}` (`lib/parent/profile-name.ts`); no query. `updateParentProfileName(principal.userId, …)`. See [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md#write-security-v0147). | 200 `{"fullName":"…"\|null}` (stored value); 400 `invalid_request`; 401 `unauthenticated` / `session_expired` / `session_invalidated`; 403 `identity_not_linked` / `forbidden`; 404 `parent_profile_not_found`; 409 `replayed_request`; 503 `service_unavailable`; all `no-store` |
 | anything else | | 404 `{"error":"not_found"}` |
 
 Every response carries `X-Request-Id` and `X-Content-Type-Options: nosniff`.
@@ -274,15 +275,22 @@ Desktop. These are **not production estimates**.
 | `tests/unit/backend-parent-orders.test.ts` | fake | `GET /v1/parent/orders` (V0.1.45): caller from the assertion only, parent only, query validation, error mapping |
 | `tests/unit/backend-parent-account.test.ts` | fake | the three V0.1.46 account routes: values and zero states, caller from the assertion only, no parameters, forged headers ignored, roles, unlinked, expired, no profile, DB failure with category-only logs |
 | `tests/unit/parent-account-cutover-db.test.ts` | opt-in `CARTOONA_PLAIN_PG=docker` | copied data → Fastify on a login role → the Next routes and the header (V0.1.46) |
+| `tests/unit/write-assertion.test.ts` | none | v3 format, body digest, nonce, version/method/path binding, forged claims (V0.1.47) |
+| `tests/unit/backend-write-auth.test.ts` | fake | `requireWriteAuth` + `PATCH /v1/parent/profile`: order of checks, nonce untouched on rejection, replay 409, forged ids, validation, failures, log hygiene |
+| `tests/unit/backend-client-write.test.ts` | none | `backendWriteJson`: exact signed bytes, one attempt, no retry, `outcomeUnknown` |
+| `tests/unit/write-security-static.test.ts` | none | write routes use `requireWriteAuth`; nonce only on the write path; no Next write cut over; grants |
+| `tests/unit/write-security-db.test.ts` | opt-in `CARTOONA_PLAIN_PG=docker` | nonce function (first use, replay, 20-way races, held-lock race, expiry, purge), role privileges, the route as a login role, cross-parent, roles, session policy, uncertain timeout, read-after-write, timings |
 
 ## Before the first authenticated route cuts over
 
-**Status (V0.1.46):** the authenticated reads cut over locally are the
+**Status (V0.1.47):** the authenticated reads cut over locally are the
 parent orders LIST (V0.1.45) and the parent account reads: profile name,
 candy balance, welcome credits (V0.1.46,
-[ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0146-parent-account-reads)). Every
-backend route is a GET; no write route exists. The items below remain open
-for production and for writes.
+[ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0146-parent-account-reads)). The write
+foundation exists (V0.1.47): v3 assertions, nonces, `backendWriteJson`,
+`requireWriteAuth`, and one backend-only proof write, `PATCH
+/v1/parent/profile`. No Next.js write is cut over. The items below remain open
+for production and for the write cutovers.
 
 1. **Identity and session policy:** done (V0.1.42 adapter, assertion,
    `requireAuth`; V0.1.43 Cartoona session policy, assertion v2,
@@ -299,10 +307,11 @@ for production and for writes.
 3. **Frontend to backend client:** GET is done (V0.1.41), forwarding a
    verified identity is done (V0.1.42, `auth:` option), and validated query
    parameters are done (V0.1.45, `query:` option; the assertion binds method
-   and path). Non-GET support
-   and a one-time nonce (assertion replay) are still needed for the first
-   write route.
-4. **Grants:** EXECUTE on the `*_trusted` functions a write route needs, in a
-   new migration.
+   and path). Non-GET support, v3 write assertions and the one-time nonce
+   are done (V0.1.47). Still needed per write cutover: the BFF route, its
+   CSRF check (Origin + JSON content type), and its "outcome unknown" UX.
+4. **Grants:** done for the proof write (0012 EXECUTE on the nonce function,
+   0013 UPDATE on two profile columns). Each further write cutover adds
+   EXECUTE on the `*_trusted` functions it calls, in its own migration.
 5. **Deployment:** where the backend runs outside local compose, how it is
    reached privately, and how `BACKEND_DATABASE_URL` is provisioned.

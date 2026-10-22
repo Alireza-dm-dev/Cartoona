@@ -83,7 +83,7 @@ describe("scope: creation pricing, the parent orders LIST and the parent account
     }
   })
 
-  it("the backend exposes exactly the migrated routes, and only GETs", () => {
+  it("the backend exposes exactly the migrated routes: GETs plus the one V0.1.47 proof write", () => {
     const routes = walk("backend/src/routes").map((f) => read(f)).join("\n")
     const registered = [...routes.matchAll(/app\.(get|post|put|patch|delete|route)\(\s*"([^"]+)"/g)].map((m) => `${m[1].toUpperCase()} ${m[2]}`)
     expect(registered.sort()).toEqual(["GET /health", "GET /ready", "GET /v1/auth/me", "GET /v1/creation-pricing", "GET /v1/parent/orders"])
@@ -91,16 +91,23 @@ describe("scope: creation pricing, the parent orders LIST and the parent account
     const account = code("backend/src/routes/parent-account.ts")
     expect([...account.matchAll(/^\s+"(\/v1\/[^"]+)": \{/gm)].map((m) => m[1]).sort()).toEqual(["/v1/parent/candy-balance", "/v1/parent/profile", "/v1/parent/welcome-credits"])
     expect(account).toMatch(/app\.get\(path, \{ preHandler: \[requireAuth\(deps\), requireRole\("parent"\)\] \}/)
-    expect(account).not.toMatch(/app\.(post|put|patch|delete|route)\(/)
+    // V0.1.47: exactly one write, PATCH of the same profile path, behind requireWriteAuth only.
+    expect([...account.matchAll(/app\.(post|put|patch|delete|route)\(/g)].map((m) => m[1])).toEqual(["patch"])
+    expect(account).toMatch(/const PROFILE_PATH = "\/v1\/parent\/profile"/)
+    expect(account).toMatch(/app\.patch\(PROFILE_PATH, \{ preHandler: \[requireWriteAuth\(deps, "parent"\)\] \}/)
   })
 
-  it("no backend route writes, touches Storage or calls a trusted write function", () => {
+  it("no backend route touches Storage or calls a trusted business function; the only SQL write is the profile name", () => {
     for (const file of walk("backend/src")) {
       expect(code(file), file).not.toMatch(/\b(INSERT|UPDATE|DELETE)\s|storage\.|_trusted\b|\.rpc\(/)
     }
-    for (const file of ["lib/repositories/parent-profiles.ts", "lib/repositories/candy-wallets.ts", "lib/repositories/welcome-credits.ts"]) {
+    for (const file of ["lib/repositories/candy-wallets.ts", "lib/repositories/welcome-credits.ts", "lib/repositories/parent-orders.ts"]) {
       expect(code(file), file).not.toMatch(/\b(INSERT|UPDATE|DELETE)\s/)
     }
+    // V0.1.47: one UPDATE, of full_name/updated_at, owned by user_id. No INSERT or DELETE.
+    const profiles = code("lib/repositories/parent-profiles.ts")
+    expect(profiles.match(/\b(INSERT|UPDATE|DELETE)\s/g)).toEqual(["UPDATE "])
+    expect(profiles).toMatch(/UPDATE public\.parent_profiles\s+SET full_name = \$2, updated_at = now\(\)\s+WHERE user_id = \$1\s+RETURNING full_name/)
   })
 })
 
@@ -184,10 +191,12 @@ describe("the parent account reads (V0.1.46) read no Supabase data", () => {
   })
 
   it("the backend routes take the caller from requireAuth only, are parent-only, refuse parameters and resolve the profile themselves", () => {
-    const route = code("backend/src/routes/parent-account.ts")
+    // The READ handler (the V0.1.47 write is checked in write-security-static.test.ts).
+    const all = code("backend/src/routes/parent-account.ts")
+    const route = all.slice(all.indexOf("async function handle("))
     expect(route).toMatch(/request\.authPrincipal!\.userId/)
-    expect(route).toMatch(/findParentProfileIdByUserId\(deps\.db\(\), \{ userId \}\)/)
-    expect(route).toMatch(/getParentProfileDisplay\(deps\.db\(\), \{ userId \}\)/)
+    expect(all).toMatch(/findParentProfileIdByUserId\(deps\.db\(\), \{ userId \}\)/)
+    expect(all).toMatch(/getParentProfileDisplay\(deps\.db\(\), \{ userId \}\)/)
     expect(route).toMatch(/Object\.keys\(\(request\.query \?\? \{\}\)[^)]*\)\.length > 0/)
     expect(route).not.toMatch(/request\.(headers|body|cookies|params)|x-user-id|x-role|authorization|parentProfileId:\s*request/i)
     expect(route).toMatch(/Cache-Control", "no-store"/)

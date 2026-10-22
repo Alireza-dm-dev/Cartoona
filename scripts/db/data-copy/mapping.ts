@@ -1,12 +1,13 @@
 /**
  * Canonical Supabase -> plain PostgreSQL data mapping (V0.1.44).
  *
- * The plain schema (database/migrations 0001-0011) is column-identical to the
+ * The plain schema (database/migrations 0001-0013) is column-identical to the
  * migrated Supabase `public` schema for every domain table (proven by the
  * parity suite in tests/unit/plain-postgres-db.test.ts), except:
  *   - users.sessions_not_before   target-only (V0.1.43), always NULL on copy
  *   - user_identities             target-only, derived from users.id
  *   - users.id -> auth.users FK   source-only, not carried over
+ *   - internal_write_nonces       target-only (V0.1.47), never copied, starts empty
  *
  * Every application-owned table appears exactly once below. The static suite
  * (tests/unit/data-copy-static.test.ts) fails when a table is added to the
@@ -175,6 +176,7 @@ export const EXCLUDED = [
   { object: "supabase_migrations, realtime, vault, graphql, extensions schemas", reason: "Supabase platform internals." },
   { object: "public.schema_migrations (target)", reason: "Owned by the target migration runner; verified, never written." },
   { object: "RLS policies, grants, Supabase roles", reason: "Replaced by backend authorization and the cartoona_app role." },
+  { object: "public.internal_write_nonces (target)", reason: "Target-only replay protection for backend writes (0012); has no Supabase counterpart and starts empty." },
 ]
 
 export const DEFERRED = [
@@ -199,6 +201,8 @@ export const EXPECTED_TARGET_MIGRATIONS = [
   "0009_application_role",
   "0010_identity_read_grant",
   "0011_users_sessions_not_before",
+  "0012_internal_write_nonces",
+  "0013_parent_profile_name_update_grant",
 ]
 
 export const IDENTITY_PROVIDER = "supabase"

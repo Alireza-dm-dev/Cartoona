@@ -23,9 +23,13 @@ import { registerParentOrdersRoutes } from "./routes/parent-orders"
  * Deliberately absent: CORS (no browser calls the backend directly; the Next
  * app calls it server-to-server), cookies, any browser identity (the only
  * caller identity is the signed internal assertion, see plugins/auth.ts and
- * auth/principal.ts), request bodies (every route is GET; the body limit is
- * minimal), and Fastify's own pino logger (lib/observability/logger is used
- * instead).
+ * auth/principal.ts), and Fastify's own pino logger (lib/observability/logger
+ * is used instead).
+ *
+ * Request bodies (V0.1.47): JSON only, <= 16 KiB. The JSON parser keeps the
+ * exact received bytes on `request.rawBody`, because a write assertion (v3)
+ * is bound to the SHA-256 of those bytes, not to a re-serialized object.
+ * Parsing itself is Fastify's default (prototype-poisoning safe) parser.
  */
 
 export interface BackendDeps {
@@ -54,6 +58,13 @@ export function buildBackendApp(overrides: Partial<BackendDeps> = {}): FastifyIn
     trustProxy: false,
     bodyLimit: 16 * 1024,
     return503OnClosing: true,
+  })
+
+  const parseJson = app.getDefaultJsonParser("error", "error")
+  app.removeContentTypeParser("application/json")
+  app.addContentTypeParser("application/json", { parseAs: "buffer" }, (request, body, done) => {
+    request.rawBody = body as Buffer
+    parseJson(request, (body as Buffer).toString("utf8"), done)
   })
 
   registerObservability(app)

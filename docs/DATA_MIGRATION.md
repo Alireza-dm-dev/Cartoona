@@ -2,7 +2,7 @@
 
 This document covers the tool that copies Cartoona's domain data from the
 current Supabase database shape into the plain PostgreSQL schema
-(`database/migrations` 0001–0011), and backfills `user_identities`.
+(`database/migrations` 0001–0013), and backfills `user_identities`.
 
 > **Status: local and testing tooling only.** No production data has been
 > copied. The tool refuses every non-local host and every known Supabase
@@ -236,7 +236,7 @@ Target states (`classifyTarget`):
 
 | Target | Behaviour |
 |---|---|
-| **A. fresh**: migrated 0001–0011, every domain table empty, reference tables at exactly their seed counts, no bookkeeping | full copy |
+| **A. fresh**: migrated 0001–0013, every domain table empty, reference tables at exactly their seed counts, no bookkeeping | full copy |
 | **B. completed** copy of the **same** source state (same data and schema fingerprint) | **verify-only no-op**: re-runs every check and the per-table preservation comparison, writes nothing, exits 0 (`verified_noop`) |
 | completed copy of a **different** source state | refused (exit 3). Recreate the target |
 | interrupted (`in_progress`), same source state, unfinished phases' tables still initial | **resume** at the first uncommitted phase (`resumed_completed`) |
@@ -280,7 +280,7 @@ are never stored.
   anywhere in either URL. Ambient `PGHOST`/`PGPORT`/`PGDATABASE`/`PGSERVICE`/`PGHOSTADDR` are refused.
 - Source ≠ target is checked by URL and again by the server and database
   actually reached (system identifier, start time and database oid).
-- The target schema must be **exactly** the audited 0001–0011, in order, each
+- The target schema must be **exactly** the audited 0001–0013, in order, each
   with the sha256 of this checkout's file. If the checkout itself holds an
   unaudited migration (0012+), the tool refuses until the mapping is re-audited.
 - The source schema must have every target column with the same type, and no
@@ -377,7 +377,7 @@ cutover is blocked by the AMR check. Prerequisites:
    Supabase. Confirm that Supabase's applied migration head equals this
    checkout's `supabase/migrations` head.
 3. **Staging restore**, as in [Source extraction](#source-extraction-provider-neutral).
-4. **Target check.** Create a fresh target and migrate it 0001–0011 with the
+4. **Target check.** Create a fresh target and migrate it 0001–0013 with the
    runner as the owner role. `npm run db:copy -- --check`.
 5. **Data copy:** `npm run db:copy -- --manifest <file>`. The source
    preflight refuses a broken export before writing.
@@ -450,3 +450,28 @@ credits all differ between parents). Production remains blocked by:
    Supabase. On one running system the two diverge, so production needs those
    writes moved or a final copy at the cutover freeze before switching any of
    these reads.
+
+### V0.1.47: write foundation, re-audit of 0012/0013
+
+The tool's pinned migration set is now 0001–0013. Both new migrations were
+re-audited against the mapping:
+
+- **0012** adds `internal_write_nonces`, a target-only table with no Supabase
+  counterpart. It is never copied (listed in `EXCLUDED`), starts empty, holds
+  only opaque nonces, and is not part of reconciliation. Nonces never need to
+  survive a cutover: every one expires within a minute of use.
+- **0013** is a column-level grant; it changes no data or column.
+
+Drift after V0.1.47, per domain (nothing below is deployed):
+
+| Domain | Reads | Writes | State |
+|---|---|---|---|
+| parent display name | PostgreSQL (V0.1.46) | PostgreSQL: `PATCH /v1/parent/profile`, **backend only**, no product path calls it | internally consistent in PostgreSQL; no live Supabase write exists for it either (no profile-edit UI). Profile *creation* (signup, consent) still writes Supabase |
+| candy balance | PostgreSQL | Supabase (purchase completion, request submission) | **drifts** |
+| welcome credits | PostgreSQL | Supabase (request submission) | **drifts** |
+| orders list | PostgreSQL | Supabase (request submission, admin status) | **drifts** |
+| consent | Supabase | Supabase | consistent (old path) |
+| everything else | Supabase | Supabase | consistent (old path) |
+
+The read/write split (blocker 5) is therefore **not** solved by V0.1.47. The
+final copy at the write freeze, or moving those writes, is still required.

@@ -2,10 +2,11 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify"
 import { DbConfigError, DbError } from "@/lib/db/errors"
 import { logEvent } from "@/lib/observability/logger"
 import { getCandyBalance } from "@/lib/repositories/candy-wallets"
-import { findParentProfileIdByUserId, getParentProfileDisplay } from "@/lib/repositories/parent-profiles"
+import { checkParentName } from "@/lib/parent/profile-name"
+import { findParentProfileIdByUserId, getParentProfileDisplay, updateParentProfileName } from "@/lib/repositories/parent-profiles"
 import { getWelcomeImageCreditsRemaining } from "@/lib/repositories/welcome-credits"
 import type { BackendDeps } from "../app"
-import { requireAuth, requireRole } from "../plugins/auth"
+import { requireAuth, requireRole, requireWriteAuth } from "../plugins/auth"
 
 /**
  * The signed-in parent's account READS (V0.1.46). Read-only, GET only.
@@ -28,6 +29,22 @@ import { requireAuth, requireRole } from "../plugins/auth"
  * Every response is Cache-Control: no-store. No profile id, user id, ledger or
  * usage row, consent flag or referral code is returned; DB errors are logged
  * by category only.
+ *
+ * And the first WRITE (V0.1.47), proven at the backend only - no Next route or
+ * UI calls it yet:
+ *
+ *   PATCH /v1/parent/profile   body exactly { fullName: string | null }
+ *     200 { fullName: string | null }              the stored (normalized) value
+ *     400 { error: "invalid_request" }             query string, other keys, bad name
+ *     401 / 403 / 409 / 503                        requireWriteAuth (v3, parent, nonce)
+ *     404 { error: "parent_profile_not_found" }    nothing written
+ *     503 { error: "service_unavailable" }         database failure
+ *
+ * The row is chosen by principal.userId inside the UPDATE's WHERE; a
+ * parentProfileId, userId or any other key in the body is a 400, never used.
+ * Setting the same name twice ends in the same state, so a user retry after an
+ * uncertain timeout (new assertion, new nonce) is safe; a replay of the SAME
+ * assertion is refused 409 by its nonce before reaching this handler.
  */
 
 type Read = (deps: BackendDeps, userId: string) => Promise<Record<string, unknown> | null>
@@ -62,6 +79,47 @@ export function registerParentAccountRoutes(app: FastifyInstance, deps: BackendD
       handle(request, reply, deps, operation, read),
     )
   }
+  registerProfileWrite(app, deps)
+}
+
+const PROFILE_PATH = "/v1/parent/profile"
+
+function registerProfileWrite(app: FastifyInstance, deps: BackendDeps): void {
+  app.patch(PROFILE_PATH, { preHandler: [requireWriteAuth(deps, "parent")] }, async (request, reply) => {
+    reply.header("Cache-Control", "no-store")
+    const operation = "parent_profile_update"
+    const invalid = (reason: string) => {
+      logEvent("info", "ACCOUNT_WRITE_REJECTED", { requestId: request.id, operation, reason })
+      return reply.code(400).send({ error: "invalid_request" })
+    }
+    if (Object.keys((request.query ?? {}) as Record<string, unknown>).length > 0) return invalid("query")
+    const body = request.body
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return invalid("body")
+    const keys = Object.keys(body)
+    if (keys.length !== 1 || keys[0] !== "fullName") return invalid("keys")
+    const name = checkParentName((body as { fullName: unknown }).fullName)
+    if (!name.ok) return invalid(name.reason)
+
+    try {
+      const updated = await updateParentProfileName(deps.db(), { userId: request.authPrincipal!.userId, fullName: name.value })
+      if (!updated) {
+        logEvent("info", "ACCOUNT_WRITE_REJECTED", { requestId: request.id, operation, reason: "no_parent_profile" })
+        return reply.code(404).send({ error: "parent_profile_not_found" })
+      }
+      logEvent("info", "ACCOUNT_WRITE_COMPLETED", { requestId: request.id, operation })
+      return updated
+    } catch (error) {
+      if (!(error instanceof DbError) && !(error instanceof DbConfigError)) throw error
+      logEvent("warn", "ACCOUNT_WRITE_FAILED", {
+        requestId: request.id,
+        operation,
+        subsystem: "database",
+        errorCode: "DATABASE_UNAVAILABLE",
+        reason: error instanceof DbError ? error.kind : "config",
+      })
+      return reply.code(503).send({ error: "service_unavailable" })
+    }
+  })
 }
 
 async function handle(request: FastifyRequest, reply: FastifyReply, deps: BackendDeps, operation: string, read: Read) {

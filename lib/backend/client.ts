@@ -2,7 +2,13 @@ import "server-only"
 import { fetchWithTimeout, isFetchTimeoutError } from "@/lib/http/fetch-with-timeout"
 import { logEvent } from "@/lib/observability/logger"
 import { REQUEST_ID_HEADER, isSafeRequestId } from "@/lib/observability/request-id"
-import { INTERNAL_AUTH_HEADER, InternalAuthConfigError, readInternalAuthSecret, signAssertion } from "@/lib/identity/assertion"
+import {
+  INTERNAL_AUTH_HEADER,
+  InternalAuthConfigError,
+  readInternalAuthSecret,
+  signAssertion,
+  signWriteAssertion,
+} from "@/lib/identity/assertion"
 import type { VerifiedIdentity } from "@/lib/identity/types"
 import { BackendConfigError, readBackendClientConfig } from "./config"
 import { BackendClientError } from "./errors"
@@ -33,9 +39,17 @@ import { BackendClientError } from "./errors"
  * sends it in X-Cartoona-Internal-Auth. No provider token, cookie or user id is
  * forwarded.
  *
- * Only GET + JSON exists today; write methods arrive with the first write route.
- * Callers (V0.1.45): /api/creation-pricing (public), /api/auth/backend-me and
- * the parent orders LIST (/api/parent/orders + the /dashboard/orders first page).
+ * Callers of backendGetJson: /api/creation-pricing (public), /api/auth/backend-me,
+ * the parent orders LIST and the V0.1.46 account reads.
+ *
+ * Writes (V0.1.47): backendWriteJson. The body is serialized ONCE; those exact
+ * bytes are both hashed into the v3 assertion (`bdg`, with a fresh nonce) and
+ * sent, so Fastify can verify the body it received is the body that was
+ * signed. Still one attempt, never retried: a write that timed out may have
+ * committed, so the error carries `outcomeUnknown` and the caller decides
+ * what to tell the user. Method and path are constants in route handlers;
+ * nothing a browser sends selects them. No caller yet: the first BFF write
+ * cutover is V0.1.48.
  */
 
 export interface BackendGetRequest<T> {
@@ -97,18 +111,96 @@ function queryString(query: Record<string, string | undefined> | undefined): str
   return text ? `?${text}` : ""
 }
 
+export type BackendWriteMethod = "POST" | "PUT" | "PATCH" | "DELETE"
+
+export interface BackendWriteRequest<T> {
+  /** Stable name for logs, e.g. "parent_profile_update". */
+  operation: string
+  method: BackendWriteMethod
+  /** Absolute backend path, a constant. No query string on writes. */
+  path: string
+  /** JSON-serializable body; serialized exactly once. */
+  body: unknown
+  requestId?: string
+  parse: (json: unknown, status: number) => T
+  acceptStatuses?: readonly number[]
+  /** Required: every backend write is authenticated. */
+  auth: { identity: VerifiedIdentity; authenticatedAt: number }
+}
+
+const WRITE_METHODS = new Set<string>(["POST", "PUT", "PATCH", "DELETE"])
+
 export async function backendGetJson<T>(
   request: BackendGetRequest<T>,
   deps: BackendClientDeps = {},
 ): Promise<BackendResponse<T>> {
-  const requestId = isSafeRequestId(request.requestId) ? request.requestId : crypto.randomUUID()
-  const base = { requestId, operation: request.operation, subsystem: "backend" } as const
-
   if (!PATH.test(request.path)) {
     // A programming error, not input: paths are constants in route handlers.
     throw new TypeError("backend client: invalid path")
   }
-  const search = queryString(request.query)
+  return send(
+    {
+      operation: request.operation,
+      method: "GET",
+      path: request.path,
+      search: queryString(request.query),
+      requestId: request.requestId,
+      parse: request.parse,
+      acceptStatuses: request.acceptStatuses,
+      auth: request.auth,
+    },
+    deps,
+  )
+}
+
+/**
+ * One authenticated WRITE to the backend (V0.1.47). Signs a v3 assertion over
+ * the exact serialized body with a fresh single-use nonce. Exactly one fetch;
+ * never retried. See the header comment and BackendClientError.outcomeUnknown.
+ */
+export async function backendWriteJson<T>(
+  request: BackendWriteRequest<T>,
+  deps: BackendClientDeps = {},
+): Promise<BackendResponse<T>> {
+  if (!WRITE_METHODS.has(request.method)) throw new TypeError("backend client: invalid write method")
+  if (!PATH.test(request.path)) throw new TypeError("backend client: invalid path")
+  if (!request.auth) throw new TypeError("backend client: writes are authenticated")
+  const body = JSON.stringify(request.body)
+  if (typeof body !== "string") throw new TypeError("backend client: body is not JSON-serializable")
+  return send(
+    {
+      operation: request.operation,
+      method: request.method,
+      path: request.path,
+      search: "",
+      body: new TextEncoder().encode(body),
+      requestId: request.requestId,
+      parse: request.parse,
+      acceptStatuses: request.acceptStatuses,
+      auth: request.auth,
+    },
+    deps,
+  )
+}
+
+interface SendRequest<T> {
+  operation: string
+  method: "GET" | BackendWriteMethod
+  path: string
+  search: string
+  /** Write only: the exact bytes signed and sent. */
+  body?: Uint8Array<ArrayBuffer>
+  requestId?: string
+  parse: (json: unknown, status: number) => T
+  acceptStatuses?: readonly number[]
+  auth?: { identity: VerifiedIdentity; authenticatedAt: number }
+}
+
+async function send<T>(request: SendRequest<T>, deps: BackendClientDeps): Promise<BackendResponse<T>> {
+  const requestId = isSafeRequestId(request.requestId) ? request.requestId : crypto.randomUUID()
+  const base = { requestId, operation: request.operation, subsystem: "backend" } as const
+  const isWrite = request.body !== undefined
+  const search = request.search
 
   let config
   try {
@@ -123,14 +215,15 @@ export async function backendGetJson<T>(
   if (request.auth) {
     try {
       const secret = readInternalAuthSecret(deps.env)
-      headers[INTERNAL_AUTH_HEADER] = signAssertion({
+      const claims = {
         identity: request.auth.identity,
         authenticatedAt: request.auth.authenticatedAt,
         requestId,
-        method: "GET",
+        method: request.method,
         path: request.path,
         secret,
-      })
+      }
+      headers[INTERNAL_AUTH_HEADER] = isWrite ? signWriteAssertion({ ...claims, body: request.body! }) : signAssertion(claims)
     } catch (error) {
       if (!(error instanceof InternalAuthConfigError)) throw error
       logEvent("error", "BACKEND_NOT_CONFIGURED", { ...base, errorCode: "INTERNAL_AUTH_NOT_CONFIGURED" })
@@ -147,8 +240,10 @@ export async function backendGetJson<T>(
     errorCode: string,
     status: number | null = null,
   ): never => {
-    logEvent(level, event, { ...base, status: status ?? undefined, durationMs: duration(), errorCode })
-    throw new BackendClientError(kind, status)
+    // A write that got no usable answer may still have committed.
+    const outcomeUnknown = isWrite && kind !== "not_configured" && !(kind === "bad_status" && status !== null && status < 500)
+    logEvent(level, event, { ...base, status: status ?? undefined, durationMs: duration(), errorCode, ...(isWrite ? { outcomeUnknown } : {}) })
+    throw new BackendClientError(kind, status, outcomeUnknown)
   }
 
   let response: Response
@@ -156,8 +251,9 @@ export async function backendGetJson<T>(
     response = await fetchWithTimeout(
       `${config.baseUrl}${request.path}${search}`,
       {
-        method: "GET",
-        headers,
+        method: request.method,
+        headers: isWrite ? { ...headers, "content-type": "application/json" } : headers,
+        ...(isWrite ? { body: request.body } : {}),
         cache: "no-store",
         redirect: "error",
       },

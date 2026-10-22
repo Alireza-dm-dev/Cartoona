@@ -92,13 +92,11 @@ deploy together, so there is no mixed-version window to support.
 | Contents | no email, phone, names, profile data, provider tokens, Cartoona id or role |
 | Header | `X-Cartoona-Internal-Auth`, sent only by `lib/backend/client.ts`, server-to-server |
 
-**Replay.** Within its ≤ 60 s life an assertion is a bearer value, but only for
-one method and one path, and it only ever travels between the Next server and
-the backend on the private network. There is no replay cache: that would need
-shared state such as Redis, which is out of scope. Every route that accepts an
-assertion today is an idempotent GET. Before a non-idempotent route relies on
-assertions, add a one-time nonce: a `jti` stored for 60 s, for example in
-PostgreSQL.
+**Replay.** Within its ≤ 60 s life a **v2** assertion is a bearer value, but
+only for one method and one path, and it only ever travels between the Next
+server and the backend. v2 has no replay cache and since V0.1.47 is accepted
+**only for GET/HEAD**: replaying it re-reads the caller's own data and changes
+nothing. Writes need **v3**, which is single-use ([Write security](#write-security-v0147)).
 
 **Secret handling.**
 
@@ -111,6 +109,154 @@ PostgreSQL.
 - The backend refuses to start without a valid secret.
 - **Rotation:** change it on both services together. Requests already in
   flight fail with a 503 for at most the 30 s assertion lifetime.
+
+## Write security (V0.1.47)
+
+The foundation every authenticated backend **write** uses:
+
+```
+Browser -> Next.js BFF -> verified Supabase session (provider only)
+        -> v3 assertion: v2 claims + nonce + SHA-256 of the exact body bytes
+        -> Fastify requireWriteAuth -> consume_internal_write_nonce() (PostgreSQL, once)
+        -> handler -> restricted repository / trusted function
+```
+
+### v2 vs v3
+
+```
+v3.<base64url(JSON)>.<base64url(HMAC-SHA256(secret, "cartoona-internal-auth\nv3\n" || payload))>
+payload = { v: 3, prv, sub, aat, iat, exp, rid, mth, pth, nce, bdg }   exactly these keys
+```
+
+| | v2 | v3 |
+|---|---|---|
+| Accepted for | GET, HEAD (`requireAuth`) | POST, PUT, PATCH, DELETE (`requireWriteAuth`) |
+| Signed by | `signAssertion` (refuses write methods) | `signWriteAssertion` (refuses read methods) |
+| MAC context | `...\nv2\n` | `...\nv3\n`: a v2 MAC can never verify as v3 |
+| Replay | bounded by 30 s + method/path binding | **single use**: nonce consumed in PostgreSQL |
+| Body | not bound | `bdg` = base64url(SHA-256(exact request body bytes)) |
+
+The verifier picks the version from what the **route** expects (`kind:
+"read" | "write"`), never from the token: a v2 token on a write, or a v3 token
+on a read, is `unsupported_version` (401). Neither version carries a role,
+user id or profile id; the backend resolves those from its own database.
+
+**Body digest.** Next serializes the body **once** (`JSON.stringify`) and both
+hashes and sends those exact bytes. Fastify's JSON parser keeps the received
+bytes (`request.rawBody`) and the digest is recomputed over them and compared
+in constant time. Nothing is canonicalized: the same JSON value with different
+whitespace is a different body and is refused. A write without a body is the
+digest of zero bytes.
+
+**Nonce.** 32 bytes from the CSPRNG, base64url (43 chars), new for every
+signature. `public.consume_internal_write_nonce(nonce, expires_at, request_id)`
+(migration 0012) inserts it with `ON CONFLICT DO NOTHING` and returns whether
+this call inserted it: true exactly once, false for every later **or
+concurrent** use (the primary key serializes concurrent inserts; a waiter
+behind an uncommitted insert gets false on commit, or wins on rollback). The
+table holds only the opaque nonce, the assertion expiry, the request id and
+the consumption time: no user, subject, path or body. Each call purges rows
+that expired more than 10 minutes ago, and the function refuses an expiry more
+than 5 minutes from now in either direction, so a purged nonce can never be
+consumed again (its assertion is long expired and its expiry would be
+refused). The app role can only EXECUTE the function; it has no privilege on
+the table.
+
+### Order of checks in `requireWriteAuth`
+
+| # | Check | Failure |
+|---|---|---|
+| 1 | header present, single | 401 `unauthenticated` |
+| 2 | MAC (constant time) → version 3 → exact claim keys → time window → method + path → body digest | 401 `unauthenticated` |
+| 3 | identity (`user_identities`) | 403 `identity_not_linked` / 403 `forbidden` (deleted) |
+| 4 | session policy: 30 days, `sessions_not_before` | 401 `session_expired` / `session_invalidated` |
+| 5 | role allowed for this route | 403 `forbidden` |
+| 6 | nonce consumed | 409 `replayed_request` |
+| – | handler: body validation | 400 `invalid_request` |
+| – | database down at 3, 6 or in the handler | 503 `service_unavailable` (no raw DB error) |
+| – | anything else | 500 `internal_error` |
+
+The nonce is consumed **last**, after every check that changes nothing.
+Nobody can burn a nonce without a fully valid assertion for an allowed caller,
+and a refused request leaves its nonce unused. Consumption is one autocommitted
+statement before the handler: of N concurrent requests carrying the same
+assertion exactly one reaches the handler. If the write then fails, the nonce
+stays consumed and a retry needs a new assertion, which is what the client
+does anyway (it never retries). `requireAuth` (reads) never touches the nonce
+store, and a write route cannot authenticate without consuming one:
+`requireWriteAuth` is a single preHandler that does both.
+
+### Threat model
+
+| Threat | Stopped by |
+|---|---|
+| Replay of a valid write assertion (inside its 30 s) | nonce: second use is 409, in the database, across processes |
+| Concurrent duplicate requests with one assertion | nonce primary key: exactly one wins (tested with 20-25 concurrent requests) |
+| Method or path substitution | `mth`/`pth` signed and compared to the request (401) |
+| Body tampering after signing | `bdg` recomputed over the received bytes (401) |
+| v2 (replayable) assertion used for a write | version chosen by the route: v2 on a write is 401 |
+| v3 assertion replayed on a read | v3 on a read is 401, and reads never consume nonces |
+| Stolen assertion used within its TTL | single use: if the legitimate request already ran, the theft is useless; if the thief is first, the legitimate one gets 409. It only travels server-to-server and is never logged |
+| Forged user / role / profile id (headers, body, query) | never read: the user comes from the assertion's subject via `user_identities`; the role from `users`; the proof route rejects any body key but `fullName` and any query |
+| Stale session | `aat` + 30 days + `sessions_not_before`, checked on every write |
+| Cross-user write | the repository's `WHERE user_id = <principal>`; the role has UPDATE on two columns only |
+| Duplicated browser submission | each submission is a new BFF request with a new nonce, so it is NOT a replay: it must be safe at the domain level (idempotent like the name update, or carry its own idempotency key like request submission) |
+| Backend / network retry | the client makes one attempt and never retries; a transport-level resend of the same request is a replay and is 409 |
+
+"Internal network" is not a control in this list: every row holds even if an
+attacker can reach the backend port.
+
+### Transport replay vs legitimate retry
+
+- **Transport replay**: the *same* assertion delivered again (a resend, a
+  copy). Always 409, no second write.
+- **User retry**: the user (or the BFF on the user's behalf) submits again;
+  Next verifies the session again and signs a *new* assertion with a new nonce.
+  It is accepted, so the write itself must be safe to repeat. The V0.1.47 proof
+  write sets a value, so repeating it ends in the same state.
+
+### Uncertain timeout
+
+The Next client sends a write once, bounded by `BACKEND_REQUEST_TIMEOUT_MS`
+(default 3 s, 250-15000), and never retries. A timeout, connection reset,
+5xx or unreadable 2xx means the write **may have committed**:
+`BackendClientError.outcomeUnknown` is true, and the public answer must not
+claim the change was not saved. Tested: with the response delayed after
+commit, the client timed out after ~250 ms with one fetch, the row had changed
+exactly once, resending that request was 409, and a new user retry with the
+same value succeeded with no further effect. The future BFF route should show
+"we could not confirm this was saved; check and try again", never "failed".
+
+### CSRF (browser → Next)
+
+The internal assertion protects Next → Fastify only; it does nothing against
+a cross-site request to a **Next** route, which arrives with the user's
+cookies. V0.1.47 cuts over no Next write route, so there is no new browser
+write surface. Current state, for V0.1.48:
+
+- Supabase session cookies are `SameSite=Lax` (@supabase/ssr default), so
+  cross-site POST/PATCH requests from another site do not carry them in
+  current browsers; top-level GET navigations do, which is why no GET may
+  ever write.
+- Three routes (`/api/parent/password`, `/api/referrals/bind`,
+  `/api/admin/referrals/settings`) validate `Origin` ad hoc; the others,
+  including consent, rely on SameSite only.
+- **Required before the first BFF write cutover:** a shared check on every
+  migrated write route: `Origin` must equal the site origin (or `Sec-Fetch-Site:
+  same-origin`), `Content-Type: application/json` required (a form post cannot
+  send it without a CORS preflight), and no state change on GET.
+
+### First write (backend only)
+
+`PATCH /v1/parent/profile` sets the caller's `parent_profiles.full_name`
+(`lib/parent/profile-name.ts`: NFC, trimmed, whitespace collapsed, null/blank =
+no name, ≤ 60 chars, at least one letter, no control/format characters). There
+is **no** Next route or UI for it: the product has no profile-edit screen (the
+settings card is a TODO), and every existing parent write was either excluded
+(money, requests, media), owned by the provider (password, logout), or read
+elsewhere from Supabase (consent: middleware would loop back to
+`/parent-consent`). The route proves the chain end to end at the backend and
+through `backendWriteJson`; the first Next write cutover is V0.1.48.
 
 ## Failure semantics
 

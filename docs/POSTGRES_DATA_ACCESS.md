@@ -181,7 +181,9 @@ that holds the application's privileges:
 
 So it cannot alter or drop schema, cannot disable triggers (that needs
 ownership or `session_replication_role`, which is superuser-only), and cannot
-call any `*_trusted` function yet. Each write cutover adds EXECUTE on exactly
+call any `*_trusted` business function yet. Its only write privileges
+(V0.1.47) are EXECUTE on the nonce function and UPDATE on two profile columns
+([below](#write-grants-v0147)). Each write cutover adds EXECUTE on exactly
 the functions it calls, in a new migration. This is not Supabase's
 `service_role`: there is no all-powerful app role.
 
@@ -208,6 +210,22 @@ The script:
 Re-running it rotates the password. The app then connects as
 `postgresql://cartoona_app_login:<password>@postgres:5432/cartoona`, never as
 the owner. Migrations still run as the owner.
+
+### Write grants (V0.1.47)
+
+The first application write privileges, each in its own migration and each as
+narrow as PostgreSQL allows:
+
+| Migration | Grant to `cartoona_app` | Used by |
+|---|---|---|
+| `0012_internal_write_nonces` | `EXECUTE` on `consume_internal_write_nonce(text, timestamptz, text)` only. **Nothing** on `internal_write_nonces` itself (no SELECT, INSERT, UPDATE, DELETE, TRUNCATE). The function is `SECURITY DEFINER` with an empty `search_path`, like the `*_trusted` functions. | `requireWriteAuth` (backend), via `lib/repositories/write-nonces.ts` |
+| `0013_parent_profile_name_update_grant` | `UPDATE (full_name, updated_at) ON parent_profiles`: column-level. No other column (not `user_id`, consent, `referral_code`), no table-wide UPDATE, no INSERT, no DELETE. | `updateParentProfileName` (`WHERE user_id = $1 RETURNING full_name`) |
+
+The `parent_profiles` CHECK constraint (NULL or non-blank) and the
+referral-code trigger still apply to the app role. A financially sensitive or
+multi-row write will go through a transactional `*_trusted` function instead
+of a direct UPDATE. The privileges are proven against a real login role in
+`tests/unit/write-security-db.test.ts`.
 
 ## Tests
 
@@ -239,7 +257,7 @@ are served from this layer through the backend. The orders list uses
 grants of 0009 already cover all of them (`users`, `parent_profiles`,
 `candy_wallets`, `parent_welcome_credits`, `orders`, `order_status_history`;
 `user_identities` from 0010), so no migration was added in either release.
-No INSERT/UPDATE/DELETE or EXECUTE grant was added. Items 1–5 below are done for those reads; item 6 (writes) is open.
+No INSERT/UPDATE/DELETE or EXECUTE grant was added for those reads. Items 1–5 below are done for them; item 6 (writes) has its foundation since V0.1.47.
 
 1. **Identity bridge:** a route still learns who the caller is from Supabase
    Auth. Cutover needs the Supabase user id resolved to a plain `users.id`,
@@ -256,5 +274,9 @@ No INSERT/UPDATE/DELETE or EXECUTE grant was added. Items 1–5 below are done f
    (`read_failed` → 503, null credit count). The pricing route's validation is
    now duplicated in `getActiveCreationPrices`; switching the route should
    delete the route-side copy.
-6. **Writes:** write repositories over the `*_trusted` functions, plus
-   EXECUTE grants in a new migration. They are not part of V0.1.39.
+6. **Writes:** V0.1.47 added the first write repository
+   (`updateParentProfileName`, column-level grant) and the nonce function
+   (`consume_internal_write_nonce`, EXECUTE only), used by a backend-only
+   proof route. Business writes (requests, purchases, coupons, referrals)
+   still need repositories over their `*_trusted` functions and EXECUTE
+   grants, one migration per cutover.

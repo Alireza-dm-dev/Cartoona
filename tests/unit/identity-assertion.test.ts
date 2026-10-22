@@ -57,6 +57,7 @@ describe("1. a valid assertion verifies", () => {
         path: "/v1/auth/me",
         issuedAt: NOW / 1000,
         expiresAt: NOW / 1000 + ASSERTION_LIFETIME_SECONDS,
+        version: 2,
       },
     })
   })
@@ -208,8 +209,12 @@ describe("9. method and path binding", () => {
     const token = sign()
     expect(verify(token, { path: "/v1/creation-pricing" })).toEqual({ ok: false, reason: "binding_mismatch" })
     expect(verify(token, { path: "/v1/auth/me/x" })).toEqual({ ok: false, reason: "binding_mismatch" })
-    expect(verify(token, { method: "POST" })).toEqual({ ok: false, reason: "binding_mismatch" })
-    expect(verify(sign({ method: "POST", path: "/v1/orders" }), { method: "POST", path: "/v1/orders" }).ok).toBe(true)
+    expect(verify(token, { method: "HEAD" })).toEqual({ ok: false, reason: "binding_mismatch" })
+    expect(verify(sign({ method: "HEAD", path: "/v1/orders" }), { method: "HEAD", path: "/v1/orders" }).ok).toBe(true)
+  })
+
+  it("v2 (V0.1.47) is read-only: it cannot be signed for a write method", () => {
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) expect(() => sign({ method })).toThrow(TypeError)
   })
 
   it("signing refuses unsafe bindings and request ids", () => {
@@ -244,7 +249,7 @@ describe("11. constant-time verification", () => {
       // The module imports timingSafeEqual by name; prove it from the source too.
       verify(sign())
       const src = fs.readFileSync("lib/identity/assertion.ts", "utf8")
-      expect(src).toMatch(/import \{ createHmac, timingSafeEqual \} from "node:crypto"/)
+      expect(src).toMatch(/import \{ createHash, createHmac, randomBytes, timingSafeEqual \} from "node:crypto"/)
       expect(src).toMatch(/timingSafeEqual\(received, expected\)/)
       expect(src).not.toMatch(/received\s*===\s*expected|signature\s*===\s*expected|\.equals\(/)
     } finally {

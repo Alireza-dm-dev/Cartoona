@@ -40,6 +40,8 @@ export interface LogFields {
   policy?: string
   paymentSource?: string
   retryAfterSeconds?: number
+  /** A backend write that may have committed without a usable answer (V0.1.47). */
+  outcomeUnknown?: boolean
 }
 
 export interface LogRecord extends LogFields {
@@ -84,6 +86,7 @@ const VALIDATORS: { [K in keyof LogFields]-?: (v: unknown) => LogFields[K] | und
   policy: str(CODE),
   paymentSource: (v) => (v === "candy" || v === "welcome_image_credit" ? v : undefined),
   retryAfterSeconds: count,
+  outcomeUnknown: (v) => (typeof v === "boolean" ? v : undefined),
 }
 
 // Fixed order -> stable, greppable output.

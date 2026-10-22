@@ -42,3 +42,31 @@ export async function getParentProfileDisplay(
   if (!row) return null;
   return { fullName: typeof row.full_name === "string" ? row.full_name : null };
 }
+
+const UPDATE_NAME = `
+  UPDATE public.parent_profiles
+  SET full_name = $2, updated_at = now()
+  WHERE user_id = $1
+  RETURNING full_name`;
+
+/**
+ * The first application WRITE on plain PostgreSQL (V0.1.47): set the user's
+ * own display name. `fullName` must already be validated and normalized
+ * (lib/parent/profile-name.ts); null clears it. Ownership is the predicate:
+ * only the row whose user_id is the authenticated user can change. Null when
+ * that user has no profile (nothing was written).
+ *
+ * The app role holds UPDATE on (full_name, updated_at) only (migration 0013).
+ * Repeating the same value is harmless: the row ends in the same state.
+ */
+export async function updateParentProfileName(
+  db: Queryable,
+  input: { userId: string; fullName: string | null },
+): Promise<{ fullName: string | null } | null> {
+  const userId = requireUuid(input.userId, "userId");
+  if (input.fullName !== null && typeof input.fullName !== "string") throw new TypeError("fullName must be a string or null");
+  const rows = await runQuery<{ full_name: string | null }>(db, UPDATE_NAME, [userId, input.fullName]);
+  const row = rows[0];
+  if (!row) return null;
+  return { fullName: typeof row.full_name === "string" ? row.full_name : null };
+}

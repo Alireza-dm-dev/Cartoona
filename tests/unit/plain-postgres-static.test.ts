@@ -53,10 +53,12 @@ describe("database/migrations — no Supabase dependency", () => {
     // A role can only be referenced through these. The V0.1.38 baseline uses
     // none at all. The exceptions are the application-role migrations: 0009
     // (V0.1.39) creates `cartoona_app` and grants to it, 0010 (V0.1.42) adds a
-    // read grant. They may grant to `cartoona_app` and nothing else.
+    // read grant, 0012 (V0.1.47) EXECUTE on the nonce function, 0013 (V0.1.47)
+    // UPDATE on two profile columns. They may grant to `cartoona_app` and
+    // nothing else.
     // As statements (the candy ledger has a 'grant' transaction type).
     const APP_ROLE_FILE = "0009_application_role.sql"
-    const GRANT_FILES = [APP_ROLE_FILE, "0010_identity_read_grant.sql"]
+    const GRANT_FILES = [APP_ROLE_FILE, "0010_identity_read_grant.sql", "0012_internal_write_nonces.sql", "0013_parent_profile_name_update_grant.sql"]
     const baseline = Object.entries(sql)
       .filter(([f]) => !GRANT_FILES.includes(f))
       .map(([, s]) => s.replace(/--.*$/gm, ""))
@@ -76,6 +78,14 @@ describe("database/migrations — no Supabase dependency", () => {
     // 0010 is read-only: one SELECT grant, no write or execute privilege.
     const readGrant = sql["0010_identity_read_grant.sql"].replace(/--.*$/gm, "").trim()
     expect(readGrant).toBe("GRANT SELECT ON public.user_identities TO cartoona_app;")
+    // 0012: EXECUTE on the one nonce function; nothing on its table.
+    const nonce = sql["0012_internal_write_nonces.sql"].replace(/--.*$/gm, "")
+    expect([...nonce.matchAll(/^\s*GRANT\s+([^;]+);/gim)].map((m) => m[1].replace(/\s+/g, " "))).toEqual([
+      "EXECUTE ON FUNCTION public.consume_internal_write_nonce(text, timestamp with time zone, text) TO cartoona_app",
+    ])
+    // 0013: column-level UPDATE only - never table-wide, never INSERT/DELETE.
+    const name = sql["0013_parent_profile_name_update_grant.sql"].replace(/--.*$/gm, "").trim()
+    expect(name).toBe("GRANT UPDATE (full_name, updated_at) ON public.parent_profiles TO cartoona_app;")
   })
 
   it("4. never calls auth.uid() / auth.jwt() / auth.role()", () => {

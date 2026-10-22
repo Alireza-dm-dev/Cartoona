@@ -7,6 +7,7 @@ Routes served through the Fastify backend instead of Supabase:
 | V0.1.41 | `GET /api/creation-pricing` | public read |
 | V0.1.45 | `GET /api/parent/orders` + the `/dashboard/orders` first page | **authenticated** read, the parent orders **LIST** only ([below](#v0145-parent-orders-list)) |
 | V0.1.46 | `GET /api/parent/welcome-credits`, `GET /api/parent/account-summary` (new), the public header's parent name | **authenticated** reads: welcome credits, candy balance, profile name ([below](#v0146-parent-account-reads)) |
+| V0.1.47 | none (backend-only `PATCH /v1/parent/profile`) | write-security foundation; **no Next.js route cut over** ([below](#v0147-write-security-foundation)) |
 
 ### Migration status
 
@@ -22,12 +23,15 @@ Routes served through the Fastify backend instead of Supabase:
 | consent gate (middleware, `/complete-request`) | `parent_profiles.consent_granted` | Supabase (old path) |
 | referral summary | RPC `get_current_parent_referral_summary` | Supabase (old path) |
 | order detail, final media, gallery | orders + Storage | Supabase (old path) |
-| every write (requests, purchases, coupons, referrals, profile, password, consent) | | Supabase (old path) |
+| parent display-name write | `parent_profiles.full_name` | **PostgreSQL, backend only** (V0.1.47): `PATCH /v1/parent/profile`; no Next route or UI calls it |
+| every product write (requests, purchases, coupons, referrals, profile creation, password, consent, admin) | | Supabase (old path) |
 | identity / session | Supabase Auth | Supabase Auth (provider; by design until replaced) |
 
 Everything marked "old path" still runs on Supabase. A static guard
 (`route-cutover-static.test.ts`) fails if any other route or page reaches the
-backend, and lists the backend's exact routes (all GET).
+backend, and lists the backend's exact routes (GETs plus the one V0.1.47
+PATCH); `write-security-static.test.ts` fails if any Next write handler calls
+the backend.
 
 ## V0.1.41: `GET /api/creation-pricing`
 
@@ -597,11 +601,149 @@ and the storage migration. In addition, the read/write split above
 to Supabase) is a **fifth blocker**: do NOT deploy before the writes move or a
 final copy under a write freeze closes it.
 
+## V0.1.47: write security foundation
+
+### Write-path audit (before any change)
+
+Every authenticated write in the app, all on Supabase. "CSRF" is the
+browser → Next exposure: all rely on the `SameSite=Lax` session cookie;
+"Origin" means the route also validates `Origin` itself.
+
+| Write | Route | Auth | Supabase DB/RPC | Idempotent | Money | Storage | Retry sensitivity | First-cutover fit |
+|---|---|---|---|---|---|---|---|---|
+| parent display name | none (settings card is a TODO) | n/a | n/a | n/a | no | no | n/a | **preferred, but does not exist** |
+| consent grant | POST `/api/parent-consent` | getUser + `users.role` + session lifetime | `parent_profiles` read/insert/update (`ensureParentProfile`) | yes (monotonic) | no | no | low | **no**: `consent_granted` is read from Supabase by middleware, `/login` (browser client), `/complete-request`, `POST /api/requests` and the dev route; a PG-only write makes middleware loop back to `/parent-consent` |
+| signup completion | POST `/api/parent/complete-signup` | getUser + role | `parent_profiles` insert (`ensureParentProfile`), triggers create wallet/credits/referral code | yes | indirect (wallet, credits) | no | low | no: creates the profile the provider just made a user for; needs identity linking (signup move) |
+| password change | POST `/api/parent/password` | getUser, Origin | Supabase Auth `updateUser` | n/a | no | no | — | **never**: provider-owned credential |
+| logout | POST `/api/logout` | cookie | Supabase Auth `signOut` | yes | no | no | — | never: provider session |
+| referral bind | POST `/api/referrals/bind` | getUser + role, Origin; DB-side rate limit in the RPC | RPC `bind_current_parent_referral_code` | yes (one binding) | **yes** (referral rewards) | no | medium | no: reward-bearing |
+| coupon validate | POST `/api/coupons/validate` | getUser + role | RPC `validate_coupon_for_purchase_trusted` (admin client) | read-only | quote only | no | none | not a write |
+| candy purchase create | POST `/api/candy-purchases` | getUser + role, rate limit | `candy_purchases`, `payment_attempts`, `coupons` | no | **yes** | no | high | excluded |
+| purchase coupon apply | POST `/api/candy-purchases/[id]/coupon` | same | RPC `apply_coupon_to_purchase_trusted` | per purchase | **yes** | no | high | excluded |
+| purchase completion | POST `/api/candy-purchases/[id]/complete` | same | RPC `complete_candy_purchase_trusted`, credits wallet | guarded | **yes** | no | high | excluded |
+| request submission | POST `/api/requests` | getUser + role + consent | RPC `create_parent_request_trusted`; uploads | submission key | **yes** (candy/credit debit) | **yes** | high | excluded |
+| final-media link | POST `/api/parent/orders/[orderId]/final-media` | getUser | read + signed URL | read-only | no | **yes** | none | not a DB write |
+| admin order status | PATCH `/api/admin/requests/[id]/status` | admin | RPC `update_order_status_trusted` | `expectedUpdatedAt` guard | indirect | no | medium | excluded (fulfilment) |
+| admin final media | POST/PATCH `/api/admin/requests/[id]/final-media[/…]` | admin | RPCs `record_` / `approve_` / `supersede_final_media_trusted` | no | no | **yes** | high | excluded (media) |
+| admin coupons | POST/PATCH `/api/admin/coupons[/id]` | admin | `coupons` (`expected_updated_at`) | optimistic | **yes** | no | medium | excluded |
+| admin referral settings | PATCH `/api/admin/referrals/settings` | admin, Origin | RPC `update_admin_referral_program_settings` | `expected_updated_at` guard | **yes** (reward size) | no | low | excluded |
+| homepage CMS | PUT `/api/admin/homepage`, `/hero-layout`; POST/DELETE `/media/[slot]` | admin | `homepage_*` (+ trusted RPC) | yes | no | media: **yes** | low | no: its reads are still Supabase, so a PG-only write would not show |
+| examples CMS | POST/PATCH/DELETE `/api/admin/examples[/…]`, PUT `/media`, PATCH `/publish` | admin | `examples` | partly | no | **yes** | medium | excluded (media, destructive) |
+| dev auth | POST `/api/dev/parent-auth` | dev only | profile insert | — | no | no | — | never (dev tooling) |
+
+**Decision (with the product owner, 2026-10-21): foundation only.** No
+existing write can move alone without either touching money/media or
+creating a functional read/write split worse than drift (consent). V0.1.47
+therefore builds the complete write chain and proves it with a backend-only
+`PATCH /v1/parent/profile` (the display-name update the product will need,
+with no UI yet), and cuts over **no** Next.js route. Nothing user-facing was
+added.
+
+### What was built
+
+| Piece | Where |
+|---|---|
+| v3 write assertion (nonce + body digest), v2 limited to GET/HEAD | `lib/identity/assertion.ts` |
+| nonce table + `consume_internal_write_nonce()` (EXECUTE only) | `database/migrations/0012_internal_write_nonces.sql`, `lib/repositories/write-nonces.ts` |
+| `requireWriteAuth(deps, ...roles)`: v3, digest over received bytes, identity, session, role, nonce last | `backend/src/plugins/auth.ts`; raw-body JSON parser in `backend/src/app.ts` |
+| `backendWriteJson` (POST/PUT/PATCH/DELETE; one attempt; `outcomeUnknown`) | `lib/backend/client.ts`, `lib/backend/errors.ts` |
+| proof write `PATCH /v1/parent/profile` + name rules | `backend/src/routes/parent-account.ts`, `lib/parent/profile-name.ts`, `lib/repositories/parent-profiles.ts` |
+| column-level grant | `database/migrations/0013_parent_profile_name_update_grant.sql` |
+| data-copy pin re-audited to 0001–0013 | `scripts/db/data-copy/mapping.ts`, [DATA_MIGRATION.md](DATA_MIGRATION.md) |
+
+Design, threat model, order of checks, replay vs retry, uncertain timeouts
+and the CSRF boundary: [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md#write-security-v0147).
+
+### Verified locally (2026-10-21)
+
+- **Real PostgreSQL** (`write-security-db.test.ts`, 38 tests, as a
+  script-provisioned login role):
+  - **Nonce function:** first use true and reuse false. Over 10 rounds of
+    20 truly concurrent connections, each round produced exactly one true.
+  - **Held race:** with the holder uncommitted, 5 waiters were observed in
+    `pg_stat_activity` on a Lock wait and all got false when the holder
+    committed. When the holder rolled back, exactly one waiter won.
+  - **Bounds and purge:** an expiry out of range is 22023. Rows expired for
+    more than 10 minutes are purged; recent ones stay.
+  - **Privileges:** the role cannot SELECT, INSERT, UPDATE, DELETE or
+    TRUNCATE the nonce table. It cannot update consent, `user_id` or
+    `referral_code`, and cannot insert or delete profiles. It can UPDATE
+    exactly `full_name` and `updated_at`.
+  - **Route over HTTP:** 25 concurrent requests carrying one assertion gave
+    exactly one 200, 24 × 409 and one UPDATE. Admin, super_admin and deleted
+    accounts got 403; `sessions_not_before` gave 401; an unlinked identity
+    403; a parent without a profile 404. Forged `X-User-Id`, `X-Role`,
+    `X-Parent-Profile-Id` and body ids changed nothing. A tampered body, a
+    rebound path or method, v2 used for a write, or no assertion all gave
+    401 with no nonce stored. A v3 assertion on GET was 401.
+  - **Uncertain timeout:** the response was delayed 1.5 s after commit. The
+    Next client timed out in about 250 ms after one fetch (`timeout`,
+    `outcomeUnknown`). The row had changed exactly once, resending that
+    request gave 409, and a new user retry with the same value gave 200
+    with the same end state.
+  - **Read-after-write:** the new name came back through Fastify
+    `GET /v1/parent/profile` and through the Next public header (stub
+    provider → Fastify → PostgreSQL).
+- **Docker** (fresh images built with empty `NEXT_PUBLIC_*` values, backend on
+  a scratch database migrated to 0013, frontend Supabase variables blanked,
+  no provider contacted):
+  - **Health:** all three services were healthy.
+  - **Write sequence:** a host → `127.0.0.1:4000` signed PATCH returned 200
+    and was read back. Replaying it gave 409. Twenty concurrent requests with
+    one assertion gave 1 × 200 and 19 × 409. A user retry gave 200.
+  - **Refusals:** a tampered body, v2 used for a write, and no assertion gave
+    401; admin gave 403; a body `parentProfileId` gave 400. The other parent
+    was unchanged.
+  - **Isolation:** the frontend had every database variable empty and the
+    backend no Supabase variable. The backend ran as the scratch login role
+    and was published on loopback only.
+  - **Leaks:** the secret, the database password, the assertion payload,
+    its signature and its nonce appeared in neither the browser bundle nor
+    any container log.
+  - **Role privileges:** UPDATE on `full_name` and `updated_at` only, nothing
+    on the nonce table, and EXECUTE on the function.
+- The main local `cartoona` database was not touched (still at 0011). Run
+  `scripts/db/migrate-local.sh` against it before using the Docker backend
+  with writes.
+
+Local timings (localhost, **not production estimates**):
+
+| Path | median | p90 |
+|---|---|---|
+| Fastify PATCH direct (v3 verify, identity, nonce, UPDATE), test process | 4.6 ms | 5.7 ms |
+| Next client → Fastify → PostgreSQL write, test process | 5.0 ms | 6.6 ms |
+| nonce consumption alone (one function call) | 0.8 ms | 1.4 ms |
+| write then read-after-write (`GET /v1/parent/profile`) | 8.6 ms | 10.7 ms |
+| Docker: host → Fastify PATCH | 4.8 ms | 6.3 ms |
+
+The nonce adds one statement (under 1 ms locally) to every write. The
+sequential depth of a write is: provider session check (Next), then one
+backend call doing identity → nonce → write.
+
+### Production status
+
+**Not deployable**, unchanged from V0.1.46: the `amr` verification, a real
+`pg_dump` rehearsal, the backend/PostgreSQL deployment, the storage migration,
+and the read/write split (balance, credits and orders read from PostgreSQL
+while purchases and requests write to Supabase). V0.1.47 does not reduce that
+split: its one write has no product caller. **Do NOT deploy this branch**
+before those writes move or a final copy under a write freeze closes it.
+
 ## Next
 
-V0.1.47 (write security) is next: non-GET client support, a one-time nonce
-against assertion replay, EXECUTE grants on the `*_trusted` functions a route
-needs, and a rollback/reverse-sync plan for the first write that lands only in
-PostgreSQL ([BACKEND.md](BACKEND.md#before-the-first-authenticated-route-cuts-over)).
+V0.1.48 (write paths cutover) can now build on the foundation. Before the
+first BFF write:
+
+- a shared CSRF check for migrated write routes (Origin / `Sec-Fetch-Site`
+  plus a required JSON content type), see
+  [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md#csrf-browser--next);
+- the "could not confirm" UX for `outcomeUnknown`;
+- for each write, its READS moved in the same release (consent is the
+  example: its middleware, login, complete-request and requests-gate reads);
+- EXECUTE grants on the `*_trusted` functions each write needs, one
+  migration per cutover;
+- a rollback / reverse-sync plan for the first write that lands only in
+  PostgreSQL.
+
 The purchase history, request submission and purchase completion are the
 writes that close the V0.1.46 read/write split.

@@ -38,7 +38,9 @@ describe("neutral identity modules", () => {
 
   it("the assertion carries no PII/token fields by construction", () => {
     const src = code("lib/identity/assertion.ts")
-    expect(src).toMatch(/const PAYLOAD_KEYS = \["aat", "exp", "iat", "mth", "prv", "pth", "rid", "sub", "v"\]/)
+    // v2 (reads) and v3 (writes, V0.1.47: + nonce and body digest), nothing else.
+    expect(src).toMatch(/2: \["aat", "exp", "iat", "mth", "prv", "pth", "rid", "sub", "v"\],/)
+    expect(src).toMatch(/3: \["aat", "bdg", "exp", "iat", "mth", "nce", "prv", "pth", "rid", "sub", "v"\],/)
     expect(src).not.toMatch(/email|phone|access_token|refresh_token|role:/i)
   })
 })
@@ -203,7 +205,9 @@ describe("V0.1.43: no runtime dependency on Supabase session internals", () => {
   it("the backend evaluates the policy inside requireAuth, from the signed sign-in time and the resolved cut-off", () => {
     const src = code("backend/src/plugins/auth.ts")
     expect(src).toMatch(/evaluateSessionPolicy\(\s*\{ authenticatedAt: result\.claims\.authenticatedAt \},\s*\{ \.\.\.DEFAULT_SESSION_POLICY, sessionsNotBefore: identity\.sessionsNotBefore \}/)
-    expect(src.indexOf("evaluateSessionPolicy(")).toBeLessThan(src.indexOf("request.authPrincipal = {"))
+    // Shared by reads and writes (V0.1.47); the principal is only returned after it.
+    expect(src.indexOf("evaluateSessionPolicy(")).toBeLessThan(src.indexOf("return { claims: result.claims, principal:"))
+    expect(src.match(/evaluateSessionPolicy\(/g)).toHaveLength(1)
   })
 
   it("migration 0011 adds the nullable column and grants nothing", () => {

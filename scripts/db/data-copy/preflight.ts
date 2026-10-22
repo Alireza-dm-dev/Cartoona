@@ -111,7 +111,7 @@ export async function checkTargetSchema(target: Queryable, migrationsDir: string
   if (JSON.stringify(files) !== JSON.stringify(EXPECTED_TARGET_MIGRATIONS)) {
     throw new DataCopyError(
       "target_schema_mismatch",
-      `database/migrations holds ${files.length} file(s), but this tool was audited against exactly ${EXPECTED_TARGET_MIGRATIONS.length} (0001-0011). Re-audit the mapping before copying.`,
+      `database/migrations holds ${files.length} file(s), but this tool was audited against exactly ${EXPECTED_TARGET_MIGRATIONS.length} (0001-${EXPECTED_TARGET_MIGRATIONS.at(-1)!.slice(0, 4)}). Re-audit the mapping before copying.`,
       { details: files.filter((f) => !EXPECTED_TARGET_MIGRATIONS.includes(f)).map((f) => `unaudited migration ${f}`) },
     )
   }
@@ -128,7 +128,7 @@ export async function checkTargetSchema(target: Queryable, migrationsDir: string
     if (sha256(file) !== r.checksum) problems.push(`checksum differs from database/migrations: ${r.version}`)
   }
   if (problems.length > 0) {
-    throw new DataCopyError("target_schema_mismatch", `The target schema version is not the audited 0001-0011 set (${problems.length} problem(s)).`, { details: problems })
+    throw new DataCopyError("target_schema_mismatch", `The target schema version is not the audited 0001-${EXPECTED_TARGET_MIGRATIONS.at(-1)!.slice(0, 4)} set (${problems.length} problem(s)).`, { details: problems })
   }
   return { migrations: applied, fingerprint: sha256(rows.map((r) => `${r.version}:${r.checksum}`).join("\n")) }
 }

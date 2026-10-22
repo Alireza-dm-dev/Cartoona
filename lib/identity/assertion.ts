@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto"
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto"
 import { isSafeRequestId } from "@/lib/observability/request-id"
 import { isIdentityProvider, isValidSubject, type IdentityProvider, type VerifiedIdentity } from "./types"
 
@@ -40,28 +40,55 @@ import { isIdentityProvider, isValidSubject, type IdentityProvider, type Verifie
  * CARTOONA_INTERNAL_AUTH_SECRET (>= 32 random bytes as hex), and is compared in
  * constant time. Shared by both sides; neutral: node:crypto only.
  *
- * Replay: an assertion is a bearer value for <= 60 s, valid for ONE method + path.
- * It travels only server-to-server on the private network and is never shown to
- * a browser. There is no replay cache (that would need shared state such as
- * Redis); short expiry plus method/path binding is the accepted bound, and every
- * route that uses it is idempotent today (GET). Revisit before a
- * non-idempotent route relies on it.
+ * Replay (v2): an assertion is a bearer value for <= 60 s, valid for ONE
+ * method + path. It travels only server-to-server and is never shown to a
+ * browser. v2 has no replay cache: it is accepted ONLY for GET/HEAD reads,
+ * where a replay re-reads the caller's own data and changes nothing.
+ *
+ * Writes (V0.1.47) use v3: the v2 claims plus
+ *   nce  nonce: 32 random bytes, base64url (43 chars). The backend consumes it
+ *        exactly once, atomically, in PostgreSQL (consume_internal_write_nonce).
+ *   bdg  body digest: base64url(SHA-256) of the EXACT request body bytes Next
+ *        sends. The backend recomputes it over the bytes it received; the body
+ *        is never re-serialized or canonicalized on either side.
+ * Its MAC context is "cartoona-internal-auth\nv3\n", so a v2 MAC can never
+ * verify as v3 or the reverse. v3 is accepted ONLY for POST/PUT/PATCH/DELETE,
+ * and v2 never authorizes a write (`kind` on verifyAssertion). See
+ * docs/AUTH_ARCHITECTURE.md "Write security".
  */
 
 export const INTERNAL_AUTH_HEADER = "X-Cartoona-Internal-Auth"
 export const ASSERTION_VERSION = 2
+export const WRITE_ASSERTION_VERSION = 3
 export const ASSERTION_LIFETIME_SECONDS = 30
 export const ASSERTION_MAX_LIFETIME_SECONDS = 60
 /** Tolerated clock difference between Next and Fastify hosts. */
 export const ASSERTION_CLOCK_SKEW_SECONDS = 5
 export const ASSERTION_MAX_LENGTH = 1024
 
-const MAC_CONTEXT = "cartoona-internal-auth\nv2\n"
+const MAC_CONTEXT = { 2: "cartoona-internal-auth\nv2\n", 3: "cartoona-internal-auth\nv3\n" } as const
 const SECRET_FORMAT = /^[0-9a-fA-F]{64,256}$/
 const B64URL = /^[A-Za-z0-9_-]+$/
-const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"])
+const READ_METHODS = new Set(["GET", "HEAD"])
+const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"])
 const PATH = /^(\/[A-Za-z0-9_-]+)+$/
-const PAYLOAD_KEYS = ["aat", "exp", "iat", "mth", "prv", "pth", "rid", "sub", "v"]
+const PAYLOAD_KEYS = {
+  2: ["aat", "exp", "iat", "mth", "prv", "pth", "rid", "sub", "v"],
+  3: ["aat", "bdg", "exp", "iat", "mth", "nce", "prv", "pth", "rid", "sub", "v"],
+} as const
+/** 32 random bytes / a SHA-256 digest, base64url without padding: 43 characters. */
+const DIGEST_FORMAT = /^[A-Za-z0-9_-]{43}$/
+export const NONCE_FORMAT = DIGEST_FORMAT
+
+/** The `bdg` claim: base64url(SHA-256(exact body bytes)). Empty body -> digest of zero bytes. */
+export function bodyDigest(body: Uint8Array | string): string {
+  return createHash("sha256").update(body).digest("base64url")
+}
+
+/** A fresh write nonce (`nce`): 32 bytes from the CSPRNG. */
+export function newWriteNonce(): string {
+  return randomBytes(32).toString("base64url")
+}
 
 export class InternalAuthConfigError extends Error {
   constructor(message: string) {
@@ -93,6 +120,12 @@ export interface AssertionClaims {
   path: string
   issuedAt: number
   expiresAt: number
+  /** 2 (reads) or 3 (writes). */
+  version: 2 | 3
+  /** v3 only. */
+  nonce?: string
+  /** v3 only. */
+  bodyDigest?: string
 }
 
 export interface SignAssertionInput {
@@ -107,16 +140,16 @@ export interface SignAssertionInput {
   now?: number
 }
 
-function mac(secret: Buffer, encodedPayload: string): Buffer {
-  return createHmac("sha256", secret).update(MAC_CONTEXT).update(encodedPayload).digest()
+function mac(version: 2 | 3, secret: Buffer, encodedPayload: string): Buffer {
+  return createHmac("sha256", secret).update(MAC_CONTEXT[version]).update(encodedPayload).digest()
 }
 
-export function signAssertion(input: SignAssertionInput): string {
+function baseClaims(input: SignAssertionInput, methods: Set<string>) {
   if (!isIdentityProvider(input.identity.provider) || !isValidSubject(input.identity.provider, input.identity.subject)) {
     throw new TypeError("assertion: invalid identity")
   }
   if (!isSafeRequestId(input.requestId)) throw new TypeError("assertion: invalid request id")
-  if (!METHODS.has(input.method)) throw new TypeError("assertion: invalid method")
+  if (!methods.has(input.method)) throw new TypeError("assertion: invalid method")
   if (!PATH.test(input.path)) throw new TypeError("assertion: invalid path")
 
   const iat = Math.floor((input.now ?? Date.now()) / 1000)
@@ -124,8 +157,7 @@ export function signAssertion(input: SignAssertionInput): string {
   if (!Number.isSafeInteger(aat) || aat <= 0 || aat > iat + ASSERTION_CLOCK_SKEW_SECONDS) {
     throw new TypeError("assertion: invalid authenticatedAt")
   }
-  const payload = {
-    v: ASSERTION_VERSION,
+  return {
     prv: input.identity.provider,
     sub: input.identity.subject,
     aat,
@@ -135,8 +167,38 @@ export function signAssertion(input: SignAssertionInput): string {
     mth: input.method,
     pth: input.path,
   }
+}
+
+function encode(version: 2 | 3, payload: Record<string, unknown>, secret: Buffer): string {
   const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")
-  return `v2.${encoded}.${mac(input.secret, encoded).toString("base64url")}`
+  return `v${version}.${encoded}.${mac(version, secret, encoded).toString("base64url")}`
+}
+
+/** A v2 READ assertion (GET/HEAD only). */
+export function signAssertion(input: SignAssertionInput): string {
+  return encode(2, { v: ASSERTION_VERSION, ...baseClaims(input, READ_METHODS) }, input.secret)
+}
+
+export interface SignWriteAssertionInput extends SignAssertionInput {
+  /** The exact bytes that will be sent as the request body. */
+  body: Uint8Array | string
+  /** Injectable for tests; a fresh CSPRNG nonce otherwise. */
+  nonce?: string
+}
+
+/**
+ * A v3 WRITE assertion (POST/PUT/PATCH/DELETE only): bound to method, path,
+ * the digest of `body` and a single-use nonce. Sign it over the same bytes
+ * you send; any change to the body after signing fails verification.
+ */
+export function signWriteAssertion(input: SignWriteAssertionInput): string {
+  const nonce = input.nonce ?? newWriteNonce()
+  if (!NONCE_FORMAT.test(nonce)) throw new TypeError("assertion: invalid nonce")
+  return encode(
+    3,
+    { v: WRITE_ASSERTION_VERSION, ...baseClaims(input, WRITE_METHODS), nce: nonce, bdg: bodyDigest(input.body) },
+    input.secret,
+  )
 }
 
 export type AssertionFailure =
@@ -148,6 +210,7 @@ export type AssertionFailure =
   | "expired"
   | "not_yet_valid"
   | "binding_mismatch"
+  | "body_mismatch"
 
 export type VerifyResult =
   | { ok: true; claims: AssertionClaims }
@@ -160,25 +223,39 @@ export interface VerifyAssertionInput {
   method: string
   path: string
   now?: number
+  /**
+   * "read" (default) accepts ONLY v2 on GET/HEAD. "write" accepts ONLY v3 on
+   * POST/PUT/PATCH/DELETE, and requires `body`.
+   */
+  kind?: "read" | "write"
+  /** write: the exact received body bytes; their digest must equal `bdg`. */
+  body?: Uint8Array | string
 }
 
 /**
  * Verify an assertion. Order matters: structure, then the MAC (constant time)
  * over the exact received bytes, and only then is the payload parsed - nothing
- * unauthenticated is ever JSON-parsed or acted on.
+ * unauthenticated is ever JSON-parsed or acted on. After the MAC: version for
+ * this `kind`, claims, time window, method + path binding, and (write) the
+ * body digest. The nonce is NOT consumed here; that is the backend's last
+ * step (plugins/auth.ts requireWriteAuth).
  */
 export function verifyAssertion(input: VerifyAssertionInput): VerifyResult {
   const fail = (reason: AssertionFailure): VerifyResult => ({ ok: false, reason })
   const token = input.token
   if (typeof token !== "string" || token.length === 0 || token.length > ASSERTION_MAX_LENGTH) return fail("malformed")
 
+  const kind = input.kind ?? "read"
+  const wanted: 2 | 3 = kind === "write" ? 3 : 2
+
   const parts = token.split(".")
   if (parts.length !== 3) return fail("malformed")
   const [version, encoded, signature] = parts
-  if (version !== "v2") return fail("unsupported_version")
+  // A v2 token on a write (or v3 on a read) is refused before any MAC work.
+  if (version !== `v${wanted}`) return fail("unsupported_version")
   if (!B64URL.test(encoded) || !B64URL.test(signature)) return fail("malformed")
 
-  const expected = mac(input.secret, encoded)
+  const expected = mac(wanted, input.secret, encoded)
   const received = Buffer.from(signature, "base64url")
   // Canonical encoding only: a re-encoded signature must be byte-identical.
   if (received.length !== expected.length || received.toString("base64url") !== signature) return fail("bad_signature")
@@ -193,8 +270,8 @@ export function verifyAssertion(input: VerifyAssertionInput): VerifyResult {
     return fail("malformed")
   }
 
-  if (Object.keys(payload).sort().join(",") !== PAYLOAD_KEYS.join(",")) return fail("invalid_claims")
-  if (payload.v !== ASSERTION_VERSION) return fail("unsupported_version")
+  if (Object.keys(payload).sort().join(",") !== PAYLOAD_KEYS[wanted].join(",")) return fail("invalid_claims")
+  if (payload.v !== wanted) return fail("unsupported_version")
   if (!isIdentityProvider(payload.prv)) return fail("unsupported_provider")
   const { prv, sub, aat, iat, exp, rid, mth, pth } = payload as {
     prv: IdentityProvider; sub: unknown; aat: unknown; iat: unknown; exp: unknown; rid: unknown; mth: unknown; pth: unknown
@@ -208,13 +285,25 @@ export function verifyAssertion(input: VerifyAssertionInput): VerifyResult {
     return fail("invalid_claims")
   }
   if (!isSafeRequestId(rid)) return fail("invalid_claims")
-  if (typeof mth !== "string" || !METHODS.has(mth) || typeof pth !== "string" || !PATH.test(pth)) return fail("invalid_claims")
+  const methods = kind === "write" ? WRITE_METHODS : READ_METHODS
+  if (typeof mth !== "string" || !methods.has(mth) || typeof pth !== "string" || !PATH.test(pth)) return fail("invalid_claims")
+  const { nce, bdg } = payload as { nce?: unknown; bdg?: unknown }
+  if (kind === "write" && (typeof nce !== "string" || !NONCE_FORMAT.test(nce) || typeof bdg !== "string" || !DIGEST_FORMAT.test(bdg))) {
+    return fail("invalid_claims")
+  }
 
   const nowSeconds = Math.floor((input.now ?? Date.now()) / 1000)
   if (issuedAt > nowSeconds + ASSERTION_CLOCK_SKEW_SECONDS) return fail("not_yet_valid")
   if (nowSeconds >= expiresAt) return fail("expired")
 
   if (mth !== input.method || pth !== input.path) return fail("binding_mismatch")
+
+  if (kind === "write") {
+    if (input.body === undefined) return fail("binding_mismatch")
+    const received = Buffer.from(bodyDigest(input.body), "base64url")
+    const signed = Buffer.from(bdg as string, "base64url")
+    if (received.length !== signed.length || !timingSafeEqual(received, signed)) return fail("body_mismatch")
+  }
 
   return {
     ok: true,
@@ -227,6 +316,8 @@ export function verifyAssertion(input: VerifyAssertionInput): VerifyResult {
       path: pth,
       issuedAt,
       expiresAt,
+      version: wanted,
+      ...(kind === "write" ? { nonce: nce as string, bodyDigest: bdg as string } : {}),
     },
   }
 }
