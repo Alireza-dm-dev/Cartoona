@@ -54,11 +54,11 @@ describe("database/migrations — no Supabase dependency", () => {
     // none at all. The exceptions are the application-role migrations: 0009
     // (V0.1.39) creates `cartoona_app` and grants to it, 0010 (V0.1.42) adds a
     // read grant, 0012 (V0.1.47) EXECUTE on the nonce function, 0013 (V0.1.47)
-    // UPDATE on two profile columns. They may grant to `cartoona_app` and
-    // nothing else.
+    // UPDATE on two profile columns, 0014 (V0.1.48) EXECUTE on the consent
+    // function. They may grant to `cartoona_app` and nothing else.
     // As statements (the candy ledger has a 'grant' transaction type).
     const APP_ROLE_FILE = "0009_application_role.sql"
-    const GRANT_FILES = [APP_ROLE_FILE, "0010_identity_read_grant.sql", "0012_internal_write_nonces.sql", "0013_parent_profile_name_update_grant.sql"]
+    const GRANT_FILES = [APP_ROLE_FILE, "0010_identity_read_grant.sql", "0012_internal_write_nonces.sql", "0013_parent_profile_name_update_grant.sql", "0014_parent_consent_write.sql"]
     const baseline = Object.entries(sql)
       .filter(([f]) => !GRANT_FILES.includes(f))
       .map(([, s]) => s.replace(/--.*$/gm, ""))
@@ -86,6 +86,11 @@ describe("database/migrations — no Supabase dependency", () => {
     // 0013: column-level UPDATE only - never table-wide, never INSERT/DELETE.
     const name = sql["0013_parent_profile_name_update_grant.sql"].replace(/--.*$/gm, "").trim()
     expect(name).toBe("GRANT UPDATE (full_name, updated_at) ON public.parent_profiles TO cartoona_app;")
+    // 0014: EXECUTE on the one consent function; no table privilege at all.
+    const consent = sql["0014_parent_consent_write.sql"].replace(/--.*$/gm, "")
+    expect([...consent.matchAll(/^\s*GRANT\s+([^;]+);/gim)].map((m) => m[1].replace(/\s+/g, " "))).toEqual([
+      "EXECUTE ON FUNCTION public.record_parent_consent_trusted(uuid) TO cartoona_app",
+    ])
   })
 
   it("4. never calls auth.uid() / auth.jwt() / auth.role()", () => {

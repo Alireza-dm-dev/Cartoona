@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server"
 import { createServerClient } from "@supabase/ssr"
+import type { SupabaseClient } from "@supabase/supabase-js"
+import { verifySupabaseIdentity } from "@/lib/auth/supabase-identity-adapter"
+import { fetchParentConsent } from "@/lib/parent/consent/backend-consent"
 import { getSupabaseEnv } from "@/lib/supabase/env"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
 import {
@@ -116,6 +119,22 @@ async function findUserByPhone(
   return null
 }
 
+/**
+ * Where a freshly signed-in parent goes: /dashboard when consent is granted,
+ * otherwise /parent-consent. Consent comes from PostgreSQL through the shared
+ * consent read (V0.1.48), for the session this route has just created: the
+ * same provider verification as every other route, run on this route's own
+ * client (its new session is not in the request cookies yet). "Could not
+ * determine" also goes to /parent-consent, which re-reads and forwards a
+ * consented parent.
+ */
+async function consentDestination(supabase: SupabaseClient): Promise<"/dashboard" | "/parent-consent"> {
+  const verification = await verifySupabaseIdentity({ createClient: async () => supabase })
+  if (!verification.ok) return "/parent-consent"
+  const consent = await fetchParentConsent(verification.context)
+  return consent.ok && consent.status === "granted" ? "/dashboard" : "/parent-consent"
+}
+
 async function createSessionViaMagicLink(
   email: string,
   env: { NEXT_PUBLIC_SUPABASE_URL: string; NEXT_PUBLIC_SUPABASE_ANON_KEY: string },
@@ -160,14 +179,7 @@ async function createSessionViaMagicLink(
 
   if (role !== "parent") return null
 
-  const { data: profileRow } = await supabase
-    .from("parent_profiles")
-    .select("consent_granted")
-    .eq("user_id", user.id)
-    .maybeSingle()
-  const consentGranted = profileRow?.consent_granted ?? false
-
-  const next = consentGranted ? "/dashboard" : "/parent-consent"
+  const next = await consentDestination(supabase)
 
   const response = NextResponse.json(
     { success: true, next },
@@ -220,14 +232,7 @@ async function createSessionViaPassword(
 
   if (role !== "parent") return null
 
-  const { data: profileRow } = await supabase
-    .from("parent_profiles")
-    .select("consent_granted")
-    .eq("user_id", user.id)
-    .maybeSingle()
-  const consentGranted = profileRow?.consent_granted ?? false
-
-  const next = consentGranted ? "/dashboard" : "/parent-consent"
+  const next = await consentDestination(supabase)
 
   const response = NextResponse.json(
     { success: true, next },
@@ -339,10 +344,10 @@ async function handleSignupVerifyCode(
   const admin = createAdminSupabaseClient()
   // full_name is omitted, not blanked: signup never asks for a name, and the
   // column is nullable precisely so no placeholder has to be invented here.
+  // Consent columns are left to their defaults (not consented); consent is
+  // granted on /parent-consent and stored in PostgreSQL (V0.1.48).
   const { error: profileError } = await admin.from("parent_profiles").insert({
     user_id: userId,
-    consent_granted: false,
-    consent_granted_at: null,
   })
 
   if (profileError) {

@@ -133,6 +133,11 @@ const m = vi.hoisted(() => ({
   existingOrder: null as unknown,
 }))
 vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient: async () => m.client }))
+// V0.1.48: the consent gate reads PostgreSQL through the backend; these tests
+// cover the (still Supabase) submission path behind it.
+vi.mock("@/lib/parent/consent/backend-consent", () => ({
+  loadParentConsent: async () => ({ ok: true, status: "granted", consentGrantedAt: "2026-01-01T00:00:00.000Z" }),
+}))
 vi.mock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => ({ rpc: m.rpc }) }))
 vi.mock("@/lib/requests/resolve-character", () => ({ resolveCharacterId: async () => ({ ok: true, characterId: null }) }))
 vi.mock("@/lib/requests/request-submission", () => ({
@@ -160,7 +165,7 @@ function submitClient() {
   return {
     auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), getSession: async () => getSessionResult("valid", "u1"), signOut: vi.fn() },
     rpc: async () => ({ data: null, error: null }),
-    from: (t: string) => t === "users" ? chain({ role: "parent" }) : t === "parent_profiles" ? chain({ id: "p1", consent_granted: true }) : chain(null),
+    from: (t: string) => t === "users" ? chain({ role: "parent" }) : t === "parent_profiles" ? chain({ id: "p1" }) : chain(null),
     storage: { from: () => ({ upload: async () => ({ error: null }), remove: async () => ({ error: null }) }) },
   }
 }
@@ -284,9 +289,14 @@ describe("migration 20260926100000_welcome_image_credits.sql (static review)", (
   const file = "20260926100000_welcome_image_credits.sql"
   const sql = fs.readFileSync(path.join(dir, file), "utf8")
 
-  it("is a NEW forward migration, strictly newer than every existing one", () => {
-    const others = fs.readdirSync(dir).filter((f) => f.endsWith(".sql") && f !== file)
+  it("is a NEW forward migration, strictly newer than every one before it", () => {
+    // Later migrations are allowed only if listed here, i.e. reviewed against
+    // this one. V0.1.48 recreates create_parent_request_trusted without its
+    // Supabase consent clause and otherwise byte-identical to this file.
+    const later = ["20261022100000_request_rpc_consent_gate_moved.sql"]
+    const others = fs.readdirSync(dir).filter((f) => f.endsWith(".sql") && f !== file && !later.includes(f))
     for (const f of others) expect(f < file, f).toBe(true)
+    for (const f of later) expect(f > file, f).toBe(true)
   })
 
   it("makes the grant durable and one-time", () => {

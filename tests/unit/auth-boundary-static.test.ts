@@ -191,7 +191,10 @@ describe("V0.1.43: no runtime dependency on Supabase session internals", () => {
 
   it("every former caller uses the provider-neutral lifetime check with the VERIFIED user id", () => {
     const callers = runtime.filter((f) => /checkParentSessionLifetime\(/.test(code(f)) && f !== "lib/auth/parent-session-lifetime.ts")
-    expect(callers.length).toBe(14)
+    // 13 since V0.1.48: POST /api/parent-consent verifies through
+    // verifyParentCaller (same 30-day policy) and the backend (which also
+    // enforces sessions_not_before), like the other cut-over routes.
+    expect(callers.length).toBe(13)
     for (const file of callers) {
       expect(code(file), file).toMatch(/checkParentSessionLifetime\(supabase, (user\.id|ownership\.userId)\)/)
     }

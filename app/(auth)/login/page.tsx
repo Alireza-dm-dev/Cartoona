@@ -14,6 +14,7 @@ import {
   resolveSuccessfulLoginDestination,
 } from "@/lib/auth/parent-destinations";
 import { PARENT_PORTAL_HOME } from "@/lib/parent/navigation/parent-nav";
+import { readParentConsent } from "@/lib/parent/consent/consent-client";
 
 function mapLoginError(message: string): string {
   const m = message.toLowerCase();
@@ -49,6 +50,18 @@ function resolveDevDestination(next: unknown): string {
     new URLSearchParams(window.location.search).get("from")
   );
   return resolveSuccessfulLoginDestination(safeFrom, consentGranted);
+}
+
+/**
+ * Consent for the post-login redirect, from PostgreSQL via the Next BFF
+ * (V0.1.48; it was a browser read of Supabase's parent_profiles). The session
+ * cookies were just written by the sign-in call, so the BFF sees the new
+ * session. "Could not determine" (null) is routed like "not granted": to
+ * /parent-consent, which reads consent itself and forwards a parent who has
+ * already consented - so an outage never strands anyone and never loops.
+ */
+async function readConsentForLogin(): Promise<boolean> {
+  return (await readParentConsent()) === true;
 }
 
 type LoginMode = "sms" | "password";
@@ -211,17 +224,10 @@ export default function LoginPage() {
         return;
       }
 
-      const { data: profileRow } = await supabase
-        .from("parent_profiles")
-        .select("consent_granted")
-        .eq("user_id", verifyData.session.user.id)
-        .maybeSingle();
-
       const safeFrom = getSafeParentDestination(
         new URLSearchParams(window.location.search).get("from")
       );
-      const consentGranted = profileRow?.consent_granted ?? false;
-      const destination = resolveSuccessfulLoginDestination(safeFrom, consentGranted);
+      const destination = resolveSuccessfulLoginDestination(safeFrom, await readConsentForLogin());
 
       window.location.assign(destination);
     } catch (err: unknown) {
@@ -299,13 +305,7 @@ export default function LoginPage() {
       let destination: string;
 
       if (user) {
-        const { data: profileRow } = await supabase
-          .from("parent_profiles")
-          .select("consent_granted")
-          .eq("user_id", user.id)
-          .maybeSingle();
-        const consentGranted = profileRow?.consent_granted ?? false;
-        destination = resolveSuccessfulLoginDestination(safeFrom, consentGranted);
+        destination = resolveSuccessfulLoginDestination(safeFrom, await readConsentForLogin());
       } else {
         destination = PARENT_PORTAL_HOME;
       }

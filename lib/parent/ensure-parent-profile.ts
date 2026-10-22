@@ -5,10 +5,14 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 /**
  * Creation of the single `parent_profiles` row a parent is allowed to own.
  *
- * Shared by signup completion and consent recording so both paths converge on
- * one row with one set of rules. Writes go through the caller's user-scoped
- * client, so the `parent_profiles_insert_own` RLS policy — not this code — is
+ * Used by signup completion. Until V0.1.48 the consent route used it too (and
+ * created a missing profile on consent); consent now lives in PostgreSQL, see
+ * lib/parent/consent/. Writes go through the caller's user-scoped client, so the `parent_profiles_insert_own` RLS policy — not this code — is
  * what ultimately binds a profile to its own `auth.uid()`.
+ *
+ * Consent is never written here, not even its initial value: the row is
+ * created with the column defaults (not consented, no time). Consent itself
+ * is read and written only through the backend since V0.1.48.
  *
  * The name is optional. Phone + OTP signup never collects one, so a missing
  * name is an ordinary outcome rather than a failure; the column is nullable
@@ -20,19 +24,11 @@ export type EnsureParentProfileResult =
   | { ok: true; created: boolean; profileId: string }
   | { ok: false; reason: "write_failed" };
 
-/**
- * `grant` records consent as given; `preserve` leaves an existing verdict
- * untouched and starts a new profile un-consented. Signup uses `preserve` so
- * completing signup can never be mistaken for granting consent.
- */
-export type ConsentIntent = "grant" | "preserve";
-
 /** Postgres unique-violation; two concurrent inserts race to the same row. */
 const UNIQUE_VIOLATION = "23505";
 
 interface ExistingProfile {
   id: string;
-  consent_granted: boolean;
 }
 
 async function readProfile(
@@ -41,7 +37,7 @@ async function readProfile(
 ): Promise<{ row: ExistingProfile | null; failed: boolean }> {
   const { data, error } = await supabase
     .from("parent_profiles")
-    .select("id, consent_granted")
+    .select("id")
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -59,7 +55,7 @@ async function readProfile(
  */
 export async function ensureParentProfile(
   supabase: SupabaseClient,
-  params: { userId: string; fullName?: string | null; consent: ConsentIntent },
+  params: { userId: string; fullName?: string | null },
 ): Promise<EnsureParentProfileResult> {
   // Null, absent and whitespace all mean the same thing: no name was given.
   // They are never turned into an empty string, which the column rejects.
@@ -72,29 +68,14 @@ export async function ensureParentProfile(
   if (existing.row) {
     // An existing name is never touched here. A parent who has a name keeps
     // it even if a later caller happens to pass nothing.
-    // Consent is only ever moved forward, never revoked by a repeated call.
-    if (params.consent === "grant" && !existing.row.consent_granted) {
-      const { error } = await supabase
-        .from("parent_profiles")
-        .update({
-          consent_granted: true,
-          consent_granted_at: new Date().toISOString(),
-        })
-        .eq("user_id", params.userId);
-
-      if (error) return { ok: false, reason: "write_failed" };
-    }
     return { ok: true, created: false, profileId: existing.row.id };
   }
 
-  const granted = params.consent === "grant";
   const { data, error } = await supabase
     .from("parent_profiles")
     .insert({
       user_id: params.userId,
       full_name: fullName,
-      consent_granted: granted,
-      consent_granted_at: granted ? new Date().toISOString() : null,
     })
     .select("id")
     .maybeSingle();

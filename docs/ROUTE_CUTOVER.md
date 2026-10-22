@@ -8,6 +8,7 @@ Routes served through the Fastify backend instead of Supabase:
 | V0.1.45 | `GET /api/parent/orders` + the `/dashboard/orders` first page | **authenticated** read, the parent orders **LIST** only ([below](#v0145-parent-orders-list)) |
 | V0.1.46 | `GET /api/parent/welcome-credits`, `GET /api/parent/account-summary` (new), the public header's parent name | **authenticated** reads: welcome credits, candy balance, profile name ([below](#v0146-parent-account-reads)) |
 | V0.1.47 | none (backend-only `PATCH /v1/parent/profile`) | write-security foundation; **no Next.js route cut over** ([below](#v0147-write-security-foundation)) |
+| V0.1.48 | `POST`/`GET /api/parent-consent`; the consent gates of `/parent-consent`, `/complete-request`, `POST /api/requests`, `/login` and the dev auth route | **the first browser-facing WRITE** (consent) + every consent read; shared CSRF guard ([below](#v0148-parent-consent-read--write)) |
 
 ### Migration status
 
@@ -20,18 +21,22 @@ Routes served through the Fastify backend instead of Supabase:
 | welcome image credits (billing, creation review) | `parent_welcome_credits` | **PostgreSQL** (V0.1.46) |
 | billing purchase history | `candy_purchases`, `payment_attempts`, `coupon_redemptions`, `coupons` | Supabase (old path) |
 | candy package catalog | `candy_packages` | Supabase (old path) |
-| consent gate (middleware, `/complete-request`) | `parent_profiles.consent_granted` | Supabase (old path) |
+| consent read (`/parent-consent`, `/complete-request`, `/login`, dev route) | `parent_profiles.consent_granted[_at]` | **PostgreSQL** (V0.1.48); middleware no longer checks consent |
+| consent write (`POST /api/parent-consent`) | `record_parent_consent_trusted` | **PostgreSQL** (V0.1.48), CSRF guard + v3 |
+| request submission: consent gate | `parent_profiles.consent_granted` | **PostgreSQL** (V0.1.48) |
+| request submission: creation (RPC, upload, debit) | `create_parent_request_trusted`, Storage | Supabase (old path), **temporary mixed flow** |
 | referral summary | RPC `get_current_parent_referral_summary` | Supabase (old path) |
 | order detail, final media, gallery | orders + Storage | Supabase (old path) |
 | parent display-name write | `parent_profiles.full_name` | **PostgreSQL, backend only** (V0.1.47): `PATCH /v1/parent/profile`; no Next route or UI calls it |
-| every product write (requests, purchases, coupons, referrals, profile creation, password, consent, admin) | | Supabase (old path) |
+| every other product write (request creation, candy purchases, coupons, referrals, profile creation, password, order/media, admin) | | Supabase (old path) |
 | identity / session | Supabase Auth | Supabase Auth (provider; by design until replaced) |
 
 Everything marked "old path" still runs on Supabase. A static guard
 (`route-cutover-static.test.ts`) fails if any other route or page reaches the
-backend, and lists the backend's exact routes (GETs plus the one V0.1.47
-PATCH); `write-security-static.test.ts` fails if any Next write handler calls
-the backend.
+backend, and lists the backend's exact routes; `write-security-static.test.ts`
+fails if any Next write handler other than `POST /api/parent-consent` calls
+the backend; `consent-cutover-static.test.ts` fails on any runtime Supabase
+consent access or a migrated money/media/Storage/request write.
 
 ## V0.1.41: `GET /api/creation-pricing`
 
@@ -729,21 +734,306 @@ while purchases and requests write to Supabase). V0.1.47 does not reduce that
 split: its one write has no product caller. **Do NOT deploy this branch**
 before those writes move or a final copy under a write freeze closes it.
 
+## V0.1.48: parent consent read + write
+
+The whole consent domain moves from Supabase's database to PostgreSQL in one
+release: the write and **every** read that gates on it. It is the first
+browser-facing write on the new architecture, and it comes with the shared
+browser → Next CSRF guard
+([AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md#csrf-browser--next)).
+
+### Consent audit (before any change)
+
+Every runtime use of `consent_granted` / `consent_granted_at` / the consent
+flow on `1a39211`:
+
+| File | Read / write | Source | Auth checks | When not consented | When unavailable |
+|---|---|---|---|---|---|
+| `middleware.ts` step 6 (`/complete-request` only) | read | Supabase `parent_profiles` (cookie client, PostgREST) | `getUser`, `users.role`, 30-day lifetime | redirect `/parent-consent` | read error → redirect `/parent-consent` |
+| `app/(auth)/complete-request/page.tsx` | read | Supabase | `getUser`, role (admins → `/admin`), lifetime | redirect `/parent-consent` | redirect `/parent-consent` |
+| `app/(auth)/login/page.tsx` (SMS verify + password login) | read | Supabase from the **browser** client | the session just created | `resolveSuccessfulLoginDestination(from, false)` → `/parent-consent` (unless `from` names a non-dashboard parent path) | error ignored → treated as not consented |
+| `app/api/dev/parent-auth/route.ts` (magic-link + password sessions) | read | Supabase (the new session's client) | role parent | `next: "/parent-consent"` | treated as not consented |
+| `app/api/requests/route.ts` | read | Supabase | `getUser`, rate limit, role, lifetime | 403 (no profile / not consented) | error ignored → 403 "profile not found" |
+| Supabase RPC `create_parent_request_trusted` (called by the route above) | read | Supabase DB, inside the RPC | service_role only | `request_consent_required` → 403 | — |
+| `app/api/parent-consent/route.ts` + `lib/parent/ensure-parent-profile.ts` (`grant`) | **write** (update, or INSERT a consented profile if none) | Supabase user client (RLS insert-own, column grants) | `getUser`, role, lifetime; no CSRF check (SameSite only) | — | 500 "Failed to record consent" |
+| `app/api/parent/complete-signup/route.ts` (`ensureParentProfile`, `preserve`) | write (`consent_granted: false` on insert) | Supabase | `getUser`, role | — | 500 |
+| `app/api/dev/parent-auth/route.ts` signup | write (`consent_granted: false`) | Supabase admin client | dev only | — | 500 |
+| `app/(auth)/parent-consent/page.tsx` | none (client page, POST only) | — | middleware: signed in, role (admins → `/admin`), lifetime | the form, always (also for a consented parent) | — |
+| `components/…` (orders/gallery "no profile" states, signup, draft card, creation review) | none: links and copy | — | — | — | — |
+| `lib/requests/request-rpc-error.ts`, `lib/admin/requests/queries.ts`, `types/database.ts` | none (message map, a `false` placeholder, generated types) | — | — | — | — |
+
+The RPC row is the one that is easy to miss: moving every Next read would
+still have left Supabase's own copy of the column gating request creation. A
+parent who consents after the cutover would pass the new gate and then be
+refused by the RPC.
+
+### Consent semantics (unchanged except where noted)
+
+- **Owner:** `parent_profiles` (one row per user, `user_id` UNIQUE).
+- **Columns:** `consent_granted boolean NOT NULL DEFAULT false`,
+  `consent_granted_at timestamptz NULL`. Nothing else.
+- **One-way.** Nothing in the product revokes consent: the route only accepts
+  `{ consentGranted: true }`, and the old helper "only ever moved [it]
+  forward". V0.1.48 makes this a database rule (`record_parent_consent_trusted`
+  can only set `false → true`).
+- **Time:** stamped on the first grant; a repeated grant keeps it. (The old
+  route answered with a *fresh* `new Date()` on every call even when nothing
+  changed; it now answers with the stored time.)
+- **New / existing profile:** created un-consented (column defaults).
+- **Missing profile:** every gate treats it as not consented (unchanged). The
+  old write **created** a consented profile; the new write does not
+  (403 `no_parent_profile`, decided with the product owner): the app role has
+  no INSERT, and an insert would also fire the wallet and welcome-credit
+  triggers. See blocker 6 below.
+- **What requires consent:** `/complete-request` and `POST /api/requests`.
+  The dashboard does not (its pages show their own "no profile" states).
+
+### What changed
+
+| Piece | Where |
+|---|---|
+| `getParentConsentState`, `recordParentConsent` | `lib/repositories/parent-profiles.ts` |
+| `record_parent_consent_trusted(uuid)` + EXECUTE grant | `database/migrations/0014_parent_consent_write.sql` |
+| `GET` / `POST /v1/parent/consent` | `backend/src/routes/parent-consent.ts` |
+| shared CSRF guard | `lib/security/csrf.ts` |
+| the one consent loader (read, write, outcomeUnknown recovery) | `lib/parent/consent/backend-consent.ts`, `consent-response.ts`, `consent-client.ts` (browser) |
+| Next route `POST` (cut over) + `GET` (new) | `app/api/parent-consent/route.ts` |
+| `/parent-consent` (server page + client form) | `app/(auth)/parent-consent/page.tsx`, `parent-consent-form.tsx` |
+| gates moved | `app/(auth)/complete-request/page.tsx`, `app/api/requests/route.ts`, `app/(auth)/login/page.tsx`, `app/api/dev/parent-auth/route.ts`; middleware step removed |
+| no consent columns written to Supabase on profile creation | `lib/parent/ensure-parent-profile.ts`, `complete-signup`, dev signup |
+| Supabase RPC without its consent clause | `supabase/migrations/20261022100000_request_rpc_consent_gate_moved.sql` |
+| `CARTOONA_APP_ORIGIN` | `compose.yml`, `.env.example`, `.env.docker.example` |
+
+### Middleware / gating decision
+
+Middleware compiles to the **Edge** runtime (verified in the build's
+middleware manifest; Next 16 keeps Edge for the deprecated `middleware`
+convention, only `proxy.ts` is Node-only). Reading consent through the
+backend needs a signed assertion (`node:crypto`, the internal secret), and
+middleware must not connect to PostgreSQL. Options considered:
+
+| Option | Verdict |
+|---|---|
+| middleware calls Fastify | rejected: the signer and secret would have to run in Edge; a backend round trip on every protected navigation |
+| migrate to `proxy.ts` (Node) and call Fastify there | rejected for V0.1.48: a framework migration of the whole auth middleware, out of scope |
+| **remove the step; the Node-runtime page is the gate** | **chosen**: the step only ever covered `/complete-request`, whose page already re-checked consent. Redirects are preserved (not consented → `/parent-consent`) |
+
+Middleware keeps everything else (signed in, role, admins → `/admin`, 30-day
+lifetime).
+
+### Temporary mixed request flow (V0.1.48, by design)
+
+```
+POST /api/requests
+  Supabase Auth (getUser)                        identity provider
+  rate limit, Supabase users.role, lifetime     Supabase (unchanged)
+  CONSENT GATE  ->  loadParentConsent()          PostgreSQL (V0.1.48)
+  Supabase parent_profiles.id, Storage upload,
+  create_parent_request_trusted RPC, debit       Supabase (unchanged; NOT migrated)
+```
+
+Request submission is **not** migrated. Only its consent decision moved, and
+Supabase's RPC no longer second-guesses it with the stale column
+(`20261022100000`: the function recreated with exactly the consent clause
+removed; a static test diffs it against `20260926100000`). The plain
+PostgreSQL copy of the function (0005) keeps its consent check: there the
+column is authoritative. A consent outage is a 503 `consent_unavailable`,
+never "consent required".
+
+### outcomeUnknown and replay
+
+- The BFF sends the write once. If the answer is lost after it may have been
+  received (timeout, reset, 5xx, unreadable 2xx, or 409 meaning its own nonce
+  was already consumed), it re-reads consent with a new READ assertion:
+  granted → 200 (logged `CONSENT_CONFIRMED_AFTER_UNCERTAIN_WRITE`), otherwise 503
+  `consent_outcome_unknown`.
+- The page shows **«نتوانستیم تأیید کنیم که رضایت شما ثبت شده است یا نه. لطفاً
+  وضعیت را بررسی کنید و در صورت نیاز دوباره تلاش کنید.»** and a "check status"
+  button (GET `/api/parent-consent`): granted → continue; not granted → the
+  parent may submit again (new request → new nonce; safe, one-way grant, first
+  time kept); unknown → stays uncertain. A browser → Next network failure is
+  treated the same way. Never "failed", never a sign-out, never an automatic
+  re-send.
+- Replaying the same v3 assertion → 409 `replayed_request`, no second write.
+
+### Rollback boundary: the first PostgreSQL-only write
+
+Until V0.1.48 every cutover was read-only: rolling back meant redeploying the
+previous release. Consent changes made after this cutover exist **only** in
+PostgreSQL; Supabase's column freezes at its cutover value. Rolling the app
+back to a release that reads consent from Supabase would show those parents
+as **not consented** (they would be sent to `/parent-consent` and could not
+submit requests), and the old RPC (consent clause back) would refuse them.
+
+Plan (nothing is deployed; production is blocked anyway):
+
+1. **Preferred: roll forward, keep consent on PostgreSQL.** A defect in
+   V0.1.48 is fixed with a new release; consent reads stay on PostgreSQL. No
+   data moves.
+2. **If the app must go back to a Supabase-consent release**, first push
+   PostgreSQL's consent forward into Supabase, then deploy the old app, then
+   (only then) re-apply the 20260926100000 RPC definition. One statement per
+   direction is enough, because consent is one-way:
+
+   ```sql
+   -- run with a service-role connection against Supabase, values exported from PostgreSQL:
+   --   COPY (SELECT user_id, consent_granted_at FROM public.parent_profiles
+   --         WHERE consent_granted) TO STDOUT
+   UPDATE public.parent_profiles s
+   SET consent_granted = true, consent_granted_at = x.consent_granted_at
+   FROM (VALUES (...)) AS x(user_id, consent_granted_at)
+   WHERE s.user_id = x.user_id::uuid AND s.consent_granted = false;
+   ```
+
+   It only ever sets `false → true` (no revocation exists), so re-running it
+   is harmless. Profiles that exist only in PostgreSQL cannot exist (profile
+   creation is still Supabase-only).
+3. **Order matters on the way forward too:** apply
+   `20261022100000_request_rpc_consent_gate_moved.sql` to Supabase together
+   with (or before) the V0.1.48 app. Applied first it is harmless: the old app
+   checks consent before calling the RPC.
+
+No reverse-sync tool is built in V0.1.48; step 2 is a one-time operator
+action, to be scripted when a production rollout is scheduled.
+
+### Docker startup window
+
+The frontend still has no `depends_on: backend` (deliberate since V0.1.41:
+public pages must not depend on the backend). Re-checked for a real browser
+write: for the few seconds the backend is not ready, `/parent-consent` shows
+its retry notice, and a submit that was already on screen gets 503
+`consent_outcome_unknown` → "could not confirm" + "check status". No false
+success, no sign-out, no replay. Proven in the browser (below). No compose
+change beyond `CARTOONA_APP_ORIGIN`.
+
+### Verified locally (2026-10-22)
+
+- **Real PostgreSQL** (`consent-cutover-db.test.ts`, 49 tests: Supabase-shaped
+  source with un-consented parents → copy → 0001–0014 target → listening
+  Fastify as a script-provisioned login role → the real Next route handlers,
+  pages and gates with the stub provider):
+  - **Copy:** every copied `(consent_granted, consent_granted_at)` equals the
+    source; false/NULL stays false/NULL; a microsecond grant time is exact.
+  - **Read-after-write through every gate:** before, parent D read
+    `{consentGranted:false}`, page `form`, `/complete-request` →
+    `/parent-consent`, request gate 403, `/login` → `/parent-consent`. After
+    one browser-shaped POST (CSRF passed, v3, PostgreSQL changed, stored time
+    returned): `true`, page forwards, `/complete-request` renders, request gate
+    passed (400 for the deliberately missing draft, not 403), `/login` →
+    `/dashboard/orders`. Only D's row changed.
+  - **No loop:** complete-request → parent-consent → complete-request →
+    parent-consent = render, forward, render, forward.
+  - **outcomeUnknown:** answer delayed after commit → Next timed out, re-read,
+    200 success, exactly one write. Commit delayed past the timeout → 503
+    `consent_outcome_unknown` (Persian "could not confirm"), no sign-out; the
+    late commit then read back as granted; resending the captured signed
+    request → 409, still one write; a user retry → 200, same stored time.
+  - **Replay:** 20 concurrent copies of one assertion → 1 × 200, 19 × 409.
+  - **Isolation:** forged `X-User-Id` / `X-Role` / `X-Parent-Profile-Id` /
+    assertion header, ids in the body (422), a hostile query, wrong-path,
+    tampered body, v2 on the write → no other parent changed.
+  - **Auth cases:** admin, super_admin, deleted → 403 `forbidden`; unlinked →
+    403 `identity_not_linked`; no profile → GET false, POST 403
+    `no_parent_profile`, nothing created; 31-day session → 401 + sign-out;
+    `sessions_not_before` → 401 + sign-out; provider down → 503, no sign-out.
+  - **Outage:** database down → GET 503 (not false), POST 503
+    `consent_outcome_unknown`, `/parent-consent` retry notice,
+    `/complete-request` retry alert, request gate 503 `consent_unavailable`,
+    no sign-out. Backend unreachable (the Docker startup window) → same.
+  - **Privileges:** the role can read consent, execute the function and
+    consume a nonce; it cannot UPDATE `consent_granted`, `consent_granted_at`,
+    `referral_code`, `user_id`, `created_at`, INSERT/DELETE profiles, touch the
+    nonce table, or execute `complete_candy_purchase_trusted`,
+    `create_parent_request_trusted`, `record_final_media_trusted` (all 42501).
+    The function returns nothing (and changes nothing) for admin, deleted,
+    unlinked and profile-less users, keeps an existing grant time, rejects
+    NULL (22023), and 10 concurrent grants wrote one time.
+- **Unit / in-process** (no database): `csrf.test.ts` (45: the full CSRF
+  matrix), `backend-parent-consent.test.ts` (31: Fastify routes, versions,
+  body, roles, replay, outages), `parent-consent-route.test.ts` (45: CSRF
+  before auth, body rules, outcome mapping, outcomeUnknown recovery, GET),
+  `consent-cutover-static.test.ts` (27 guards).
+- **Docker + headless Chromium** (proof-tagged images built with the stub
+  provider URL; backend on a scratch copy as a scratch login role; stub
+  Supabase Auth on the host; nothing hosted contacted), 27/27 checks:
+  - **Hostile writes first:** a page on another origin (`127.0.0.1:8099`)
+    sent a `no-cors` fetch and a `text/plain` form post → 415, 415; a JSON
+    POST carrying the parent's cookie with `Origin: https://evil.example`
+    and a forged `X-Forwarded-Host` → 403; `Sec-Fetch-Site: cross-site` →
+    403. PostgreSQL unchanged.
+  - **Real flow:** the parent saw the consent form, ticked it, submitted
+    (the browser itself sent `Origin: http://localhost:3000`,
+    `Sec-Fetch-Site: same-origin`, `application/json`) → 200 → landed on
+    `/dashboard/orders`; PostgreSQL consented.
+  - **No loop:** `/parent-consent` → `/dashboard/orders` (forwarded),
+    `/complete-request` renders, `/dashboard` → `/dashboard/orders`, twice
+    over. The `/login` source (`GET /api/parent-consent`) said granted. A
+    second grant kept the first time.
+  - **Browser contacted Next only:** 232 requests, all `localhost:3000`
+    (no `:4000`, no provider). **No leak:** the 232 responses contained no
+    backend URL, `/v1/` path, assertion header, secret, database password,
+    role or consent column name.
+  - **Replay** against the Docker backend: same signed write twice → 200, 409.
+  - **Startup window / outage in the browser** (parent E): form loaded, then
+    the backend was stopped; submit → 503 `consent_outcome_unknown`, the
+    Persian "could not confirm" text and a "check status" button, still on
+    the page, session cookie kept, nothing written. Backend started → "check
+    status" → "not saved yet, you may confirm again" → user retry → 200 →
+    portal; PostgreSQL consented.
+  - **Containers:** frontend had every database variable empty; backend had
+    no Supabase variable and ran as the scratch login role; the secret, the
+    database password, assertion tokens and nonces appeared in no container
+    log.
+- **Supabase RPC migration** applied cleanly on top of the full historical
+  chain in every source build (DB suites and the proof); its function body
+  differs from 20260926100000 only by the consent clause (static diff test).
+- The main local `cartoona` database was migrated 0011 → 0014
+  (`migrate-local.sh`: 3 applied). Proof databases, roles, containers and
+  images were removed afterwards.
+
+Local timings (**not production estimates**):
+
+| Path | test process (median / p90) | Docker, host → containers (median / p90) |
+|---|---|---|
+| consent GET, Fastify direct (v2, identity + SELECT) | 2.9 / 5.0 ms | 3.5 / 6.1 ms |
+| consent GET, Next → provider → Fastify → PostgreSQL | 5.0 / 7.3 ms | 6.9 / 9.5 ms |
+| consent POST, Fastify direct (v3, identity, nonce, function) | 4.0 / 6.1 ms | 4.3 / 5.9 ms |
+| consent POST through Next (CSRF, provider, v3 → Fastify → PostgreSQL) | 6.7 / 12.7 ms | 8.5 / 14.1 ms |
+| POST through Next + verification GET through Next | 11.2 / 19.2 ms | 16.0 / 21.4 ms |
+
+(The test-process column is from an isolated run; under the full parallel
+suite the same numbers were roughly 2× higher.) Sequential depth of one
+browser consent write: CSRF check (no I/O) → provider session verification
+(1 round trip; 2 if the access token must be refreshed) → one backend call:
+identity SELECT → nonce function → consent function (3 sequential
+statements). The verification read after an uncertain outcome adds one
+backend call (identity SELECT → consent SELECT).
+
+### Production status
+
+**Not deployable.** Unchanged blockers: the real `amr` claim shape, a real
+`pg_dump` rehearsal, backend/PostgreSQL deployment, the storage migration, and
+the V0.1.46 read/write split (balance, credits, orders read PostgreSQL while
+purchases and requests write Supabase). V0.1.48 closes the split **for consent
+only**. New for deployment: `CARTOONA_APP_ORIGIN` must be set (production
+fails closed without it), and the Supabase migration `20261022100000` must
+ship with the app. Blocker 6 (accounts created after the copy have no
+PostgreSQL identity/profile) now also means such parents cannot grant consent.
+
 ## Next
 
-V0.1.48 (write paths cutover) can now build on the foundation. Before the
-first BFF write:
+V0.1.49 / the next write migration. Before it:
 
-- a shared CSRF check for migrated write routes (Origin / `Sec-Fetch-Site`
-  plus a required JSON content type), see
-  [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md#csrf-browser--next);
-- the "could not confirm" UX for `outcomeUnknown`;
-- for each write, its READS moved in the same release (consent is the
-  example: its middleware, login, complete-request and requests-gate reads);
-- EXECUTE grants on the `*_trusted` functions each write needs, one
-  migration per cutover;
-- a rollback / reverse-sync plan for the first write that lands only in
-  PostgreSQL.
-
-The purchase history, request submission and purchase completion are the
-writes that close the V0.1.46 read/write split.
+- move the three ad-hoc Origin checks (`/api/parent/password`,
+  `/api/referrals/bind`, `/api/admin/referrals/settings`) to
+  `lib/security/csrf.ts` when those routes are touched, and add the guard to
+  every newly migrated browser write;
+- identity/profile provisioning for accounts created after the copy
+  (blocker 6), or the signup move: without it a new parent cannot consent;
+- the V0.1.46 read/write split: request submission, purchase completion and
+  the purchase history are the writes that close it; each needs its own
+  `*_trusted` EXECUTE grant and the same outcomeUnknown handling;
+- a scripted consent forward-sync (PostgreSQL → Supabase) before any
+  production rollout, per the rollback plan above;
+- the `amr` check, a real `pg_dump` rehearsal, backend deployment and the
+  storage migration (production blockers, unchanged).

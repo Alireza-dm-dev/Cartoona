@@ -9,6 +9,7 @@ import { registerAuthRoutes } from "./routes/auth"
 import { registerCreationPricingRoutes } from "./routes/creation-pricing"
 import { registerHealthRoutes } from "./routes/health"
 import { registerParentAccountRoutes } from "./routes/parent-account"
+import { registerParentConsentRoutes } from "./routes/parent-consent"
 import { registerParentOrdersRoutes } from "./routes/parent-orders"
 
 /**
@@ -75,6 +76,7 @@ export function buildBackendApp(overrides: Partial<BackendDeps> = {}): FastifyIn
   registerAuthRoutes(app, deps)
   registerParentOrdersRoutes(app, deps)
   registerParentAccountRoutes(app, deps)
+  registerParentConsentRoutes(app, deps)
 
   app.addHook("onClose", async () => {
     await deps.closeDb()

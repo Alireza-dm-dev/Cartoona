@@ -1,110 +1,71 @@
-"use client";
-
-import { useState } from "react";
+import { redirect } from "next/navigation";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/neu-button";
-import PendingCreationDraftCard from "@/components/creation/pending-creation-draft-card";
-import { readCreationDraft } from "@/lib/creation/creation-draft";
+import { loadParentConsent } from "@/lib/parent/consent/backend-consent";
+import ParentConsentForm from "./parent-consent-form";
 
-export default function ParentConsentPage() {
-  const [agreed, setAgreed] = useState(false);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+/**
+ * /parent-consent (V0.1.48): consent is read from PostgreSQL (session verified
+ * by the provider -> v2 assertion -> Fastify -> PostgreSQL), never from
+ * Supabase. Middleware still runs first (signed in, role, admins -> /admin,
+ * 30-day lifetime).
+ *
+ *   granted       the form component continues at once, to the same place a
+ *                 successful submit goes (a pending draft -> /complete-request,
+ *                 else /dashboard). The draft lives in the browser, so that
+ *                 choice is made client-side.
+ *   not granted   the form, unchanged.
+ *   no profile    a dead-end form would only fail: say so instead.
+ *   could not determine (backend/database/provider down): a retry message.
+ *                 Never the form-as-if-not-consented, never a redirect, so an
+ *                 outage cannot bounce a consented parent between pages.
+ *   signed out / expired / invalidated -> /login (with from=/parent-consent).
+ */
+export const dynamic = "force-dynamic";
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!agreed) {
-      setError("لطفاً رضایت والدین را تأیید کنید.");
-      return;
-    }
-    setError("");
-    setLoading(true);
-
-    try {
-      const response = await fetch("/api/parent-consent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ consentGranted: true }),
-      });
-
-      if (response.ok) {
-        const pendingDraft = readCreationDraft();
-        const destination = pendingDraft ? "/complete-request" : "/dashboard";
-        window.location.href = destination;
-      } else if (response.status === 401) {
-        window.location.href = "/login?from=/parent-consent";
-      } else {
-        setError("ثبت رضایت والد انجام نشد. لطفاً دوباره تلاش کنید.");
-      }
-    } catch {
-      setError("ثبت رضایت والد انجام نشد. لطفاً دوباره تلاش کنید.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
+function Notice({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="space-y-4">
-      <PendingCreationDraftCard stage="consent" />
-
-      <Card>
-        <h1 className="text-2xl font-brand text-parent-navy">تأیید رضایت والدین</h1>
-      <p className="mt-1 text-sm text-text-dark/60">
-        برای ادامه، لطفاً تأیید کنید که والد یا سرپرست قانونی هستید و با استفاده خصوصی از اطلاعات و فایل‌های مربوط به کودک در کارتونا موافقید.
-      </p>
-
-      <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-        <div className="neu-recessed rounded-xl p-4 text-sm text-text-dark/70 space-y-3">
-          <ul className="space-y-2">
-            <li className="flex items-start gap-2">
-              <span className="mt-0.5 shrink-0 text-candy-pink">✓</span>
-              <span>من تأیید می‌کنم والد یا سرپرست قانونی کودک هستم.</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="mt-0.5 shrink-0 text-candy-pink">✓</span>
-              <span>می‌دانم فایل‌ها و درخواست‌ها فقط به‌صورت خصوصی برای ساخت محتوای کارتونی استفاده می‌شوند.</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="mt-0.5 shrink-0 text-candy-pink">✓</span>
-              <span>می‌دانم محتوای کودک به‌صورت عمومی منتشر نمی‌شود.</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="mt-0.5 shrink-0 text-candy-pink">✓</span>
-              <span>می‌دانم در مراحل بعدی امکان درخواست حذف داده‌ها فراهم خواهد شد.</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="mt-0.5 shrink-0 text-candy-pink">✓</span>
-              <span>می‌دانم این نسخه هنوز MVP آزمایشی است و ذخیره‌سازی واقعی بعداً با Supabase فعال می‌شود.</span>
-            </li>
-          </ul>
-        </div>
-
-        <div className="flex items-start gap-3">
-          <input
-            id="consent-check"
-            type="checkbox"
-            checked={agreed}
-            onChange={(e) => setAgreed(e.target.checked)}
-            className="mt-1 h-4 w-4 shrink-0 rounded border-soft-border text-candy-pink focus:ring-2 focus:ring-candy-pink/30"
-          />
-          <label htmlFor="consent-check" className="text-xs leading-relaxed text-text-dark/70 cursor-pointer select-none">
-            موارد بالا را خوانده‌ام و رضایت والدین را تأیید می‌کنم.
-          </label>
-        </div>
-
-        {error && <p className="text-xs text-coral">{error}</p>}
-
-        <Button type="submit" className="w-full" disabled={loading}>
-          {loading ? "در حال ورود..." : "تأیید و ورود به پنل والدین"}
-        </Button>
-
-        <div className="text-center">
-          <a href="/signup" className="text-xs text-text-dark/50 hover:text-text-dark/70">
-            بازگشت به ثبت‌نام
-          </a>
-        </div>
-      </form>
+    <Card>
+      <div role="alert" className="text-center">
+        <h1 className="mb-2 text-lg font-semibold text-parent-navy">{title}</h1>
+        <p className="text-sm text-text-dark/70">{children}</p>
+      </div>
     </Card>
-    </div>
   );
+}
+
+export default async function ParentConsentPage() {
+  const consent = await loadParentConsent();
+
+  if (consent.ok) {
+    if (consent.status === "no_profile") {
+      return (
+        <Notice title="پروفایل والد کامل نیست">
+          پروفایل والد برای این حساب یافت نشد. لطفاً با پشتیبانی تماس بگیرید.
+        </Notice>
+      );
+    }
+    return <ParentConsentForm initiallyGranted={consent.status === "granted"} />;
+  }
+
+  switch (consent.reason) {
+    case "unauthenticated":
+      redirect("/login?from=/parent-consent");
+    case "session_expired":
+    case "session_invalidated":
+      redirect("/login?reason=session_expired&from=/parent-consent");
+    case "identity_not_linked":
+    case "forbidden":
+      return <Notice title="دسترسی ممکن نیست">شما مجوز انجام این عملیات را ندارید.</Notice>;
+    case "auth_unavailable":
+    case "service_unavailable":
+      return (
+        <Notice title="بررسی رضایت موقتاً ممکن نیست">
+          لطفاً چند لحظه بعد{" "}
+          <a href="/parent-consent" className="font-semibold text-candy-pink">
+            دوباره تلاش کنید
+          </a>
+          .
+        </Notice>
+      );
+  }
 }

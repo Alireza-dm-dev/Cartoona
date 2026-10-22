@@ -70,3 +70,56 @@ export async function updateParentProfileName(
   if (!row) return null;
   return { fullName: typeof row.full_name === "string" ? row.full_name : null };
 }
+
+/** A parent's consent as stored (V0.1.48). `grantedAt` is an ISO timestamp, null while not granted. */
+export interface ParentConsentState {
+  consentGranted: boolean;
+  consentGrantedAt: string | null;
+}
+
+function toConsentState(row: { consent_granted: unknown; consent_granted_at: unknown }): ParentConsentState {
+  if (typeof row.consent_granted !== "boolean") throw new TypeError("consent_granted must be boolean");
+  const at = row.consent_granted_at;
+  return {
+    consentGranted: row.consent_granted,
+    consentGrantedAt: at instanceof Date ? at.toISOString() : typeof at === "string" ? new Date(at).toISOString() : null,
+  };
+}
+
+const SELECT_CONSENT = `
+  SELECT p.consent_granted, p.consent_granted_at
+  FROM public.parent_profiles p
+  WHERE p.user_id = $1`;
+
+/**
+ * The signed-in user's consent (V0.1.48): the flag and its time, nothing else
+ * from the profile. Null when the user has no profile - the caller decides
+ * what that means (every consent gate treats it as "not consented").
+ */
+export async function getParentConsentState(
+  db: Queryable,
+  input: { userId: string },
+): Promise<ParentConsentState | null> {
+  const userId = requireUuid(input.userId, "userId");
+  const rows = await runQuery<{ consent_granted: unknown; consent_granted_at: unknown }>(db, SELECT_CONSENT, [userId]);
+  return rows[0] ? toConsentState(rows[0]) : null;
+}
+
+const RECORD_CONSENT = `
+  SELECT consent_granted, consent_granted_at
+  FROM public.record_parent_consent_trusted($1)`;
+
+/**
+ * Records the user's consent (V0.1.48) through the one function the app role
+ * may execute for it (migration 0014): one-way, the first grant's time is
+ * kept, never inserts a profile. Returns the stored state; null when the user
+ * has no profile (nothing was written). Repeating it is harmless.
+ */
+export async function recordParentConsent(
+  db: Queryable,
+  input: { userId: string },
+): Promise<ParentConsentState | null> {
+  const userId = requireUuid(input.userId, "userId");
+  const rows = await runQuery<{ consent_granted: unknown; consent_granted_at: unknown }>(db, RECORD_CONSENT, [userId]);
+  return rows[0] ? toConsentState(rows[0]) : null;
+}

@@ -51,11 +51,11 @@ export async function POST() {
   const trimmedName = typeof metadataName === "string" ? metadataName.trim() : ""
   const fullName = trimmedName.length > 0 ? trimmedName : null
 
+  // Signup never implies consent: the profile starts un-consented (column
+  // defaults) and the parent grants consent on /parent-consent (PostgreSQL).
   const result = await ensureParentProfile(supabase, {
     userId: user.id,
     fullName,
-    // Signup never implies consent; the parent grants it on /parent-consent.
-    consent: "preserve",
   })
 
   if (!result.ok) {

@@ -210,10 +210,11 @@ attacker can reach the backend port.
 
 - **Transport replay**: the *same* assertion delivered again (a resend, a
   copy). Always 409, no second write.
-- **User retry**: the user (or the BFF on the user's behalf) submits again;
-  Next verifies the session again and signs a *new* assertion with a new nonce.
-  It is accepted, so the write itself must be safe to repeat. The V0.1.47 proof
-  write sets a value, so repeating it ends in the same state.
+- **User retry**: the user submits again; Next verifies the session again
+  and signs a *new* assertion with a new nonce. It is accepted, so the write
+  itself must be safe to repeat. The V0.1.47 proof write sets a value, and
+  consent (V0.1.48) is one-way and keeps its first grant time, so repeating
+  either ends in the same state. The BFF never re-sends on its own.
 
 ### Uncertain timeout
 
@@ -224,29 +225,59 @@ The Next client sends a write once, bounded by `BACKEND_REQUEST_TIMEOUT_MS`
 claim the change was not saved. Tested: with the response delayed after
 commit, the client timed out after ~250 ms with one fetch, the row had changed
 exactly once, resending that request was 409, and a new user retry with the
-same value succeeded with no further effect. The future BFF route should show
-"we could not confirm this was saved; check and try again", never "failed".
+same value succeeded with no further effect. V0.1.48 implements the UX for
+consent: on an uncertain outcome the BFF re-reads consent with a new READ
+assertion; granted → success, otherwise 503 `consent_outcome_unknown` and the
+page says "we could not confirm whether your consent was saved" with a "check
+status" button, never "failed" (see [below](#parent-consent-v0148)).
 
 ### CSRF (browser → Next)
 
-The internal assertion protects Next → Fastify only; it does nothing against
-a cross-site request to a **Next** route, which arrives with the user's
-cookies. V0.1.47 cuts over no Next write route, so there is no new browser
-write surface. Current state, for V0.1.48:
+The internal assertion protects Next → Fastify only; it does nothing against a
+cross-site request to a **Next** route, which arrives with the user's cookies.
+V0.1.48 adds ONE shared guard for authenticated JSON writes,
+`lib/security/csrf.ts` (`rejectUnsafeBrowserWrite(request)`), called first in
+the handler, before the body is read or the session verified:
 
-- Supabase session cookies are `SameSite=Lax` (@supabase/ssr default), so
-  cross-site POST/PATCH requests from another site do not carry them in
-  current browsers; top-level GET navigations do, which is why no GET may
-  ever write.
-- Three routes (`/api/parent/password`, `/api/referrals/bind`,
-  `/api/admin/referrals/settings`) validate `Origin` ad hoc; the others,
-  including consent, rely on SameSite only.
-- **Required before the first BFF write cutover:** a shared check on every
-  migrated write route: `Origin` must equal the site origin (or `Sec-Fetch-Site:
-  same-origin`), `Content-Type: application/json` required (a form post cannot
-  send it without a CORS preflight), and no state change on GET.
+| Check | Rule | Refusal |
+|---|---|---|
+| Method | GET/HEAD/OPTIONS pass untouched (no GET may ever write) | — |
+| `Content-Type` | exactly `application/json`, optionally `; charset=utf-8`; nothing else. Form posts and `text/plain` (the types a cross-site page can send without a CORS preflight) are refused | 415 `unsupported_media_type` |
+| `Sec-Fetch-Site` | when present, must be `same-origin`. `same-site` (sibling subdomain), `cross-site`, `none` refused | 403 `csrf_rejected` |
+| `Origin` | **required**; must equal a configured origin exactly (`URL#origin` form: no path, slash, credentials). Missing, `null`, malformed or other → refused. Every current browser sends `Origin` on POST/PUT/PATCH/DELETE, same-origin fetch included, so no legitimate flow lacks it | 403 `csrf_rejected` |
+| Config | `CARTOONA_APP_ORIGIN` (server-only, runtime, comma-separated). Unset outside production: `http://localhost:3000`, `http://127.0.0.1:3000`. Unset (or invalid) in production: fail closed | 503 `csrf_not_configured` |
 
-### First write (backend only)
+- **Never derived from the request.** `Host`, `X-Forwarded-Host`,
+  `X-Forwarded-Proto`, `Forwarded` and `Referer` are not read, so a proxy that
+  forwards a client-supplied host cannot widen the allow-list (tested with a
+  forged `X-Forwarded-Host`). Not `NEXT_PUBLIC_SITE_URL` either: that is baked
+  into the bundle at build time.
+- **Sec-Fetch-Site is a second signal, not the control.** Older browsers omit
+  it; the decision always requires `Origin`.
+- **SameSite=Lax** on the Supabase session cookies stays as defence in depth
+  (it does not cover sibling subdomains or older browsers).
+- **Scope:** used by `POST /api/parent-consent` only (static guard). It is not
+  applied to Fastify or the Next → Fastify hop: those requests are
+  server-to-server, carry no browser headers, and are authorised by the v3
+  assertion. Rejections log `CSRF_REJECTED` with a category, never the Origin.
+- The three older ad-hoc Origin checks (`/api/parent/password`,
+  `/api/referrals/bind`, `/api/admin/referrals/settings`) are unchanged in
+  V0.1.48. They allow a missing Origin and any localhost port; move them to
+  the shared guard when those routes are next touched.
+
+### Layers for a browser write (V0.1.48)
+
+| Hop | Control | Stops |
+|---|---|---|
+| Browser → Next | CSRF guard (JSON, Origin, Sec-Fetch-Site) + the provider-verified session (amr sign-in time, 30 days) | a hostile site using the parent's cookies; a stolen-but-expired session |
+| Next → Fastify | v3 assertion: HMAC, method + path + SHA-256 of the exact body bytes, 60 s, one-time nonce | a forged or altered internal request, a replayed one, a caller naming another user |
+| Fastify → PostgreSQL | restricted login role; EXECUTE on `record_parent_consent_trusted(uuid)` only for consent; profile chosen by `principal.userId` | broad writes even with a compromised backend (no table UPDATE, INSERT, DELETE) |
+
+None substitutes for another: the CSRF guard does not authenticate anything,
+the assertion knows nothing about browsers, and the role grant does not know
+who is calling.
+
+### First write (backend only, V0.1.47)
 
 `PATCH /v1/parent/profile` sets the caller's `parent_profiles.full_name`
 (`lib/parent/profile-name.ts`: NFC, trimmed, whitespace collapsed, null/blank =
@@ -256,7 +287,8 @@ settings card is a TODO), and every existing parent write was either excluded
 (money, requests, media), owned by the provider (password, logout), or read
 elsewhere from Supabase (consent: middleware would loop back to
 `/parent-consent`). The route proves the chain end to end at the backend and
-through `backendWriteJson`; the first Next write cutover is V0.1.48.
+through `backendWriteJson`. The first Next write cutover is consent, V0.1.48
+([below](#parent-consent-v0148)).
 
 ## Failure semantics
 
@@ -272,7 +304,8 @@ through `backendWriteJson`; the first Next write cutover is V0.1.48.
 | Backend rejects an assertion Next just signed (secret mismatch, clock) | 503 `service_unavailable` | 401 | `AUTH_UNAVAILABLE` / `assertion_rejected` |
 | Database down, backend unreachable, secret missing | 503 `service_unavailable` | 503 `service_unavailable` | `AUTH_UNAVAILABLE` |
 
-On the Supabase-backed routes (middleware and the 13 route and page callers),
+On the Supabase-backed routes (middleware and the 12 route and page callers;
+`POST /api/parent-consent` left this list in V0.1.48),
 the existing contract is unchanged: an expired session signs out locally,
 then 401 or a login redirect with `reason=session_expired`. A failed session
 read is a retryable 503 and never a sign-out.
@@ -323,6 +356,51 @@ public header (`getPublicHeaderAccount`).
   internal assertion. That means a request id middleware does not have today,
   plus a role read moved off Supabase. Assessed and deferred (see
   [ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#round-trips-and-remaining-duplicate-auth)).
+
+## Parent consent (V0.1.48)
+
+The first browser-facing write on this chain, and the read every consent
+decision now uses. PostgreSQL is the only consent source.
+
+```
+WRITE  browser ─POST /api/parent-consent─> Next
+         rejectUnsafeBrowserWrite ─> verifyParentCaller (provider, amr, 30 d)
+         ─> backendWriteJson: v3 (body digest, nonce) ─> Fastify POST /v1/parent/consent
+         ─> requireWriteAuth(parent): identity, sessions_not_before, role, nonce
+         ─> record_parent_consent_trusted(principal.userId)   (one-way; never inserts)
+READ   every gate ─> loadParentConsent() ─> v2 ─> GET /v1/parent/consent ─> SELECT
+```
+
+| Caller | Decision | Could not determine |
+|---|---|---|
+| `/parent-consent` page (server) | granted → the form continues at once (draft → `/complete-request`, else `/dashboard`); not granted → form; no profile → notice | retry notice, no form, no redirect |
+| `/complete-request` page | not granted / no profile → `/parent-consent` | retry message (was: redirect to `/parent-consent`) |
+| `POST /api/requests` | 403 as before | 503 `consent_unavailable` |
+| `/login` (browser) | via `GET /api/parent-consent` (BFF) | routed like "not granted" to `/parent-consent`, which re-reads and forwards |
+| `POST /api/dev/parent-auth` (dev only) | `next` from `fetchParentConsent` on the new session | `/parent-consent` |
+| middleware (Edge) | **no consent check** (see below) | — |
+
+- **Middleware.** `middleware.ts` compiles to the Edge runtime (Next 16 keeps
+  Edge for the deprecated `middleware` convention). Signing an assertion needs
+  `node:crypto` and the internal secret; neither belongs in Edge code, and
+  middleware must not connect to PostgreSQL. Its old consent step only ever
+  covered `/complete-request`, which the page checked as well, so the step was
+  removed and the Node-runtime page is the gate.
+- **Outage ≠ not consented.** Every loader result distinguishes `granted`,
+  `not_granted`, `no_profile` and `service_unavailable` / `auth_unavailable`.
+  No gate turns an outage into a redirect, so a consented parent can never
+  bounce between `/parent-consent` and `/complete-request`, and nothing signs
+  anyone out on an outage.
+- **outcomeUnknown.** `grantParentConsent` sends exactly one write. Timeout,
+  reset, 5xx, unreadable 2xx, or 409 (its own nonce was consumed by an earlier
+  delivery) → re-read with a new v2 read assertion; granted → 200 success,
+  else 503 `consent_outcome_unknown`. A network failure between browser and
+  Next is handled the same way in the page. The user's retry is a new request
+  with a new nonce, and safe (one-way grant, first time kept).
+- **Session outcomes** are the V0.1.46 ones: expired / invalidated → 401
+  `PARENT_SESSION_EXPIRED` + bounded local sign-out; provider down → 503
+  `SESSION_CHECK_UNAVAILABLE`, no sign-out; admin, super_admin, deleted →
+  403 `forbidden`; unlinked identity → 403 `identity_not_linked`.
 
 ## Identity mapping and bootstrap
 

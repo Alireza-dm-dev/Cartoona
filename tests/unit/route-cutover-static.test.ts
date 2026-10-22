@@ -34,12 +34,22 @@ const backend = composeService(compose, "backend")
 // (V0.1.41), the auth-chain proof (V0.1.42), the parent orders LIST loader
 // (V0.1.45; GET /api/parent/orders and the /dashboard/orders first page) and
 // the parent ACCOUNT loader (V0.1.46; the welcome-credits and account-summary
-// routes and the public header's name).
+// routes and the public header's name) and the CONSENT loader (V0.1.48; the
+// one consent source, read and write).
 const BACKEND_CLIENT_USERS = [
   "app/api/auth/backend-me/route.ts",
   "app/api/creation-pricing/route.ts",
   "lib/parent/account/backend-account.ts",
+  "lib/parent/consent/backend-consent.ts",
   "lib/parent/orders/backend-orders.ts",
+]
+// V0.1.48: every consent decision goes through the consent loader.
+const CONSENT_SURFACES = [
+  "app/(auth)/complete-request/page.tsx",
+  "app/(auth)/parent-consent/page.tsx",
+  "app/api/dev/parent-auth/route.ts",
+  "app/api/parent-consent/route.ts",
+  "app/api/requests/route.ts",
 ]
 const ORDERS_LIST_SURFACES = ["app/(dashboard)/dashboard/orders/page.tsx", "app/api/parent/orders/route.ts"]
 const ACCOUNT_SURFACES = ["app/api/parent/account-summary/route.ts", "app/api/parent/welcome-credits/route.ts", "lib/auth/public-header-account.ts"]
@@ -49,10 +59,14 @@ const BACKEND_ROUTES = [
   "app/api/parent/account-summary/route.ts",
   "app/api/parent/orders/route.ts",
   "app/api/parent/welcome-credits/route.ts",
+  // V0.1.48: consent (the route itself, and the gates in these two).
+  "app/api/parent-consent/route.ts",
+  "app/api/requests/route.ts",
+  "app/api/dev/parent-auth/route.ts",
 ]
 
 describe("scope: creation pricing, the parent orders LIST and the parent account reads are the only migrated business reads", () => {
-  it("only the pricing route, the auth proof route, the orders-list loader and the account loader use the backend client", () => {
+  it("only the pricing route, the auth proof route and the orders-list, account and consent loaders use the backend client", () => {
     const users = frontendFiles
       .filter((f) => !f.startsWith("lib/backend/"))
       .filter((f) => /@\/lib\/backend\//.test(read(f)))
@@ -69,17 +83,22 @@ describe("scope: creation pricing, the parent orders LIST and the parent account
     expect(users.sort()).toEqual(ACCOUNT_SURFACES)
   })
 
+  it("the consent loader is used by exactly the consent surfaces", () => {
+    const users = frontendFiles.filter((f) => /@\/lib\/parent\/consent\/backend-consent/.test(read(f)))
+    expect(users.sort()).toEqual(CONSENT_SURFACES)
+  })
+
   it("every other route (order detail, final media, gallery, billing, writes...) never reaches the backend", () => {
     const routes = walk("app/api").filter((f) => !BACKEND_ROUTES.includes(f) && f !== "app/api/health/route.ts")
     expect(routes.length).toBeGreaterThan(10)
     expect(routes).toContain("app/api/parent/orders/[orderId]/final-media/route.ts")
     // Storage-backed and write routes in particular:
-    for (const r of ["app/api/parent/gallery/route.ts", "app/api/requests/route.ts", "app/api/candy-purchases/route.ts", "app/api/referrals/route.ts", "app/api/parent/password/route.ts"]) {
+    for (const r of ["app/api/parent/gallery/route.ts", "app/api/candy-purchases/route.ts", "app/api/referrals/route.ts", "app/api/parent/password/route.ts", "app/api/parent/complete-signup/route.ts"]) {
       expect(routes, r).toContain(r)
     }
-    for (const route of routes) expect(read(route), route).not.toMatch(/@\/lib\/backend|BACKEND_INTERNAL_URL|backend-orders|backend-account|backend-caller/)
-    for (const page of walk("app").filter((f) => f.endsWith("page.tsx") && !ORDERS_LIST_SURFACES.includes(f))) {
-      expect(read(page), page).not.toMatch(/@\/lib\/backend|backend-orders|backend-account|backend-caller/)
+    for (const route of routes) expect(read(route), route).not.toMatch(/@\/lib\/backend|BACKEND_INTERNAL_URL|backend-orders|backend-account|backend-consent|backend-caller/)
+    for (const page of walk("app").filter((f) => f.endsWith("page.tsx") && !ORDERS_LIST_SURFACES.includes(f) && !CONSENT_SURFACES.includes(f))) {
+      expect(read(page), page).not.toMatch(/@\/lib\/backend|backend-orders|backend-account|backend-consent|backend-caller/)
     }
   })
 

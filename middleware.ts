@@ -273,24 +273,11 @@ export async function middleware(request: NextRequest) {
       return redirectExpiredParentSession()
     }
 
-    // 6. Consent check (complete-request only)
-    if (isCompleteRequestPath) {
-      const { data: profileRow, error: profileError } = await supabase
-        .from('parent_profiles')
-        .select('consent_granted')
-        .eq('user_id', user.id)
-        .maybeSingle()
-
-      if (profileError) {
-        return redirectCookies(new URL('/parent-consent', request.url), supabaseResponse)
-      }
-
-      if (!profileRow || !profileRow.consent_granted) {
-        return redirectCookies(new URL('/parent-consent', request.url), supabaseResponse)
-      }
-    }
-
-    // 7. Allow
+    // 6. Allow. Consent is NOT checked here (V0.1.48): it lives in PostgreSQL
+    //    and is read through the backend with a signed assertion (node:crypto,
+    //    the internal secret); this middleware runs in the Edge runtime and
+    //    must hold neither. The /complete-request page (Node runtime) is the
+    //    gate, as it already was in addition to the old check here.
     return supabaseResponse
   }
 

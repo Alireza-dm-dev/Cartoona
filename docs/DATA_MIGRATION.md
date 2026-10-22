@@ -424,8 +424,10 @@ read-only on the source. Today any mode other than `local` throws
   and re-created; it is never patched in place.
 - **After a read-only cutover (V0.1.45, V0.1.46):** redeploy the previous release.
   There is nothing to reconcile.
-- **After the first write route moves:** a rollback then needs a reverse sync,
-  which is out of scope here. That route's cutover must define it.
+- **After the first write route moves (consent, V0.1.48):** consent changes
+  made after the cutover exist only in PostgreSQL. The rollback boundary and
+  the reverse-sync step are defined in
+  [ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#rollback-boundary-the-first-postgresql-only-write).
 
 ## Remaining blockers
 
@@ -475,3 +477,41 @@ Drift after V0.1.47, per domain (nothing below is deployed):
 
 The read/write split (blocker 5) is therefore **not** solved by V0.1.47. The
 final copy at the write freeze, or moving those writes, is still required.
+
+### V0.1.48: consent cutover, re-audit of 0014
+
+The pinned set is now 0001–0014 (`EXPECTED_TARGET_MIGRATIONS`). **0014** adds
+one function (`record_parent_consent_trusted`) and its EXECUTE grant: no table
+and no column, so the mapping is unchanged. `parent_profiles.consent_granted`
+and `consent_granted_at` were already copied verbatim and still are; copied
+values are never regenerated or defaulted.
+
+Proven (`consent-cutover-db.test.ts`, new fixture
+`tests/fixtures/data-copy/parent-consent-extra.sql` with two un-consented
+parents and one grant time with microseconds): source `false`/NULL → target
+`false`/NULL; source `true` → target `true` with the identical timestamp
+(`2026-08-05 09:05:00.123456+00`); every copied row's pair equals the source.
+The CLI (`npm run db:copy`) also completed against a 0001–0014 target in the
+Docker proof.
+
+One more Supabase migration exists since V0.1.48,
+`20261022100000_request_rpc_consent_gate_moved.sql`. It changes only a
+function body (not copied: functions come from the target's own migrations),
+so the source schema shape the tool reads is unchanged.
+
+Drift after V0.1.48 (nothing below is deployed):
+
+| Domain | Reads | Writes | State |
+|---|---|---|---|
+| **consent** | **PostgreSQL** (every gate) | **PostgreSQL** (`POST /api/parent-consent`) | **consistent in PostgreSQL**. Supabase's column is no longer read or written by the app (its value freezes at the cutover) |
+| profile creation | — | Supabase (signup completion, dev signup) | a parent who signs up after the copy has no PostgreSQL identity/profile: every PostgreSQL-backed route answers 403 `identity_not_linked` for them, consent included (blocker 6) |
+| request submission | consent gate PostgreSQL; the rest Supabase | Supabase | mixed by design (temporary) |
+| candy balance, welcome credits, orders list | PostgreSQL | Supabase | **drifts** (blocker 5) |
+| everything else | Supabase | Supabase | consistent (old path) |
+
+Blocker 6 (new wording of an existing gap): identity and profile provisioning
+for NEW accounts. The copy links every account that exists at copy time; an
+account created afterwards exists only in Supabase until signup itself moves
+(or a provisioning step links it). Consent cannot be granted for such an
+account in V0.1.48 (403), whereas the old route created the profile on the
+spot.

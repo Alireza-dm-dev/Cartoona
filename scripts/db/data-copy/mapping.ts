@@ -1,13 +1,18 @@
 /**
  * Canonical Supabase -> plain PostgreSQL data mapping (V0.1.44).
  *
- * The plain schema (database/migrations 0001-0013) is column-identical to the
+ * The plain schema (database/migrations 0001-0014) is column-identical to the
  * migrated Supabase `public` schema for every domain table (proven by the
  * parity suite in tests/unit/plain-postgres-db.test.ts), except:
  *   - users.sessions_not_before   target-only (V0.1.43), always NULL on copy
  *   - user_identities             target-only, derived from users.id
  *   - users.id -> auth.users FK   source-only, not carried over
  *   - internal_write_nonces       target-only (V0.1.47), never copied, starts empty
+ *
+ * 0014 (V0.1.48) adds only a function (record_parent_consent_trusted) and its
+ * EXECUTE grant: no table or column, so nothing here changed. Consent
+ * (parent_profiles.consent_granted / consent_granted_at) was already copied
+ * verbatim and stays so: copied values are never regenerated.
  *
  * Every application-owned table appears exactly once below. The static suite
  * (tests/unit/data-copy-static.test.ts) fails when a table is added to the
@@ -203,6 +208,7 @@ export const EXPECTED_TARGET_MIGRATIONS = [
   "0011_users_sessions_not_before",
   "0012_internal_write_nonces",
   "0013_parent_profile_name_update_grant",
+  "0014_parent_consent_write",
 ]
 
 export const IDENTITY_PROVIDER = "supabase"

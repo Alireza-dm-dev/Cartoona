@@ -3,7 +3,9 @@ import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { createAdminSupabaseClient } from "@/lib/supabase/admin"
 import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
-import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
+import { createParentSessionFailureResponse, SESSION_CHECK_UNAVAILABLE_BODY } from "@/lib/auth/expired-parent-session-response"
+import { endParentSession } from "@/lib/auth/end-parent-session"
+import { loadParentConsent, type ParentConsentFailure } from "@/lib/parent/consent/backend-consent"
 import { parseAndValidateDraft } from "@/lib/requests/request-submission"
 import { mapRequestRpcError } from "@/lib/requests/request-rpc-error"
 import { toSubmissionSuccess } from "@/lib/requests/submission-response"
@@ -34,6 +36,34 @@ const MULTIPART_OVERHEAD_ALLOWANCE = 256 * 1024
 const MAX_REQUEST_BODY_SIZE = MAX_FILE_SIZE + MULTIPART_OVERHEAD_ALLOWANCE
 
 const NO_STORE = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }
+
+/**
+ * The consent gate could not say "granted". An outage is a retryable 503,
+ * never "consent required": "could not determine" is not "not consented".
+ */
+async function consentGateFailure(reason: ParentConsentFailure): Promise<NextResponse> {
+  switch (reason) {
+    case "unauthenticated":
+      return NextResponse.json({ error: "لطفاً ابتدا وارد حساب خود شوید" }, { status: 401 })
+    case "session_expired":
+    case "session_invalidated":
+      await endParentSession()
+      return NextResponse.json(
+        { error: "برای ادامه دوباره وارد حساب شوید.", code: "PARENT_SESSION_EXPIRED" },
+        { status: 401, headers: NO_STORE },
+      )
+    case "identity_not_linked":
+    case "forbidden":
+      return NextResponse.json({ error: "فقط حساب‌های والد می‌توانند درخواست ثبت کنند" }, { status: 403 })
+    case "auth_unavailable":
+      return NextResponse.json(SESSION_CHECK_UNAVAILABLE_BODY, { status: 503, headers: { ...NO_STORE, "Retry-After": "2" } })
+    case "service_unavailable":
+      return NextResponse.json(
+        { error: "بررسی رضایت والدین موقتاً ممکن نیست. لطفاً چند لحظه بعد دوباره تلاش کنید.", code: "consent_unavailable" },
+        { status: 503, headers: { ...NO_STORE, "Retry-After": "2" } },
+      )
+  }
+}
 
 export const POST = withObservability("POST /api/requests", handlePost)
 
@@ -122,18 +152,28 @@ async function handlePost(request: Request) {
     return createParentSessionFailureResponse(supabase, lifetime)
   }
 
+  // Consent gate (V0.1.48): PostgreSQL, through the backend - the same source
+  // the consent write uses. TEMPORARY MIXED FLOW: everything after this gate
+  // (profile id, storage, the create_parent_request_trusted RPC) is still
+  // Supabase; request submission is NOT migrated. The RPC no longer re-checks
+  // Supabase's stale consent column (supabase/migrations/20261022100000).
+  const consent = await loadParentConsent()
+  if (!consent.ok) return consentGateFailure(consent.reason)
+  if (consent.status === "no_profile") {
+    return NextResponse.json({ error: "پروفایل والد یافت نشد. لطفاً ابتدا رضایت خود را ثبت کنید" }, { status: 403 })
+  }
+  if (consent.status !== "granted") {
+    return NextResponse.json({ error: "لطفاً ابتدا رضایت والدین را ثبت کنید" }, { status: 403 })
+  }
+
   const { data: parentProfile } = await supabase
     .from("parent_profiles")
-    .select("id, consent_granted")
+    .select("id")
     .eq("user_id", user.id)
     .maybeSingle()
 
   if (!parentProfile) {
     return NextResponse.json({ error: "پروفایل والد یافت نشد. لطفاً ابتدا رضایت خود را ثبت کنید" }, { status: 403 })
-  }
-
-  if (!parentProfile.consent_granted) {
-    return NextResponse.json({ error: "لطفاً ابتدا رضایت والدین را ثبت کنید" }, { status: 403 })
   }
 
   let formData: FormData

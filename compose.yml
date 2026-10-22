@@ -54,6 +54,11 @@ services:
       # backend (V0.1.42). The ONE secret the two containers share; never a build
       # arg, never NEXT_PUBLIC_*. Empty => authenticated backend calls answer 503.
       CARTOONA_INTERNAL_AUTH_SECRET: ${CARTOONA_INTERNAL_AUTH_SECRET:-}
+      # The public origin the browser uses (V0.1.48): the browser -> Next CSRF
+      # guard (lib/security/csrf.ts) accepts authenticated JSON writes only with
+      # this exact Origin. Runtime, server-only (not NEXT_PUBLIC_*). With
+      # NODE_ENV=production an empty value refuses every guarded write.
+      CARTOONA_APP_ORIGIN: ${CARTOONA_APP_ORIGIN:-http://localhost:3000}
       # `env_file` hands the frontend the WHOLE .env.docker, which also holds the
       # database owner password and the backend's login role. `environment`
       # wins over `env_file`, so each is blanked here: the frontend process never
@@ -85,6 +90,11 @@ services:
     # No `depends_on: backend`, on purpose: the web process and every page that
     # does not use the backend must start and stay healthy while it is down.
     # /api/creation-pricing answers its own safe 503 until the backend is ready.
+    # Re-checked for the first browser write (V0.1.48, consent): during the
+    # few seconds the backend is still starting, POST /api/parent-consent
+    # answers 503 (the UI shows "could not confirm" + "check status", never a
+    # false success, never a sign-out, never a re-send) - so still no
+    # depends_on; see docs/ROUTE_CUTOVER.md "V0.1.48".
     # Logs go to stdout/stderr (the V0.1.30 JSON logger) and are read with
     # `docker compose logs`; nothing is written to a log file in the container.
     logging:

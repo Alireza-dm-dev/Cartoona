@@ -94,7 +94,8 @@ describe("Fastify: writes go through requireWriteAuth, reads cannot consume a no
     // No write registered any other way (route(), or a write without that preHandler).
     const anyWrite = backendRoutes.flatMap((f) => code(f).match(/app\.(post|put|patch|delete|route)\(/g) ?? [])
     expect(anyWrite).toHaveLength(writes.length)
-    expect(writes).toEqual(["patch PROFILE_PATH"])
+    // V0.1.47 proof write + V0.1.48 consent (the first product write).
+    expect(writes.sort()).toEqual(["patch PROFILE_PATH", "post CONSENT_PATH"])
   })
 
   it("the raw JSON bytes are kept for the digest, parsed by Fastify's safe default parser", () => {
@@ -122,16 +123,17 @@ describe("the proof write PATCH /v1/parent/profile", () => {
   })
 })
 
-describe("no Next.js write is cut over yet (V0.1.47 is backend-only)", () => {
-  it("backendWriteJson has no caller outside the client module", () => {
+describe("exactly one Next.js write is cut over: consent (V0.1.48)", () => {
+  it("backendWriteJson has exactly one caller outside the client module: the consent loader", () => {
     const callers = frontendFiles.filter((f) => f !== "lib/backend/client.ts" && /backendWriteJson/.test(code(f)))
-    expect(callers).toEqual([])
+    expect(callers).toEqual(["lib/parent/consent/backend-consent.ts"])
   })
 
-  it("no Next write handler imports the backend client or the shared parent backend caller", () => {
+  it("no other Next write handler imports the backend client, the parent backend caller or the consent writer", () => {
     const handlers = walk("app/api").filter((f) => /export (const|async function|function) (POST|PUT|PATCH|DELETE)\b/.test(read(f)))
     expect(handlers.length).toBeGreaterThan(15)
-    for (const f of handlers) expect(code(f), f).not.toMatch(/@\/lib\/backend\/client|@\/lib\/parent\/backend-caller|signWriteAssertion/)
+    const writers = handlers.filter((f) => /@\/lib\/backend\/client|@\/lib\/parent\/backend-caller|signWriteAssertion|grantParentConsent/.test(code(f)))
+    expect(writers).toEqual(["app/api/parent-consent/route.ts"])
   })
 
   it("the browser never signs: assertion signing stays in server-only modules", () => {

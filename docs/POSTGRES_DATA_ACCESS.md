@@ -124,6 +124,8 @@ bad id throws `RepositoryInputError`.
 | `getParentProfileDisplay(db, { userId })` | user (V0.1.46) | `parent_profiles.full_name` read of the public header | `{ fullName }` (null when unnamed) or null (no profile). One query on `user_id`; no id, consent or referral code. Served by `GET /v1/parent/profile` |
 | `getActiveCreationPrices(db)` | public | `GET /api/creation-pricing` | `{ ok, prices }` or `invalid_catalog` (same rejection rules as the route) |
 | `resolveUserIdentity(db, { provider, providerSubject })` | verified external identity (V0.1.42) | new: `user_identities` join `users` | `{ userId, role, deleted, sessionsNotBefore }` or null (identity not linked). One query; `sessionsNotBefore` (V0.1.43) is epoch ms or null. Read-only; never creates a user |
+| `getParentConsentState(db, { userId })` | user (V0.1.48) | every Supabase `parent_profiles.consent_granted` read (middleware, `/login`, `/complete-request`, `POST /api/requests`, dev route) | `{ consentGranted, consentGrantedAt }` or null (no profile). Only the two consent columns. Served by `GET /v1/parent/consent` |
+| `recordParentConsent(db, { userId })` | user (V0.1.48) | the consent update/insert in `ensureParentProfile` (`grant`) | the stored state after `record_parent_consent_trusted($1)`, or null (no profile; nothing written). Served by `POST /v1/parent/consent` |
 | `getUserById(db, { userId })` | user | role lookup in `ParentRequestContext` | `{ id, role, deleted }` or null |
 | `findParentProfileIdByUserId(db, { userId })` | user | profile lookup in `ParentRequestContext` | profile id or null |
 
@@ -221,11 +223,19 @@ narrow as PostgreSQL allows:
 | `0012_internal_write_nonces` | `EXECUTE` on `consume_internal_write_nonce(text, timestamptz, text)` only. **Nothing** on `internal_write_nonces` itself (no SELECT, INSERT, UPDATE, DELETE, TRUNCATE). The function is `SECURITY DEFINER` with an empty `search_path`, like the `*_trusted` functions. | `requireWriteAuth` (backend), via `lib/repositories/write-nonces.ts` |
 | `0013_parent_profile_name_update_grant` | `UPDATE (full_name, updated_at) ON parent_profiles`: column-level. No other column (not `user_id`, consent, `referral_code`), no table-wide UPDATE, no INSERT, no DELETE. | `updateParentProfileName` (`WHERE user_id = $1 RETURNING full_name`) |
 
+| `0014_parent_consent_write` (V0.1.48) | `EXECUTE` on `record_parent_consent_trusted(uuid)` only. **No** new table privilege: the role still cannot UPDATE `consent_granted` / `consent_granted_at` (0013 covers two other columns), INSERT or DELETE profiles. The function is `SECURITY DEFINER`, empty `search_path`; it only sets `false → true` (+ time, once) on a non-deleted parent's own row and never inserts. | `recordParentConsent` (`SELECT … FROM record_parent_consent_trusted($1)`) |
+
+Why a function and not a column grant for consent: a column grant on
+`consent_granted` would also let the role set it to **false** (revocation does
+not exist in the product) or rewrite `consent_granted_at`. The function makes
+"one-way, time stamped once" a database rule, not a backend convention.
+
 The `parent_profiles` CHECK constraint (NULL or non-blank) and the
 referral-code trigger still apply to the app role. A financially sensitive or
 multi-row write will go through a transactional `*_trusted` function instead
 of a direct UPDATE. The privileges are proven against a real login role in
-`tests/unit/write-security-db.test.ts`.
+`tests/unit/write-security-db.test.ts` and (consent, V0.1.48)
+`tests/unit/consent-cutover-db.test.ts`.
 
 ## Tests
 

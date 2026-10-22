@@ -16,6 +16,11 @@ const m = vi.hoisted(() => ({
 }))
 
 vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient: m.createServerClient }))
+// V0.1.48: the consent gate reads PostgreSQL through the backend; these tests
+// cover the (still Supabase) submission path behind it.
+vi.mock("@/lib/parent/consent/backend-consent", () => ({
+  loadParentConsent: async () => ({ ok: true, status: "granted", consentGrantedAt: "2026-01-01T00:00:00.000Z" }),
+}))
 vi.mock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => ({ rpc: m.rpc }) }))
 vi.mock("@/lib/requests/resolve-character", () => ({
   resolveCharacterId: async () => ({ ok: true, characterId: null }),
@@ -45,7 +50,7 @@ function healthyClient() {
     }),
     from: (table: string) =>
       table === "users" ? chain({ role: "parent" })
-      : table === "parent_profiles" ? chain({ id: "p1", consent_granted: true })
+      : table === "parent_profiles" ? chain({ id: "p1" })
       : chain(null),
     storage: { from: () => ({ upload: m.upload, remove: async () => ({}) }) },
   }

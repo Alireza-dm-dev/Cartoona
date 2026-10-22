@@ -27,7 +27,7 @@ interface FakeOptions {
 
 function makeClient(opts: FakeOptions = {}) {
   const rows: Row[] = opts.rows ? [...opts.rows] : []
-  const calls = { selects: 0, inserts: 0, updates: 0 }
+  const calls = { selects: 0, inserts: 0, updates: 0, insertPayloads: [] as Record<string, unknown>[] }
 
   const client = {
     from(table: string) {
@@ -49,7 +49,8 @@ function makeClient(opts: FakeOptions = {}) {
           }
         },
 
-        insert(values: Omit<Row, "id">) {
+        insert(values: Pick<Row, "user_id" | "full_name">) {
+          calls.insertPayloads.push({ ...values })
           return {
             select() {
               return {
@@ -64,7 +65,8 @@ function makeClient(opts: FakeOptions = {}) {
                   if (rows.some((r) => r.user_id === values.user_id)) {
                     return { data: null, error: { code: "23505", message: "duplicate key" } }
                   }
-                  const row: Row = { id: `profile-${rows.length + 1}`, ...values }
+                  // The column defaults, as in the database.
+                  const row: Row = { id: `profile-${rows.length + 1}`, consent_granted: false, consent_granted_at: null, ...values }
                   rows.push(row)
                   return { data: { id: row.id }, error: null }
                 },
@@ -101,7 +103,6 @@ describe("production signup creates exactly one parent profile", () => {
     const result = await ensureParentProfile(client, {
       userId: USER,
       fullName: NAME,
-      consent: "preserve",
     })
 
     expect(result).toEqual({ ok: true, created: true, profileId: "profile-1" })
@@ -111,7 +112,7 @@ describe("production signup creates exactly one parent profile", () => {
 
   it("starts a new profile un-consented", async () => {
     const { client, rows } = makeClient()
-    await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "preserve" })
+    await ensureParentProfile(client, { userId: USER, fullName: NAME })
 
     expect(rows[0].consent_granted).toBe(false)
     expect(rows[0].consent_granted_at).toBeNull()
@@ -119,7 +120,7 @@ describe("production signup creates exactly one parent profile", () => {
 
   it("trims the stored name", async () => {
     const { client, rows } = makeClient()
-    await ensureParentProfile(client, { userId: USER, fullName: "  مریم احمدی  ", consent: "preserve" })
+    await ensureParentProfile(client, { userId: USER, fullName: "  مریم احمدی  " })
     expect(rows[0].full_name).toBe(NAME)
   })
 })
@@ -128,9 +129,9 @@ describe("idempotency", () => {
   it("a retry does not create a second profile", async () => {
     const { client, rows } = makeClient()
 
-    const first = await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "preserve" })
-    const second = await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "preserve" })
-    const third = await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "preserve" })
+    const first = await ensureParentProfile(client, { userId: USER, fullName: NAME })
+    const second = await ensureParentProfile(client, { userId: USER, fullName: NAME })
+    const third = await ensureParentProfile(client, { userId: USER, fullName: NAME })
 
     expect(first).toMatchObject({ ok: true, created: true })
     expect(second).toMatchObject({ ok: true, created: false, profileId: "profile-1" })
@@ -146,7 +147,7 @@ describe("idempotency", () => {
       }],
     })
 
-    const result = await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "preserve" })
+    const result = await ensureParentProfile(client, { userId: USER, fullName: NAME })
 
     expect(result).toEqual({ ok: true, created: false, profileId: "existing" })
     expect(rows).toHaveLength(1)
@@ -163,7 +164,7 @@ describe("idempotency", () => {
       },
     })
 
-    const result = await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "preserve" })
+    const result = await ensureParentProfile(client, { userId: USER, fullName: NAME })
 
     expect(result).toEqual({ ok: true, created: false, profileId: "winner" })
     expect(rows).toHaveLength(1)
@@ -171,62 +172,32 @@ describe("idempotency", () => {
 
   it("does not duplicate across different users", async () => {
     const { client, rows } = makeClient()
-    await ensureParentProfile(client, { userId: "user-a", fullName: NAME, consent: "preserve" })
-    await ensureParentProfile(client, { userId: "user-b", fullName: NAME, consent: "preserve" })
+    await ensureParentProfile(client, { userId: "user-a", fullName: NAME })
+    await ensureParentProfile(client, { userId: "user-b", fullName: NAME })
     expect(rows).toHaveLength(2)
   })
 })
 
-describe("consent intent", () => {
-  it("grant records consent on a new profile", async () => {
-    const { client, rows } = makeClient()
-    await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "grant" })
-
-    expect(rows[0].consent_granted).toBe(true)
-    expect(rows[0].consent_granted_at).not.toBeNull()
+describe("consent is never written to Supabase (V0.1.48)", () => {
+  it("the insert carries only user_id and full_name; the row starts un-consented by default", async () => {
+    const { client, rows, calls } = makeClient()
+    await ensureParentProfile(client, { userId: USER, fullName: NAME })
+    expect(calls.insertPayloads).toEqual([{ user_id: USER, full_name: NAME }])
+    expect(rows[0].consent_granted).toBe(false)
   })
 
-  it("grant moves an existing un-consented profile forward", async () => {
-    const { client, rows } = makeClient({
-      rows: [{
-        id: "existing", user_id: USER, full_name: NAME,
-        consent_granted: false, consent_granted_at: null,
-      }],
-    })
-
-    await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "grant" })
-
-    expect(rows[0].consent_granted).toBe(true)
-    expect(rows).toHaveLength(1)
-  })
-
-  it("preserve never revokes consent already granted", async () => {
-    const { client, rows, calls } = makeClient({
-      rows: [{
-        id: "existing", user_id: USER, full_name: NAME,
-        consent_granted: true, consent_granted_at: "2026-01-01T00:00:00.000Z",
-      }],
-    })
-
-    await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "preserve" })
-
-    expect(rows[0].consent_granted).toBe(true)
-    expect(rows[0].consent_granted_at).toBe("2026-01-01T00:00:00.000Z")
-    expect(calls.updates).toBe(0)
-  })
-
-  it("grant on an already-consented profile writes nothing", async () => {
-    const { client, calls } = makeClient({
-      rows: [{
-        id: "existing", user_id: USER, full_name: NAME,
-        consent_granted: true, consent_granted_at: "2026-01-01T00:00:00.000Z",
-      }],
-    })
-
-    const result = await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "grant" })
-
-    expect(result).toMatchObject({ ok: true, created: false })
-    expect(calls.updates).toBe(0)
+  it("an existing profile is never updated, whatever its consent", async () => {
+    for (const granted of [true, false]) {
+      const { client, rows, calls } = makeClient({
+        rows: [{
+          id: "existing", user_id: USER, full_name: NAME,
+          consent_granted: granted, consent_granted_at: granted ? "2026-01-01T00:00:00.000Z" : null,
+        }],
+      })
+      await ensureParentProfile(client, { userId: USER, fullName: NAME })
+      expect(calls.updates).toBe(0)
+      expect(rows[0].consent_granted).toBe(granted)
+    }
   })
 })
 
@@ -234,7 +205,7 @@ describe("failure handling", () => {
   it("reports a failed read rather than inserting blindly", async () => {
     const { client, rows } = makeClient({ failSelect: true })
 
-    const result = await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "preserve" })
+    const result = await ensureParentProfile(client, { userId: USER, fullName: NAME })
 
     expect(result).toEqual({ ok: false, reason: "write_failed" })
     expect(rows).toHaveLength(0)
@@ -243,24 +214,10 @@ describe("failure handling", () => {
   it("reports a failed insert", async () => {
     const { client, rows } = makeClient({ failInsert: true })
 
-    const result = await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "preserve" })
+    const result = await ensureParentProfile(client, { userId: USER, fullName: NAME })
 
     expect(result).toEqual({ ok: false, reason: "write_failed" })
     expect(rows).toHaveLength(0)
-  })
-
-  it("reports a failed consent update", async () => {
-    const { client } = makeClient({
-      failUpdate: true,
-      rows: [{
-        id: "existing", user_id: USER, full_name: NAME,
-        consent_granted: false, consent_granted_at: null,
-      }],
-    })
-
-    const result = await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "grant" })
-
-    expect(result).toEqual({ ok: false, reason: "write_failed" })
   })
 
   it("creates a profile with no name at all", async () => {
@@ -269,7 +226,7 @@ describe("failure handling", () => {
     // placeholder the parent never chose.
     const { client, rows } = makeClient()
 
-    const result = await ensureParentProfile(client, { userId: USER, consent: "preserve" })
+    const result = await ensureParentProfile(client, { userId: USER })
 
     expect(result.ok).toBe(true)
     expect(rows).toHaveLength(1)
@@ -282,8 +239,7 @@ describe("failure handling", () => {
       const { client, rows } = makeClient()
       const result = await ensureParentProfile(client, {
         userId: USER,
-        fullName: name,
-        consent: "preserve",
+        fullName: name
       })
       expect(result.ok).toBe(true)
       expect(rows[0].full_name).toBeNull()
@@ -291,7 +247,7 @@ describe("failure handling", () => {
   })
 
   it("keeps an existing name when a later call passes none", async () => {
-    // An OTP login or a consent grant must never blank out the name of a
+    // A repeated signup completion must never blank out the name of a
     // parent who signed up back when signup collected one.
     const { client, rows } = makeClient({
       rows: [{
@@ -300,22 +256,21 @@ describe("failure handling", () => {
       }],
     })
 
-    const result = await ensureParentProfile(client, { userId: USER, consent: "grant" })
+    const result = await ensureParentProfile(client, { userId: USER })
 
     expect(result).toEqual({ ok: true, created: false, profileId: "existing" })
     expect(rows[0].full_name).toBe(NAME)
-    expect(rows[0].consent_granted).toBe(true)
   })
 
   it("still stores a name when one is given", async () => {
     const { client, rows } = makeClient()
-    await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "preserve" })
+    await ensureParentProfile(client, { userId: USER, fullName: NAME })
     expect(rows[0].full_name).toBe(NAME)
   })
 
   it("never leaks a database message in its result", async () => {
     const { client } = makeClient({ failInsert: true })
-    const result = await ensureParentProfile(client, { userId: USER, fullName: NAME, consent: "preserve" })
+    const result = await ensureParentProfile(client, { userId: USER, fullName: NAME })
     expect(JSON.stringify(result)).not.toContain("boom")
   })
 })

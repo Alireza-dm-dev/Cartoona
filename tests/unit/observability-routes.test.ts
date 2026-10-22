@@ -19,6 +19,11 @@ const m = vi.hoisted(() => ({
 }))
 
 vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient: m.serverClient }))
+// V0.1.48: the consent gate reads PostgreSQL through the backend; these tests
+// cover the (still Supabase) submission path behind it.
+vi.mock("@/lib/parent/consent/backend-consent", () => ({
+  loadParentConsent: async () => ({ ok: true, status: "granted", consentGrantedAt: "2026-01-01T00:00:00.000Z" }),
+}))
 vi.mock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => ({ rpc: m.rpc }) }))
 vi.mock("@/lib/requests/resolve-character", () => ({ resolveCharacterId: async () => ({ ok: true, characterId: null }) }))
 vi.mock("@/lib/parent/gallery/source-asset", async (orig) => ({
@@ -51,7 +56,7 @@ function healthyClient() {
   return {
     auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), getSession: async () => getSessionResult("valid", "u1"), signOut: vi.fn() },
     rpc: async () => ({ data: [{ is_valid: true, session_started_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-31T00:00:00Z" }], error: null }),
-    from: (t: string) => t === "users" ? chain({ role: "parent" }) : t === "parent_profiles" ? chain({ id: "p1", consent_granted: true }) : chain(null),
+    from: (t: string) => t === "users" ? chain({ role: "parent" }) : t === "parent_profiles" ? chain({ id: "p1" }) : chain(null),
     storage: { from: () => ({ upload: m.upload, copy: m.copy, remove: async () => ({ error: null }) }) },
   }
 }
