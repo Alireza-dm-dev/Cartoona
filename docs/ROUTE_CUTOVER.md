@@ -1020,20 +1020,158 @@ fails closed without it), and the Supabase migration `20261022100000` must
 ship with the app. Blocker 6 (accounts created after the copy have no
 PostgreSQL identity/profile) now also means such parents cannot grant consent.
 
+## V0.1.49: PostgreSQL identity provisioning + shared CSRF adoption
+
+Closes blocker 6: an account created in Supabase AFTER the V0.1.44 copy had
+no PostgreSQL user, identity or profile, so every migrated route (consent,
+account reads, orders) answered `identity_not_linked`. Supabase Auth itself
+is NOT replaced. No financial, request, media or order write moved.
+
+### Account-creation audit (before any change)
+
+| step | where | writes | transactional with |
+|---|---|---|---|
+| phone OTP signup | browser `signInWithOtp({ phone })` (`shouldCreateUser` default) → `verifyOtp` | Supabase Auth: `auth.users` (phone, no email, **no password**), session | - |
+| app user | Supabase trigger `on_auth_user_created` → `handle_new_user()` | `public.users(id = auth uid, email = NEW.email (NULL for phone), role 'parent')` | the `auth.users` insert (inside Supabase Auth) |
+| parent profile | `POST /api/parent/complete-signup` → `ensureParentProfile` (user client, RLS insert-own) | `parent_profiles(user_id)`, full_name NULL, consent default false | its own statement |
+| referral code | Supabase `BEFORE INSERT` trigger `assign_parent_referral_code` | `parent_profiles.referral_code` (server-generated; any supplied value ignored) | the profile insert |
+| wallet | `AFTER INSERT` trigger `ensure_parent_candy_wallet` | `candy_wallets(parent_id, 0)` `ON CONFLICT DO NOTHING` | the profile insert |
+| welcome credits | `AFTER INSERT` trigger `grant_parent_welcome_image_credits` | `parent_welcome_credits(3, 0)` `ON CONFLICT DO NOTHING` (parent, not deleted) | the profile insert |
+| dev signup | `/api/dev/parent-auth` `signup_verify_code` | admin `createUser` (dev email, no password) → trigger `public.users`; admin profile insert (same triggers); magic-link session | none; profile failure → best-effort `deleteUser` |
+| password | never at signup; later `POST /api/parent/password` → `supabase.auth.updateUser` | Supabase Auth only | - |
+| role | always `parent` (trigger); admins are promoted by hand | - | - |
+| referral binding | later, `POST /api/referrals/bind` → Supabase RPC | - | - |
+| auth callback | none (OTP and magic link need no redirect callback) | - | - |
+
+Retries: `ensureParentProfile` is idempotent (read, insert, a 23505 re-read).
+Auth succeeded + profile failed: the auth user and `public.users` exist, no
+profile; the OTP is consumed; login works but (since V0.1.48) consent showed
+"profile not found". All of this is Supabase-only; nothing reached PostgreSQL.
+
+### Design
+
+One canonical operation, one transaction: `provision_supabase_parent_identity(subject)`
+(migration 0015) behind `POST /v1/auth/provision` (`requireProvisioningAuth`),
+called by the Next bootstrap `POST /api/parent/account-setup`. Semantics,
+conflict table, outcomes and privilege: [AUTH_ARCHITECTURE.md](AUTH_ARCHITECTURE.md#identity-mapping-and-bootstrap),
+[POSTGRES_DATA_ACCESS.md](POSTGRES_DATA_ACCESS.md). It relies on the
+existing profile triggers (the same ones that made every copied row) instead
+of re-implementing wallet / credits / referral code.
+
+Where it runs, and why there: one explicit bootstrap after Supabase sign-in,
+before any migrated parent page - `/signup` (after the code, and after the
+Supabase-side complete-signup, which stays because requests and purchases
+still write to Supabase), `/login` (every successful sign-in: one extra
+round trip, ~6 ms locally for an existing account), and the retry card on
+`/parent-consent`. Rejected alternatives: provisioning inside GET reads
+(hidden writes on reads, every read would need a write assertion) and inside
+middleware (Edge runtime cannot sign). Migrated routes keep failing safely
+without it (403 `identity_not_linked`, the setup card).
+
+`ensureParentProfile` is NOT replaced: post-cutover users therefore have a
+Supabase profile AND a PostgreSQL profile with different ids, referral codes
+and wallets (blocker 5, the read/write split; see "Next").
+
+### Shared CSRF adoption
+
+| route | method | old check | class | now |
+|---|---|---|---|---|
+| `/api/parent/password` | POST | `startsWith("application/json")`; Origin optional (missing = allowed), any localhost port, `NEXT_PUBLIC_SITE_URL` | A: same-origin browser `fetch`, session cookie | `rejectUnsafeBrowserWrite` first |
+| `/api/referrals/bind` | POST | same | A | same |
+| `/api/admin/referrals/settings` | PATCH | same (after the length check) | A: admin browser `fetch` | same |
+| `/api/parent/account-setup` (new) | POST | - | A | same |
+
+No class B route: all four are cookie-authenticated browser writes; none is
+server-to-server. Preserved: 415 / 403 messages (identical Persian text, now
+with a `code`), JSON handling, size limits, role checks, Supabase Auth for
+the password (no password reaches Fastify or PostgreSQL; the route logs
+nothing), referral writes on Supabase. Newly refused: missing Origin, any
+localhost port other than the configured ones, `Sec-Fetch-Site` other than
+same-origin, `application/json` with parameters other than utf-8 charset;
+production without `CARTOONA_APP_ORIGIN` → 503.
+
+`CARTOONA_APP_ORIGIN` rules (tests/unit/csrf-config.test.ts): production +
+unset/empty → every guarded write 503; outside production + unset → exactly
+`http://localhost:3000` and `http://127.0.0.1:3000`; an explicit value
+replaces the defaults; comma-separated, each entry trimmed; **no
+normalization**: a trailing slash, a default port (`:443`/`:80`), an
+uppercase host, a path, query or credentials, or an empty list entry makes
+the whole value invalid → 503; never read from Host / X-Forwarded-* / Referer.
+
+### V0.1.49 rollback implications
+
+After V0.1.49, new accounts may exist ONLY in PostgreSQL business tables
+(Auth stays in Supabase). Their Supabase side has `public.users` and, when
+complete-signup succeeded, a profile - but consent (V0.1.48) and everything
+PostgreSQL-only is missing there. Before rolling the application back to a
+Supabase-DB-dependent release, production must either:
+
+1. reverse-sync newly provisioned accounts (users, identity-derived users.id,
+   profile defaults, consent) into Supabase, reusing the Supabase profile
+   where it exists (profile ids differ; ids must not be invented); or
+2. keep a PostgreSQL-backed bootstrap/read path in the rolled-back release.
+
+No bidirectional sync is built. The copy tool must not be re-run into a live
+target (it refuses with `validation_failed`, proven).
+
+### Verified locally (2026-10-23)
+
+- `tests/unit/provisioning-db.test.ts` (43, real PostgreSQL, login role):
+  created / existing / profile_created / identity_backfilled; three conflict
+  shapes refused with no write; admin, super_admin, deleted refused; copied
+  parents byte-identical after provisioning (incl. a non-null
+  `sessions_not_before`); injected failure after the profile insert rolls
+  back all five tables, Fastify answers a safe 503, a retry succeeds; 20
+  concurrent same-subject calls via SQL (1 created + 19 existing), via
+  Fastify (20 × 200) and via the Next BFF (20 × 200), one of everything; 9
+  direct writes denied (42501); copied-vs-provisioned row shape identical;
+  new user end to end (403s before → bootstrap → requireAuth resolves
+  users.id = subject → balance 0 / 3 credits → consent → re-login no-op);
+  BFF CSRF / 422 identity fields / 401 / 403 / 409; PostgreSQL down and
+  backend unreachable → 503 `account_setup_incomplete`, still signed in, no
+  rows, retry works; response lost after commit → one write, confirmed by a
+  read, ready.
+- `tests/unit/backend-auth-provision.test.ts` (36), `provisioning-static`
+  (21), `legacy-csrf-routes` (30), `csrf-config` (24).
+- **Docker + headless Chromium** (frontend, backend, postgres; stub Supabase
+  Auth; scratch copied DB 0001–0015, NODE_ENV=production): new subject →
+  setup card → real bootstrap click → 1/1/1/1/1 rows → account summary,
+  header → consent → `/dashboard/orders`; re-login with a new session and a
+  copied parent: byte-identical rows; hostile page (no-cors fetch,
+  text/plain form) and hostile/missing-Origin JSON to password, referral
+  bind, admin settings and bootstrap all refused, nothing changed; browser
+  talked to Next only; no secret, DB password, backend URL, assertion or
+  connection URL in 170 responses or in container logs. 71/71 checks.
+  Docker Hub was unreachable from this machine, so the proof images were
+  built FROM the existing local images (same Node 24 bookworm base, user,
+  CMD) with this tree's bundle / standalone build.
+- Timings (local, loaded laptop; not a production estimate): provisioning
+  via Fastify first median 4.0 ms (p90 5.2), idempotent 3.7 ms (p90 4.6);
+  Next bootstrap first 5.5 ms (p90 6.4), existing account 6.0 ms (p90 7.1);
+  20 concurrent same-subject calls 58 ms wall; in Docker the bootstrap for an
+  existing account took 51–117 ms and setup card → consent form 1.4 s.
+
+### Production status
+
+**Not deployable.** Unchanged: the `amr` check against real Supabase tokens
+(provisioning does not solve it), a real `pg_dump` rehearsal, backend
+deployment, storage, and the read/write split. New for deployment: migration
+0015 ships with the app; `CARTOONA_APP_ORIGIN` now also gates the three
+legacy routes.
+
 ## Next
 
-V0.1.49 / the next write migration. Before it:
+V0.1.50, the first transactional write cutover. Before it:
 
-- move the three ad-hoc Origin checks (`/api/parent/password`,
-  `/api/referrals/bind`, `/api/admin/referrals/settings`) to
-  `lib/security/csrf.ts` when those routes are touched, and add the guard to
-  every newly migrated browser write;
-- identity/profile provisioning for accounts created after the copy
-  (blocker 6), or the signup move: without it a new parent cannot consent;
-- the V0.1.46 read/write split: request submission, purchase completion and
-  the purchase history are the writes that close it; each needs its own
-  `*_trusted` EXECUTE grant and the same outcomeUnknown handling;
-- a scripted consent forward-sync (PostgreSQL → Supabase) before any
-  production rollout, per the rollback plan above;
+- the read/write split (blocker 5), now sharper: post-cutover parents have a
+  PostgreSQL profile/wallet/credits AND a different Supabase
+  profile/wallet/credits; request submission and purchases still spend the
+  Supabase ones. The next write must move request submission (consent gate,
+  credits/candy spend, order rows) as ONE PostgreSQL transaction, with
+  storage still on Supabase or moved first;
+- decide whether signup stops writing the Supabase profile once requests and
+  purchases no longer need it;
+- a scripted reverse-sync (consent + provisioned accounts) or a
+  PostgreSQL-backed rollback path, per "V0.1.49 rollback implications";
 - the `amr` check, a real `pg_dump` rehearsal, backend deployment and the
   storage migration (production blockers, unchanged).

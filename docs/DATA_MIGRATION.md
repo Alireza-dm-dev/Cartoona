@@ -428,6 +428,9 @@ read-only on the source. Today any mode other than `local` throws
   made after the cutover exist only in PostgreSQL. The rollback boundary and
   the reverse-sync step are defined in
   [ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#rollback-boundary-the-first-postgresql-only-write).
+- **After provisioning (V0.1.49):** accounts that sign up after the cutover
+  get their PostgreSQL rows from provisioning, not from this tool. See
+  [ROUTE_CUTOVER.md](ROUTE_CUTOVER.md#v0149-rollback-implications).
 
 ## Remaining blockers
 
@@ -452,6 +455,11 @@ credits all differ between parents). Production remains blocked by:
    Supabase. On one running system the two diverge, so production needs those
    writes moved or a final copy at the cutover freeze before switching any of
    these reads.
+6. **Post-copy accounts (V0.1.49: addressed for PostgreSQL).** Accounts
+   created in Supabase after the copy get their PostgreSQL rows from the
+   provisioning bootstrap. Their Supabase-side profile still exists too
+   (requests and purchases still write there), with a DIFFERENT profile id,
+   referral code and wallet: part of blocker 5, not solved by V0.1.49.
 
 ### V0.1.47: write foundation, re-audit of 0012/0013
 
@@ -515,3 +523,29 @@ account created afterwards exists only in Supabase until signup itself moves
 (or a provisioning step links it). Consent cannot be granted for such an
 account in V0.1.48 (403), whereas the old route created the profile on the
 spot.
+
+### V0.1.49: provisioning, re-audit of 0015
+
+The pinned set is now 0001–0015. **0015** adds one function
+(`provision_supabase_parent_identity`) and its EXECUTE grant: no table and no
+column, so the mapping is unchanged. Two populations now reach the same
+target tables:
+
+| | A. pre-cutover accounts | B. post-cutover accounts |
+|---|---|---|
+| written by | this tool (V0.1.44) | `POST /v1/auth/provision` (V0.1.49) |
+| `users.id` | Supabase auth uid | Supabase auth uid (the verified subject) |
+| `users.email` | copied | NULL (not read by any PostgreSQL code; contact data stays with the provider) |
+| identity | `('supabase', id)`, id `md5('cartoona-identity:supabase:'‖id)::uuid`, `created_at = users.created_at` | identical rule |
+| profile, wallet, welcome credits, referral code | copied (made by the Supabase triggers) | made by the same triggers in PostgreSQL |
+
+`provisioning-db.test.ts` proves the essential row shape (role, not deleted,
+`sessions_not_before` NULL, one deterministic supabase identity, one profile
+with a valid referral code, one wallet, one 3-credit welcome grant) is
+identical for every copied active parent and a provisioned one, and that
+provisioning a copied parent changes no byte of its rows.
+
+**Do not re-run the copy into a live target.** Once B accounts exist the
+target no longer matches the source: a rerun stops with `validation_failed`
+and writes nothing (proven). The copy is a one-time cutover step; a
+post-cutover delta needs its own tool.

@@ -15,6 +15,8 @@ import {
 } from "@/lib/auth/parent-destinations";
 import { PARENT_PORTAL_HOME } from "@/lib/parent/navigation/parent-nav";
 import { readParentConsent } from "@/lib/parent/consent/consent-client";
+import { ensureParentAccountSetup } from "@/lib/parent/account-setup/account-setup-client";
+import AccountSetupRetry from "../account-setup-retry";
 
 function mapLoginError(message: string): string {
   const m = message.toLowerCase();
@@ -90,10 +92,34 @@ export default function LoginPage() {
   const [code, setCode] = useState("");
   const [challengeToken, setChallengeToken] = useState("");
   const [devCode, setDevCode] = useState("");
+  // Signed in, but the account bootstrap did not complete (V0.1.49): the
+  // retry card replaces the forms, and `destination` runs once it is ready.
+  const [setupPending, setSetupPending] = useState<null | { message: string; destination: () => Promise<string> }>(null);
   const [expiredNotice] = useState(() => {
     if (typeof window === "undefined") return null;
     return new URLSearchParams(window.location.search).get("reason");
   });
+
+  /**
+   * Every successful sign-in ends here (V0.1.49): first make sure the
+   * account exists in Cartoona's PostgreSQL (idempotent, a no-op for an
+   * existing account), only then pick the destination - which may read
+   * consent, and which every parent page after it needs the account for.
+   * A failure keeps the parent signed in and shows a retry, never a
+   * half-ready dashboard.
+   */
+  const continueAfterSignIn = async (destination: () => Promise<string>) => {
+    const setup = await ensureParentAccountSetup();
+    if (setup.status === "ready") {
+      window.location.assign(await destination());
+      return;
+    }
+    if (setup.status === "retry") {
+      setSetupPending({ message: setup.message, destination });
+      return;
+    }
+    setError(setup.message);
+  };
 
   const handleSmsRequestCode = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -195,7 +221,7 @@ export default function LoginPage() {
           return;
         }
 
-        window.location.assign(resolveDevDestination(data.next));
+        await continueAfterSignIn(async () => resolveDevDestination(data.next));
       } catch {
         setError("ورود انجام نشد. لطفاً دوباره تلاش کنید.");
       } finally {
@@ -227,9 +253,7 @@ export default function LoginPage() {
       const safeFrom = getSafeParentDestination(
         new URLSearchParams(window.location.search).get("from")
       );
-      const destination = resolveSuccessfulLoginDestination(safeFrom, await readConsentForLogin());
-
-      window.location.assign(destination);
+      await continueAfterSignIn(async () => resolveSuccessfulLoginDestination(safeFrom, await readConsentForLogin()));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "";
       setError(mapLoginError(message));
@@ -277,7 +301,7 @@ export default function LoginPage() {
           return;
         }
 
-        window.location.assign(resolveDevDestination(data.next));
+        await continueAfterSignIn(async () => resolveDevDestination(data.next));
       } catch {
         setError("ورود انجام نشد. لطفاً دوباره تلاش کنید.");
       } finally {
@@ -302,15 +326,11 @@ export default function LoginPage() {
       const safeFrom = getSafeParentDestination(
         new URLSearchParams(window.location.search).get("from")
       );
-      let destination: string;
-
       if (user) {
-        destination = resolveSuccessfulLoginDestination(safeFrom, await readConsentForLogin());
+        await continueAfterSignIn(async () => resolveSuccessfulLoginDestination(safeFrom, await readConsentForLogin()));
       } else {
-        destination = PARENT_PORTAL_HOME;
+        window.location.assign(PARENT_PORTAL_HOME);
       }
-
-      window.location.assign(destination);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "";
       setError(mapLoginError(message));
@@ -318,6 +338,18 @@ export default function LoginPage() {
       setLoading(false);
     }
   };
+
+  if (setupPending) {
+    return (
+      <Card>
+        <h1 className="text-2xl font-brand text-parent-navy">ورود والدین</h1>
+        <AccountSetupRetry
+          message={setupPending.message}
+          onReady={async () => window.location.assign(await setupPending.destination())}
+        />
+      </Card>
+    );
+  }
 
   return (
     <Card>

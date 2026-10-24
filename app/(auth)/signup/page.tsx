@@ -5,6 +5,8 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/neu-button";
 import { createBrowserSupabaseClient } from "@/lib/supabase/client";
 import PendingCreationDraftCard from "@/components/creation/pending-creation-draft-card";
+import { ensureParentAccountSetup } from "@/lib/parent/account-setup/account-setup-client";
+import AccountSetupRetry from "../account-setup-retry";
 import {
   normalizeIranPhone,
   isValidIranPhone,
@@ -76,6 +78,27 @@ export default function SignupPage() {
   const isDev = useSyncExternalStore(subscribeToNothing, isDevEnvironment, () => false);
   const [challengeToken, setChallengeToken] = useState("");
   const [devCode, setDevCode] = useState("");
+  // Signed up and signed in, but the account bootstrap did not complete (V0.1.49).
+  const [setupMessage, setSetupMessage] = useState<string | null>(null);
+
+  /**
+   * After the code is verified the parent is signed in (Supabase). Before
+   * /parent-consent (PostgreSQL) the account must exist there too: the
+   * idempotent bootstrap creates it. A failure keeps the parent signed in on
+   * a retry card - re-sending the (already used) code would not help.
+   */
+  const continueAfterSignup = async () => {
+    const setup = await ensureParentAccountSetup();
+    if (setup.status === "ready") {
+      window.location.assign("/parent-consent");
+      return;
+    }
+    if (setup.status === "retry") {
+      setSetupMessage(setup.message);
+      return;
+    }
+    setError(setup.message);
+  };
 
   const handlePhoneSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -183,7 +206,7 @@ export default function SignupPage() {
           return;
         }
 
-        window.location.assign("/parent-consent");
+        await continueAfterSignup();
       } catch {
         setError("تأیید کد انجام نشد. لطفاً دوباره تلاش کنید.");
       } finally {
@@ -220,7 +243,7 @@ export default function SignupPage() {
         return;
       }
 
-      window.location.assign("/parent-consent");
+      await continueAfterSignup();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "خطای غیرمنتظره‌ای رخ داد.";
       setError(mapAuthError(message));
@@ -239,6 +262,9 @@ export default function SignupPage() {
           برای شروع استفاده از کارتونا، فقط شماره موبایل والد یا سرپرست قانونی را وارد کنید.
         </p>
 
+        {setupMessage !== null ? (
+          <AccountSetupRetry message={setupMessage} onReady={() => window.location.assign("/parent-consent")} />
+        ) : (
         <div className="mt-6 space-y-4">
           {step === 1 ? (
             <form onSubmit={handlePhoneSubmit} className="space-y-4">
@@ -341,6 +367,7 @@ export default function SignupPage() {
             </form>
           )}
         </div>
+        )}
       </Card>
 
       <Card variant="playful">

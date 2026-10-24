@@ -217,7 +217,7 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
         DATABASE_URL: `postgresql://cartoona@postgres:5432/${DB}`,
       },
     }))
-    expect(stdout).toMatch(/done - 14 applied/)
+    expect(stdout).toMatch(/done - 15 applied/)
 
     // The Supabase reference: real historical chain over the stub.
     await psql("", { db: REF, file: path.join(root, "tests/helpers/supabase-stub.sql") })
@@ -380,7 +380,8 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
       expect([...new Set(d.onlyInPlain.map(fnName))].sort()).toEqual(
         // consume_internal_write_nonce: target-only replay protection (V0.1.47, 0012).
         // record_parent_consent_trusted: target-only consent write (V0.1.48, 0014).
-        [...Object.values(renamed), ...modified, "append_only_guard", "consume_internal_write_nonce", "record_parent_consent_trusted"].sort(),
+        // provision_supabase_parent_identity: target-only account provisioning (V0.1.49, 0015).
+        [...Object.values(renamed), ...modified, "append_only_guard", "consume_internal_write_nonce", "provision_supabase_parent_identity", "record_parent_consent_trusted"].sort(),
       )
       // Every other function body is byte-identical (same md5 of prosrc).
       const unchanged = ref.filter((r) => !d.onlyInSupabase.includes(r))

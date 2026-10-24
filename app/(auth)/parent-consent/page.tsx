@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import { Card } from "@/components/ui/card";
 import { loadParentConsent } from "@/lib/parent/consent/backend-consent";
 import ParentConsentForm from "./parent-consent-form";
+import AccountSetupRetry from "../account-setup-retry";
+import { ACCOUNT_SETUP_INCOMPLETE } from "@/lib/parent/account-setup/messages";
 
 /**
  * /parent-consent (V0.1.48): consent is read from PostgreSQL (session verified
@@ -14,7 +16,10 @@ import ParentConsentForm from "./parent-consent-form";
  *                 else /dashboard). The draft lives in the browser, so that
  *                 choice is made client-side.
  *   not granted   the form, unchanged.
- *   no profile    a dead-end form would only fail: say so instead.
+ *   no profile / identity not linked (V0.1.49): the account is not ready in
+ *                 PostgreSQL yet (signed up after the data copy, or the
+ *                 bootstrap failed). A retry card that runs the idempotent
+ *                 bootstrap (POST, never on this GET) and reloads.
  *   could not determine (backend/database/provider down): a retry message.
  *                 Never the form-as-if-not-consented, never a redirect, so an
  *                 outage cannot bounce a consented parent between pages.
@@ -33,17 +38,20 @@ function Notice({ title, children }: { title: string; children: React.ReactNode 
   );
 }
 
+function SetupIncomplete() {
+  return (
+    <Card>
+      <h1 className="text-lg font-semibold text-parent-navy text-center">آماده‌سازی حساب</h1>
+      <AccountSetupRetry message={ACCOUNT_SETUP_INCOMPLETE} />
+    </Card>
+  );
+}
+
 export default async function ParentConsentPage() {
   const consent = await loadParentConsent();
 
   if (consent.ok) {
-    if (consent.status === "no_profile") {
-      return (
-        <Notice title="پروفایل والد کامل نیست">
-          پروفایل والد برای این حساب یافت نشد. لطفاً با پشتیبانی تماس بگیرید.
-        </Notice>
-      );
-    }
+    if (consent.status === "no_profile") return <SetupIncomplete />;
     return <ParentConsentForm initiallyGranted={consent.status === "granted"} />;
   }
 
@@ -54,6 +62,7 @@ export default async function ParentConsentPage() {
     case "session_invalidated":
       redirect("/login?reason=session_expired&from=/parent-consent");
     case "identity_not_linked":
+      return <SetupIncomplete />;
     case "forbidden":
       return <Notice title="دسترسی ممکن نیست">شما مجوز انجام این عملیات را ندارید.</Notice>;
     case "auth_unavailable":

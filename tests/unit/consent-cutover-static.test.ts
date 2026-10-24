@@ -164,7 +164,14 @@ describe("the consent write: CSRF -> session -> v3 -> parent-only backend route"
     for (const f of backendRuntime) expect(code(f), f).not.toMatch(/security\/csrf/)
     for (const f of walk("lib/backend")) expect(code(f), f).not.toMatch(/security\/csrf/)
     const users = nextRuntime.filter((f) => /@\/lib\/security\/csrf/.test(code(f)))
-    expect(users).toEqual(["app/api/parent-consent/route.ts"])
+    // V0.1.49: the account bootstrap, and the three legacy writes moved off their ad-hoc Origin checks.
+    expect(users.sort()).toEqual([
+      "app/api/admin/referrals/settings/route.ts",
+      "app/api/parent-consent/route.ts",
+      "app/api/parent/account-setup/route.ts",
+      "app/api/parent/password/route.ts",
+      "app/api/referrals/bind/route.ts",
+    ])
   })
 
   it("the CSRF origin comes from configuration, never from Host or forwarded headers", () => {
@@ -183,9 +190,9 @@ describe("scope: only consent moved", () => {
     expect(requests).not.toMatch(/backendWriteJson|@\/lib\/backend\/client/)
   })
 
-  it("the backend has exactly two writes (V0.1.47 proof + consent) and no money, media, coupon, order or Storage code", () => {
+  it("the backend has exactly three writes (V0.1.47 proof + consent + V0.1.49 provisioning) and no money, media, coupon, order or Storage code", () => {
     const writes = backendRuntime.flatMap((f) => [...code(f).matchAll(/app\.(post|put|patch|delete)\(\s*([A-Z_]+|"[^"]+")/g)].map((m) => `${m[1]} ${m[2]}`))
-    expect(writes.sort()).toEqual(["patch PROFILE_PATH", "post CONSENT_PATH"])
+    expect(writes.sort()).toEqual(["patch PROFILE_PATH", "post CONSENT_PATH", "post PROVISION_PATH"])
     for (const f of backendRuntime) {
       expect(code(f), f).not.toMatch(/candy_purchases|payment_attempts|coupon|create_parent_request|record_final_media|storage\.|\.rpc\(/i)
     }

@@ -207,10 +207,15 @@ describe("V0.1.43: no runtime dependency on Supabase session internals", () => {
 
   it("the backend evaluates the policy inside requireAuth, from the signed sign-in time and the resolved cut-off", () => {
     const src = code("backend/src/plugins/auth.ts")
-    expect(src).toMatch(/evaluateSessionPolicy\(\s*\{ authenticatedAt: result\.claims\.authenticatedAt \},\s*\{ \.\.\.DEFAULT_SESSION_POLICY, sessionsNotBefore: identity\.sessionsNotBefore \}/)
-    // Shared by reads and writes (V0.1.47); the principal is only returned after it.
-    expect(src.indexOf("evaluateSessionPolicy(")).toBeLessThan(src.indexOf("return { claims: result.claims, principal:"))
+    // One evaluation site (sessionAllowed, V0.1.49 split), on the signed sign-in time and the resolved cut-off.
+    expect(src).toMatch(/evaluateSessionPolicy\(\s*\{ authenticatedAt: claims\.authenticatedAt \},\s*\{ \.\.\.DEFAULT_SESSION_POLICY, sessionsNotBefore \}/)
     expect(src.match(/evaluateSessionPolicy\(/g)).toHaveLength(1)
+    // Shared by reads and writes (V0.1.47); the principal is only returned after it.
+    const authenticate = src.slice(src.indexOf("async function authenticate("))
+    expect(authenticate.indexOf("sessionAllowed(request, reply, deps, claims, identity.sessionsNotBefore)")).toBeGreaterThan(-1)
+    expect(authenticate.indexOf("sessionAllowed(")).toBeLessThan(authenticate.indexOf("return { claims, principal:"))
+    // Provisioning (V0.1.49): the linked user's cut-off, or none when not linked yet.
+    expect(src).toMatch(/sessionAllowed\(request, reply, deps, claims, identity\?\.sessionsNotBefore \?\? null\)/)
   })
 
   it("migration 0011 adds the nullable column and grants nothing", () => {

@@ -426,18 +426,54 @@ cutover does.
 
 **No silent creation.** A verified identity with no mapping is
 `identity_not_linked`. Reads never create users or identities, and
-`cartoona_app` has no INSERT on either table.
+`cartoona_app` has no INSERT on either table (V0.1.49: its only way to create
+them is EXECUTE on the provisioning function below).
 
-**New signups (later, when signup moves).** One transaction, run by a trusted
-backend function, creates:
+**Accounts created after the copy: provisioning (V0.1.49).** Supabase Auth
+still creates the account (phone OTP), and Supabase signup still writes its
+own `public.users` (trigger) and `parent_profiles` (`/api/parent/complete-signup`),
+because request submission and candy purchases still write to Supabase. The
+PostgreSQL side is created by ONE explicit post-sign-in bootstrap:
 
-1. `users`;
-2. `user_identities('supabase', <auth uid>)`;
-3. `parent_profiles`;
-4. the wallet and welcome credits, through the existing triggers.
+    browser (after verifyOtp / signInWithPassword / dev route)
+      -> POST /api/parent/account-setup   body {}; CSRF; Supabase verification
+      -> v3 assertion -> Fastify POST /v1/auth/provision (requireProvisioningAuth)
+      -> provision_supabase_parent_identity(subject)   (migration 0015)
 
-It is idempotent on `(provider, subject)`. Until then, signup stays on
-Supabase (the `on_auth_user_created` trigger plus `ensureParentProfile`).
+In one transaction, serialized per subject by an advisory lock, it creates
+or reuses: `users` (id = the Supabase subject, role `parent`, email NULL),
+`user_identities('supabase', subject)` with the copy tool's deterministic id
+and `created_at`, and one `parent_profiles` row, whose existing triggers add
+the referral code, the zero-balance wallet and the 3 welcome credits. The
+only input is the verified subject; role, ids, name, amounts and codes are
+fixed server-side. Outcomes and conflict rules:
+
+| situation | outcome | HTTP (backend / BFF) |
+|---|---|---|
+| unknown subject | `created` | 200 / 200 |
+| everything present (every copied parent) | `existing`, **no write** | 200 / 200 |
+| linked parent without a profile | `profile_created` | 200 / 200 |
+| `users.id = subject`, no identity of ANY provider, role parent | `identity_backfilled` | 200 / 200 |
+| subject linked to another user; user linked to another Supabase subject; user with only other-provider identities | `identity_conflict`, nothing written, never remapped | 409 / 409 `account_setup_conflict` |
+| soft-deleted user | `account_deleted` (403 earlier if linked) | 403 / 403 `forbidden` |
+| admin / super_admin | `not_parent` (403 earlier if linked) | 403 / 403 `forbidden` |
+
+`requireProvisioningAuth` is `requireWriteAuth(deps, "parent")` minus the
+"identity must be linked" step: v3 MAC, expiry, method + path, body digest,
+then identity lookup (a linked account must be a non-deleted parent), the
+session policy (30 days always; `sessions_not_before` when linked), the nonce
+last. It sets `request.provisioningSubject`, never `authPrincipal`.
+
+Where it runs: `/signup` after the code is verified (and after
+complete-signup), `/login` after every successful sign-in (a no-op for an
+existing account), and the "try again" card on `/parent-consent`. GET routes
+and pages never provision: before provisioning they fail safely
+(`identity_not_linked` → 403 from the BFFs, the setup card on
+`/parent-consent`). A bootstrap failure keeps the parent signed in and shows
+"ورود انجام شد، اما آماده‌سازی حساب کامل نشد. لطفاً دوباره تلاش کنید." with a
+retry; only an expired/invalidated session signs out. A lost answer
+(outcomeUnknown / 409 replay) is confirmed with a fresh consent read (200 =
+linked parent with a profile); the write is never re-sent automatically.
 
 ## Session policy (V0.1.43)
 

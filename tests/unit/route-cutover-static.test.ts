@@ -39,6 +39,7 @@ const backend = composeService(compose, "backend")
 const BACKEND_CLIENT_USERS = [
   "app/api/auth/backend-me/route.ts",
   "app/api/creation-pricing/route.ts",
+  "lib/parent/account-setup/backend-provision.ts", // V0.1.49 account bootstrap (write)
   "lib/parent/account/backend-account.ts",
   "lib/parent/consent/backend-consent.ts",
   "lib/parent/orders/backend-orders.ts",
@@ -56,6 +57,7 @@ const ACCOUNT_SURFACES = ["app/api/parent/account-summary/route.ts", "app/api/pa
 const BACKEND_ROUTES = [
   "app/api/auth/backend-me/route.ts",
   "app/api/creation-pricing/route.ts",
+  "app/api/parent/account-setup/route.ts", // V0.1.49 account bootstrap
   "app/api/parent/account-summary/route.ts",
   "app/api/parent/orders/route.ts",
   "app/api/parent/welcome-credits/route.ts",

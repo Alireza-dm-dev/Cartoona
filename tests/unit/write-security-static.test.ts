@@ -70,12 +70,16 @@ describe("Fastify: writes go through requireWriteAuth, reads cannot consume a no
   it("requireWriteAuth checks the role, THEN consumes the nonce, THEN sets the principal", () => {
     const write = auth.slice(auth.indexOf("export function requireWriteAuth("))
     const role = write.indexOf("roles.includes(verified.principal.role)")
-    const nonce = write.indexOf("consumeWriteNonce(")
+    const nonce = write.indexOf("nonceConsumed(")
     const principal = write.indexOf("request.authPrincipal = verified.principal")
     expect(role).toBeGreaterThan(0)
     expect(nonce).toBeGreaterThan(role)
     expect(principal).toBeGreaterThan(nonce)
-    expect(write).toMatch(/if \(!consumed\) return reject\(request, reply, 409, "replayed_request", "NONCE_REPLAYED"\)/)
+    // The shared nonce step (V0.1.49 split): one consume call, 409 on a replay.
+    const consume = auth.slice(auth.indexOf("async function nonceConsumed("), auth.indexOf("async function authenticate("))
+    expect(consume).toMatch(/consumeWriteNonce\(/)
+    expect(consume).toMatch(/if \(!consumed\) reject\(request, reply, 409, "replayed_request", "NONCE_REPLAYED"\)/)
+    expect(auth.match(/consumeWriteNonce\(/g)).toHaveLength(1)
   })
 
   it("the nonce repository is used only by requireWriteAuth", () => {
@@ -88,14 +92,16 @@ describe("Fastify: writes go through requireWriteAuth, reads cannot consume a no
     for (const file of backendRoutes) {
       for (const m of code(file).matchAll(/app\.(post|put|patch|delete)\(\s*([A-Z_]+|"[^"]+"),\s*\{ preHandler: \[([^\]]*)\] \}/g)) {
         writes.push(`${m[1]} ${m[2]}`)
-        expect(m[3], file).toMatch(/^requireWriteAuth\(deps, "(parent|admin|super_admin)"(, "(parent|admin|super_admin)")*\)$/)
+        // V0.1.49: the provisioning route alone uses requireProvisioningAuth (v3 + nonce, identity not yet linked).
+        if (m[2] === "PROVISION_PATH") expect(m[3], file).toBe("requireProvisioningAuth(deps)")
+        else expect(m[3], file).toMatch(/^requireWriteAuth\(deps, "(parent|admin|super_admin)"(, "(parent|admin|super_admin)")*\)$/)
       }
     }
     // No write registered any other way (route(), or a write without that preHandler).
     const anyWrite = backendRoutes.flatMap((f) => code(f).match(/app\.(post|put|patch|delete|route)\(/g) ?? [])
     expect(anyWrite).toHaveLength(writes.length)
-    // V0.1.47 proof write + V0.1.48 consent (the first product write).
-    expect(writes.sort()).toEqual(["patch PROFILE_PATH", "post CONSENT_PATH"])
+    // V0.1.47 proof write + V0.1.48 consent (the first product write) + V0.1.49 provisioning.
+    expect(writes.sort()).toEqual(["patch PROFILE_PATH", "post CONSENT_PATH", "post PROVISION_PATH"])
   })
 
   it("the raw JSON bytes are kept for the digest, parsed by Fastify's safe default parser", () => {
@@ -124,16 +130,17 @@ describe("the proof write PATCH /v1/parent/profile", () => {
 })
 
 describe("exactly one Next.js write is cut over: consent (V0.1.48)", () => {
-  it("backendWriteJson has exactly one caller outside the client module: the consent loader", () => {
+  it("backendWriteJson has exactly two callers outside the client module: the consent loader and the account bootstrap", () => {
     const callers = frontendFiles.filter((f) => f !== "lib/backend/client.ts" && /backendWriteJson/.test(code(f)))
-    expect(callers).toEqual(["lib/parent/consent/backend-consent.ts"])
+    expect(callers.sort()).toEqual(["lib/parent/account-setup/backend-provision.ts", "lib/parent/consent/backend-consent.ts"])
   })
 
   it("no other Next write handler imports the backend client, the parent backend caller or the consent writer", () => {
     const handlers = walk("app/api").filter((f) => /export (const|async function|function) (POST|PUT|PATCH|DELETE)\b/.test(read(f)))
     expect(handlers.length).toBeGreaterThan(15)
     const writers = handlers.filter((f) => /@\/lib\/backend\/client|@\/lib\/parent\/backend-caller|signWriteAssertion|grantParentConsent/.test(code(f)))
-    expect(writers).toEqual(["app/api/parent-consent/route.ts"])
+    // V0.1.49: the account bootstrap is the second (it verifies the caller and provisions; no business write).
+    expect(writers.sort()).toEqual(["app/api/parent-consent/route.ts", "app/api/parent/account-setup/route.ts"])
   })
 
   it("the browser never signs: assertion signing stays in server-only modules", () => {

@@ -115,6 +115,8 @@ async function consentPage(): Promise<string> {
   try {
     const el = (await ParentConsentPage()) as { type: unknown; props: { initiallyGranted?: boolean; title?: string } }
     if (el.type === ParentConsentForm) return `form:${el.props.initiallyGranted}`
+    // V0.1.49: an account not ready in PostgreSQL gets the bootstrap retry card.
+    if ((el.type as { name?: string }).name === "SetupIncomplete") return "setup_incomplete"
     return `notice:${el.props.title}`
   } catch (e) {
     if (isRedirectError(e)) return `redirect:${getURLFromRedirectError(e)}`
@@ -480,11 +482,11 @@ describe.skipIf(!enabled)("V0.1.48 consent cutover: copied data -> Fastify -> Ne
       expect(signedOut()).toBe(false)
     })
 
-    it("a parent without a profile: GET false (as before), POST 403 no_parent_profile, page says so, nothing created", async () => {
+    it("a parent without a profile: GET false (as before), POST 403 no_parent_profile, page offers the account bootstrap (V0.1.49), nothing created by the GET", async () => {
       await signIn(NO_PROFILE_USER)
       expect((await json(await browserGet())).body).toEqual({ consentGranted: false })
       expect(await json(await browserPost())).toMatchObject({ status: 403, body: { code: "no_parent_profile" } })
-      expect(await consentPage()).toBe("notice:پروفایل والد کامل نیست")
+      expect(await consentPage()).toBe("setup_incomplete")
       expect(await completeRequestPage()).toBe("redirect:/parent-consent")
       expect(await tgt(`select count(*) from public.parent_profiles where user_id = '${NO_PROFILE_USER}'`)).toBe("0")
     })
@@ -610,7 +612,7 @@ describe.skipIf(!enabled)("V0.1.48 consent cutover: copied data -> Fastify -> Ne
       expect(await tgt("select has_table_privilege('cartoona_app', 'public.parent_profiles', 'UPDATE')")).toBe("f")
       expect(await tgt(`select string_agg(column_name, ',' order by column_name) from information_schema.column_privileges
         where grantee = 'cartoona_app' and table_name = 'parent_profiles' and privilege_type = 'UPDATE'`)).toBe("full_name,updated_at")
-      expect(await tgt("select string_agg(version, ',' order by version) from public.schema_migrations")).toMatch(/0014_parent_consent_write$/)
+      expect(await tgt("select string_agg(version, ',' order by version) from public.schema_migrations")).toMatch(/0014_parent_consent_write,0015_supabase_parent_provisioning$/)
     })
 
     it("a raw DbError from the app role never leaks through the backend", async () => {

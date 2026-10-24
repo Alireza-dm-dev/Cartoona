@@ -25,7 +25,7 @@ import { attempt, buildSupabaseSource, createDb, dropDbs, migrateTarget, ownerUr
  * CARTOONA_PLAIN_PG=docker, compose `postgres` running).
  *
  *   Supabase-shaped source (stub + the real supabase/migrations chain + the
- *   realistic fixture) -> copy tool -> freshly migrated plain target (0001-0014)
+ *   realistic fixture) -> copy tool -> freshly migrated plain target (0001-0015)
  *
  * then reconciliation, idempotency, resumability, conflict refusals, the
  * V0.1.42/43 auth chain and the parent-orders repository on the copied data.
@@ -109,7 +109,7 @@ describe.skipIf(!enabled)("V0.1.44 data copy: Supabase-shaped source -> plain Po
   beforeAll(async () => {
     env = await pgEnv()
     await buildSupabaseSource(env, SRC, FIXTURE)
-    expect(await migrateTarget(env, FRESH)).toMatch(/done - 14 applied/)
+    expect(await migrateTarget(env, FRESH)).toMatch(/done - 15 applied/)
     await createDb(env, TGT, FRESH)
     first = await copy(SRC, TGT)
   })
@@ -241,7 +241,7 @@ describe.skipIf(!enabled)("V0.1.44 data copy: Supabase-shaped source -> plain Po
       const stored = await q(TGT, `select manifest::text from ${META_SCHEMA}.runs`)
       const m = JSON.parse(stored)
       expect(m.outcome).toBe("completed")
-      expect(m.target.migrations).toHaveLength(14)
+      expect(m.target.migrations).toHaveLength(15)
       expect(m.target.serverVersion).toMatch(/^17/)
       expect(m.bypassedTriggers.map((b: { trigger: string }) => b.trigger).sort()).toEqual(
         ["assign_parent_referral_code", "candy_purchases_set_updated_at", "ensure_parent_candy_wallet", "grant_parent_welcome_image_credits"],

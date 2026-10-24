@@ -6,6 +6,7 @@ import { registerErrorHandling } from "./errors/error-handler"
 import { registerAuth } from "./plugins/auth"
 import { registerObservability, requestIdFor } from "./plugins/observability"
 import { registerAuthRoutes } from "./routes/auth"
+import { registerAuthProvisionRoutes } from "./routes/auth-provision"
 import { registerCreationPricingRoutes } from "./routes/creation-pricing"
 import { registerHealthRoutes } from "./routes/health"
 import { registerParentAccountRoutes } from "./routes/parent-account"
@@ -74,6 +75,7 @@ export function buildBackendApp(overrides: Partial<BackendDeps> = {}): FastifyIn
   registerHealthRoutes(app, deps)
   registerCreationPricingRoutes(app, deps)
   registerAuthRoutes(app, deps)
+  registerAuthProvisionRoutes(app, deps)
   registerParentOrdersRoutes(app, deps)
   registerParentAccountRoutes(app, deps)
   registerParentConsentRoutes(app, deps)

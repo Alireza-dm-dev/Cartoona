@@ -4,7 +4,7 @@ import { InternalAuthConfigError, verifyAssertion } from "@/lib/identity/asserti
 import { DEFAULT_SESSION_POLICY, evaluateSessionPolicy } from "@/lib/identity/session-policy"
 import type { AuthPrincipal, PrincipalRole } from "@/lib/identity/types"
 import { logEvent } from "@/lib/observability/logger"
-import { resolveUserIdentity } from "@/lib/repositories/user-identities"
+import { resolveUserIdentity, type ResolvedUserIdentity } from "@/lib/repositories/user-identities"
 import { consumeWriteNonce } from "@/lib/repositories/write-nonces"
 import type { BackendDeps } from "../app"
 import { routeLabel } from "./observability"
@@ -58,6 +58,8 @@ declare module "fastify" {
     authPrincipal: AuthPrincipal | null
     /** The exact JSON body bytes as received (app.ts parser); null without a body. */
     rawBody: Buffer | null
+    /** Verified provider subject, set ONLY by requireProvisioningAuth (V0.1.49). */
+    provisioningSubject: string | null
   }
 }
 
@@ -86,21 +88,22 @@ function reject(
 export function registerAuth(app: FastifyInstance): void {
   app.decorateRequest("authPrincipal", null)
   app.decorateRequest("rawBody", null)
+  app.decorateRequest("provisioningSubject", null)
 }
 
 type Verified = Extract<ReturnType<typeof verifyAssertion>, { ok: true }>["claims"]
 
 /**
- * Steps shared by reads and writes: the header, the assertion for `kind`,
- * identity and the session policy. Returns the claims and principal, or
- * undefined after it has already sent the rejection.
+ * Steps 1-2: the header and the assertion for `kind` (a write's body digest
+ * over the received bytes). Returns the claims, or undefined after it has
+ * already sent the rejection. Nothing is looked up yet.
  */
-async function authenticate(
+async function verifyRequestAssertion(
   request: FastifyRequest,
   reply: FastifyReply,
   deps: BackendDeps,
   kind: "read" | "write",
-): Promise<{ claims: Verified; principal: AuthPrincipal } | undefined> {
+): Promise<Verified | undefined> {
   const header = request.headers[HEADER]
   if (header === undefined) {
     reject(request, reply, 401, "unauthenticated", "AUTH_MISSING")
@@ -137,21 +140,87 @@ async function authenticate(
     reject(request, reply, 401, "unauthenticated", "AUTH_INVALID", result.reason)
     return
   }
+  return result.claims
+}
 
-  let identity
-    try {
-      identity = await resolveUserIdentity(deps.db(), {
-        provider: result.claims.provider,
-        providerSubject: result.claims.subject,
-      })
-    } catch (error) {
+/** Step 3 lookup; null = not linked. Undefined after a 503 has been sent. */
+async function lookUpIdentity(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  deps: BackendDeps,
+  claims: Verified,
+): Promise<ResolvedUserIdentity | null | undefined> {
+  try {
+    return await resolveUserIdentity(deps.db(), { provider: claims.provider, providerSubject: claims.subject })
+  } catch (error) {
     if (error instanceof DbError || error instanceof DbConfigError) {
       reject(request, reply, 503, "service_unavailable", "AUTH_UNAVAILABLE", "database")
       return
     }
     throw error
   }
+}
 
+/**
+ * Step 4: Cartoona's session policy (V0.1.43), on the provider-verified
+ * sign-in time the assertion carries and this user's sessions_not_before -
+ * both already in hand, so no extra query. False after the rejection is sent.
+ */
+function sessionAllowed(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  deps: BackendDeps,
+  claims: Verified,
+  sessionsNotBefore: number | null,
+): boolean {
+  const decision = evaluateSessionPolicy(
+    { authenticatedAt: claims.authenticatedAt },
+    { ...DEFAULT_SESSION_POLICY, sessionsNotBefore },
+    deps.now(),
+  )
+  if (decision.status === "valid") return true
+  if (decision.status === "invalidated") reject(request, reply, 401, "session_invalidated", "SESSION_INVALIDATED")
+  else if (decision.status === "expired") reject(request, reply, 401, "session_expired", "SESSION_EXPIRED")
+  else reject(request, reply, 401, "unauthenticated", "AUTH_INVALID", "session_evidence")
+  return false
+}
+
+/** Step 6: consume the write's nonce, last. False after the rejection is sent. */
+async function nonceConsumed(request: FastifyRequest, reply: FastifyReply, deps: BackendDeps, claims: Verified): Promise<boolean> {
+  let consumed: boolean
+  try {
+    consumed = await consumeWriteNonce(deps.db(), {
+      nonce: claims.nonce!,
+      expiresAtSeconds: claims.expiresAt,
+      requestId: claims.requestId,
+    })
+  } catch (error) {
+    if (error instanceof DbError || error instanceof DbConfigError) {
+      reject(request, reply, 503, "service_unavailable", "AUTH_UNAVAILABLE", "nonce_store")
+      return false
+    }
+    throw error
+  }
+  if (!consumed) reject(request, reply, 409, "replayed_request", "NONCE_REPLAYED")
+  return consumed
+}
+
+/**
+ * Steps shared by reads and writes: the header, the assertion for `kind`,
+ * identity and the session policy. Returns the claims and principal, or
+ * undefined after it has already sent the rejection.
+ */
+async function authenticate(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  deps: BackendDeps,
+  kind: "read" | "write",
+): Promise<{ claims: Verified; principal: AuthPrincipal } | undefined> {
+  const claims = await verifyRequestAssertion(request, reply, deps, kind)
+  if (!claims) return
+
+  const identity = await lookUpIdentity(request, reply, deps, claims)
+  if (identity === undefined) return
   if (!identity) {
     reject(request, reply, 403, "identity_not_linked", "IDENTITY_NOT_LINKED")
     return
@@ -160,29 +229,9 @@ async function authenticate(
     reject(request, reply, 403, "forbidden", "AUTH_FORBIDDEN", "account_deleted")
     return
   }
+  if (!sessionAllowed(request, reply, deps, claims, identity.sessionsNotBefore)) return
 
-  // Cartoona's session policy (V0.1.43), on the provider-verified sign-in
-  // time the assertion carries and this user's sessions_not_before - both
-  // already in hand, so no extra query.
-  const decision = evaluateSessionPolicy(
-    { authenticatedAt: result.claims.authenticatedAt },
-    { ...DEFAULT_SESSION_POLICY, sessionsNotBefore: identity.sessionsNotBefore },
-    deps.now(),
-  )
-  if (decision.status === "invalidated") {
-    reject(request, reply, 401, "session_invalidated", "SESSION_INVALIDATED")
-    return
-  }
-  if (decision.status === "expired") {
-    reject(request, reply, 401, "session_expired", "SESSION_EXPIRED")
-    return
-  }
-  if (decision.status !== "valid") {
-    reject(request, reply, 401, "unauthenticated", "AUTH_INVALID", "session_evidence")
-    return
-  }
-
-  return { claims: result.claims, principal: { userId: identity.userId, role: identity.role } }
+  return { claims, principal: { userId: identity.userId, role: identity.role } }
 }
 
 /** READ routes (GET/HEAD): a v2 assertion only. A v3 (write) assertion is refused here. */
@@ -208,24 +257,44 @@ export function requireWriteAuth(deps: BackendDeps, ...roles: PrincipalRole[]): 
     const verified = await authenticate(request, reply, deps, "write")
     if (!verified) return reply
     if (!roles.includes(verified.principal.role)) return reject(request, reply, 403, "forbidden", "AUTH_FORBIDDEN", "role")
-
-    let consumed: boolean
-    try {
-      consumed = await consumeWriteNonce(deps.db(), {
-        nonce: verified.claims.nonce!,
-        expiresAtSeconds: verified.claims.expiresAt,
-        requestId: verified.claims.requestId,
-      })
-    } catch (error) {
-      if (error instanceof DbError || error instanceof DbConfigError) {
-        return reject(request, reply, 503, "service_unavailable", "AUTH_UNAVAILABLE", "nonce_store")
-      }
-      throw error
-    }
-    if (!consumed) return reject(request, reply, 409, "replayed_request", "NONCE_REPLAYED")
+    if (!(await nonceConsumed(request, reply, deps, verified.claims))) return reply
 
     request.authPrincipal = verified.principal
     logEvent("debug", "AUTH_VERIFIED", { requestId: request.id, subsystem: "auth", userRole: verified.principal.role })
+  }
+}
+
+/**
+ * The ONE preHandler for POST /v1/auth/provision (V0.1.49). It is
+ * requireWriteAuth(deps, "parent") with a single difference: an identity
+ * that is NOT linked yet is allowed through (creating it is the route's job).
+ *
+ *   1-2. header, v3 assertion: MAC, expiry, method + path, body digest   401
+ *   3.   identity lookup                                                 503 on database failure
+ *        linked + deleted                                                403 forbidden
+ *        linked + not a parent                                           403 forbidden
+ *   4.   session policy: 30 days always; sessions_not_before when linked 401
+ *   6.   nonce, last                                                     409 / 503
+ *
+ * Sets `request.provisioningSubject` (the verified subject) and NOT
+ * `authPrincipal`: there may be no Cartoona user yet. The provider is the
+ * assertion's, which only accepts "supabase" today. Nothing from the body,
+ * query or other headers names the account.
+ */
+export function requireProvisioningAuth(deps: BackendDeps): preHandlerAsyncHookHandler {
+  return async function authenticateProvisioning(request, reply) {
+    const claims = await verifyRequestAssertion(request, reply, deps, "write")
+    if (!claims) return reply
+
+    const identity = await lookUpIdentity(request, reply, deps, claims)
+    if (identity === undefined) return reply
+    if (identity?.deleted) return reject(request, reply, 403, "forbidden", "AUTH_FORBIDDEN", "account_deleted")
+    if (identity && identity.role !== "parent") return reject(request, reply, 403, "forbidden", "AUTH_FORBIDDEN", "role")
+    if (!sessionAllowed(request, reply, deps, claims, identity?.sessionsNotBefore ?? null)) return reply
+    if (!(await nonceConsumed(request, reply, deps, claims))) return reply
+
+    request.provisioningSubject = claims.subject
+    logEvent("debug", "AUTH_VERIFIED", { requestId: request.id, subsystem: "auth", reason: identity ? "linked" : "not_linked" })
   }
 }
 

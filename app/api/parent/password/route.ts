@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf"
 import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
 import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
@@ -16,44 +17,13 @@ function jsonError(message: string, status: number): NextResponse {
   )
 }
 
-function isLocalhostOrigin(origin: string): boolean {
-  try {
-    const u = new URL(origin)
-    return u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "[::1]"
-  } catch {
-    return false
-  }
-}
-
-function getAllowedOrigins(): string[] {
-  const origins: string[] = []
-  const envUrl = process.env.NEXT_PUBLIC_SITE_URL
-  if (envUrl) {
-    origins.push(envUrl.replace(/\/+$/, ""))
-  }
-  origins.push("http://localhost:3000")
-  origins.push("http://localhost:3001")
-  return origins
-}
-
-function validateOrigin(request: Request): boolean {
-  const origin = request.headers.get("origin")
-  if (!origin) return true
-  const allowed = getAllowedOrigins()
-  if (allowed.includes(origin)) return true
-  if (isLocalhostOrigin(origin)) return true
-  return false
-}
-
 export async function POST(request: Request) {
-  const contentType = request.headers.get("content-type") || ""
-  if (!contentType.startsWith("application/json")) {
-    return jsonError("فرمت درخواست باید JSON باشد.", 415)
-  }
-
-  if (!validateOrigin(request)) {
-    return jsonError("درخواست از مبدأ نامعتبر.", 403)
-  }
+  // Shared browser-write CSRF guard (V0.1.49, was an ad-hoc Origin check that
+  // accepted a missing Origin and any localhost port): JSON content type,
+  // Sec-Fetch-Site, and an Origin equal to CARTOONA_APP_ORIGIN. Same 415/403
+  // messages as before. lib/security/csrf.ts.
+  const rejected = rejectUnsafeBrowserWrite(request)
+  if (rejected) return rejected
 
   const contentLength = request.headers.get("content-length")
   if (contentLength !== null) {
