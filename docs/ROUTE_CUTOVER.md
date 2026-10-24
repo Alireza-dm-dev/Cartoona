@@ -8,6 +8,7 @@ Routes served through the Fastify backend instead of Supabase:
 | V0.1.45 | `GET /api/parent/orders` + the `/dashboard/orders` first page | **authenticated** read, the parent orders **LIST** only ([below](#v0145-parent-orders-list)) |
 | V0.1.46 | `GET /api/parent/welcome-credits`, `GET /api/parent/account-summary` (new), the public header's parent name | **authenticated** reads: welcome credits, candy balance, profile name ([below](#v0146-parent-account-reads)) |
 | V0.1.47 | none (backend-only `PATCH /v1/parent/profile`) | write-security foundation; **no Next.js route cut over** ([below](#v0147-write-security-foundation)) |
+| V0.1.50 | `POST /api/requests` (+ new `GET /api/requests/by-submission-key`) | **the first financial write**: request submission as one PostgreSQL transaction ([below](#v0150-transactional-parent-request-submission)) |
 | V0.1.48 | `POST`/`GET /api/parent-consent`; the consent gates of `/parent-consent`, `/complete-request`, `POST /api/requests`, `/login` and the dev auth route | **the first browser-facing WRITE** (consent) + every consent read; shared CSRF guard ([below](#v0148-parent-consent-read--write)) |
 
 ### Migration status
@@ -24,7 +25,7 @@ Routes served through the Fastify backend instead of Supabase:
 | consent read (`/parent-consent`, `/complete-request`, `/login`, dev route) | `parent_profiles.consent_granted[_at]` | **PostgreSQL** (V0.1.48); middleware no longer checks consent |
 | consent write (`POST /api/parent-consent`) | `record_parent_consent_trusted` | **PostgreSQL** (V0.1.48), CSRF guard + v3 |
 | request submission: consent gate | `parent_profiles.consent_granted` | **PostgreSQL** (V0.1.48) |
-| request submission: creation (RPC, upload, debit) | `create_parent_request_trusted`, Storage | Supabase (old path), **temporary mixed flow** |
+| request submission: creation, welcome-credit/candy spend, ledger | `create_parent_request_trusted` | **PostgreSQL** (V0.1.50), one transaction; uploads stay Supabase Storage |
 | referral summary | RPC `get_current_parent_referral_summary` | Supabase (old path) |
 | order detail, final media, gallery | orders + Storage | Supabase (old path) |
 | parent display-name write | `parent_profiles.full_name` | **PostgreSQL, backend only** (V0.1.47): `PATCH /v1/parent/profile`; no Next route or UI calls it |
@@ -626,7 +627,7 @@ browser → Next exposure: all rely on the `SameSite=Lax` session cookie;
 | candy purchase create | POST `/api/candy-purchases` | getUser + role, rate limit | `candy_purchases`, `payment_attempts`, `coupons` | no | **yes** | no | high | excluded |
 | purchase coupon apply | POST `/api/candy-purchases/[id]/coupon` | same | RPC `apply_coupon_to_purchase_trusted` | per purchase | **yes** | no | high | excluded |
 | purchase completion | POST `/api/candy-purchases/[id]/complete` | same | RPC `complete_candy_purchase_trusted`, credits wallet | guarded | **yes** | no | high | excluded |
-| request submission | POST `/api/requests` | getUser + role + consent | RPC `create_parent_request_trusted`; uploads | submission key | **yes** (candy/credit debit) | **yes** | high | excluded |
+| request submission | POST `/api/requests` | getUser + role + consent | RPC `create_parent_request_trusted`; uploads | submission key | **yes** (candy/credit debit) | **yes** | high | **migrated in V0.1.50** (PostgreSQL function; uploads stay Storage) |
 | final-media link | POST `/api/parent/orders/[orderId]/final-media` | getUser | read + signed URL | read-only | no | **yes** | none | not a DB write |
 | admin order status | PATCH `/api/admin/requests/[id]/status` | admin | RPC `update_order_status_trusted` | `expectedUpdatedAt` guard | indirect | no | medium | excluded (fulfilment) |
 | admin final media | POST/PATCH `/api/admin/requests/[id]/final-media[/…]` | admin | RPCs `record_` / `approve_` / `supersede_final_media_trusted` | no | no | **yes** | high | excluded (media) |
@@ -1159,19 +1160,391 @@ deployment, storage, and the read/write split. New for deployment: migration
 0015 ships with the app; `CARTOONA_APP_ORIGIN` now also gates the three
 legacy routes.
 
+## V0.1.50: transactional parent request submission
+
+`POST /api/requests` no longer reads or writes a Supabase database table or
+RPC. Order, request rows, the welcome-credit-or-candy spend and the ledger are
+**one PostgreSQL transaction** (`create_parent_request_trusted`, migration 0005,
+now executable by the app role through migration 0016), reached through
+`POST /v1/parent/requests` (v3 assertion). Supabase keeps Auth and Storage
+(bytes are not migrated) and, read-only, the optional gallery metadata.
+
+### Request-flow audit (before any change)
+
+Old flow of `POST /api/requests`, in order: content-type + `Content-Length`
+cap, `auth.getUser`, rate limit (in-memory, per user, 5/min + 30/h),
+`users.role` (Supabase), `checkParentSessionLifetime` (Supabase), consent
+(PostgreSQL since V0.1.48), `parent_profiles.id` (Supabase), multipart parse,
+draft validation, submission key, **idempotency fast path** (`orders` by
+profile + key, Supabase), `characters` name→id (Supabase), Storage upload or
+gallery copy (`media_assets` read, Supabase), `create_parent_request_trusted`
+RPC (Supabase, service role), orphan cleanup, response.
+
+| | image | video | drawing animation |
+|---|---|---|---|
+| required input | character, child name optional | character, story, duration choice, `charactersSpeak` (explicit bool) | file, title, movement, duration |
+| tables changed | `orders`, [`media_assets`], welcome-credit usage + `parent_welcome_credits` **or** `candy_wallets` + `candy_transactions` | `orders`, `video_requests`, [`media_assets`], `candy_wallets`, `candy_transactions` | `orders`, `drawing_animation_requests`, `media_assets`, `candy_wallets`, `candy_transactions` |
+| price | `image.default` (+ `image.reference_file` with a file) = 12 / 15 | `video.{short,medium,long}` (+ `video.reference_file`) = 40/60/90 (+5) | `drawing_animation.{short,medium,long}` = 35/50/75 |
+| welcome credit | **yes, first**, then candy | never | never |
+| status | `pending_review`; no status-history row on creation | same | same |
+| idempotency | `UNIQUE (parent_id, submission_key)` + fast path + re-check after the wallet lock + `ON CONFLICT DO NOTHING` | same | same |
+| locking | wallet `FOR UPDATE`, then the credit row `FOR UPDATE` (fixed order) | wallet | wallet |
+| storage dependency | optional reference file | optional reference file | required file |
+| errors | `INSUFFICIENT_CANDIES` 402, `request_*` 422, `request_consent_required` 403, pricing 503, wallet 409 | same | same |
+
+Error contract kept: every code and status above is unchanged (the 402 product
+message, the 422 shape messages, 503 pricing). New codes are only the
+recovery ones below.
+
+### Supabase RPC vs plain PostgreSQL function: parity result
+
+Method: the body of `public.create_parent_request_trusted` from
+`supabase/migrations/20261022100000_request_rpc_consent_gate_moved.sql`
+(the latest Supabase definition) and from `database/migrations/0005` were
+stripped of comments and whitespace and diffed. Migrations 0006-0015 do not
+touch the function (grep: only 0005 defines it). The ONLY differences:
+
+| | Supabase RPC | plain function |
+|---|---|---|
+| signature | 16 args | same + `p_file_mime_type text DEFAULT NULL` (appended) |
+| consent clause | removed in V0.1.48 (consent moved) | **kept**: `parent_profiles.consent_granted` here IS the authoritative column, so the database re-checks it |
+| source-file MIME | read from `storage.objects` | passed in by the backend; the allow-list and the `<user>/<order>/` prefix are still enforced in the function |
+
+Everything else is identical: profile ownership, admin/parent role, type
+validation, pricing lookup (fail closed), welcome-credit-first with the
+credit row locked after the wallet, candy fallback, no overdraft (also a CHECK),
+order insert `ON CONFLICT`, request rows, ledger key `order_debit:<order>`,
+usage row, returned columns. Timestamps come from column defaults in both.
+No drift was found, so **no function change was needed**; migration 0016 only
+adds privileges (below). One pre-existing mismatch was fixed on the Next side:
+the function raises `request_character_invalid` (and `request_script_required`,
+`request_script_too_long`, `request_style_too_long`) which `request-rpc-error.ts`
+had no message for (they fell to the generic text).
+
+### What changed
+
+- **Migration 0016**: `REVOKE ALL ... FROM PUBLIC; GRANT EXECUTE` on the request function to
+  `cartoona_app`, and `GRANT SELECT ON characters`. No function body, table or
+  write privilege changed. The app role still cannot INSERT/UPDATE `orders`,
+  `video_requests`, `drawing_animation_requests`, `media_assets`,
+  `candy_wallets`, `candy_transactions`, `parent_welcome_credits`,
+  `parent_welcome_credit_usages`, `order_status_history`, `characters`,
+  `creation_pricing`, and cannot execute `complete_candy_purchase_trusted`,
+  `update_order_status_trusted`, `record_final_media_trusted`,
+  `create_payment_attempt_trusted` ... (17 privilege probes, all `42501`; the
+  SECURITY DEFINER EXECUTE list of the role is exactly nonce, request,
+  provisioning, consent).
+- **Fastify** (`backend/src/routes/parent-requests.ts`): `POST /v1/parent/requests`
+  (`requireWriteAuth(deps, "parent")`, body limit 64 KiB: Persian text is
+  2 bytes per character and two 5000-character fields exceed the global
+  16 KiB) and `GET /v1/parent/requests/by-submission-key` (v2, parent only).
+- **Repository** (`lib/repositories/parent-requests.ts`): the one write is the
+  function call; reads are the caller's order by `(parent_id, submission_key)`
+  and `characters` by name.
+- **Next**: `app/api/requests/route.ts` rewritten; new
+  `app/api/requests/by-submission-key/route.ts`; `lib/requests/backend-request*.ts`;
+  `lib/security/csrf.ts` gained a multipart variant (same Origin and
+  Sec-Fetch-Site rules; the type alone proves nothing for multipart).
+- **Client**: `lib/requests/submission-attempt.ts` (persisted submission key),
+  `complete-creation-request.tsx` (uncertain state, status check), success now
+  goes to `/dashboard/orders` (see "Read-after-write").
+
+New flow:
+
+```
+browser (multipart: draft, submissionKey, file | sourceAssetId)
+ -> rejectUnsafeBrowserWrite(multipart)      Origin, Sec-Fetch-Site
+ -> verifyParentCaller                       Supabase Auth only; subject = the actor
+ -> rate limit (per subject)
+ -> consent read  (v2, PostgreSQL)           cheap gate BEFORE any upload; the function re-checks
+ -> idempotency lookup by key (v2)           a retry never re-uploads
+ -> Supabase STORAGE upload / copy           bytes NOT migrated
+ -> POST /v1/parent/requests (v3: digest + nonce)
+ -> profile from the assertion -> character name -> create_parent_request_trusted
+```
+
+### Request body trust model
+
+Public contract unchanged (draft, submissionKey, file | sourceAssetId). Next →
+Fastify body, each field classified:
+
+| field | class |
+|---|---|
+| `type`, `title`, `description`, `character` (name), `durationKey`, `durationChoice`, `videoScript`, `videoStyle`, `animationStyle`, `charactersSpeak`, `childName` | **A** trusted user input (validated by the draft parser, the route's shape check and the function) |
+| `submissionKey` | **A** (UUID only; scoped to the parent in the database) |
+| `orderId` | **B** server-derived (minted by the BFF: the storage key embeds it; route and function require the file key to start with `<caller>/<orderId>/`) |
+| price / `candy_cost`, credit use, `payment_source`, order status, balance | **C** pricing/database-derived: **not in the body** |
+| user id, profile id, wallet, role | **D** identity-derived: **not in the body** (assertion → `user_identities` → `parent_profiles`) |
+| `file.path`, `file.mimeType`, `file.originalFilename` | **E** storage-derived (set from the object the BFF just wrote or copied; MIME is the allow-listed upload type, or the gallery row's) |
+
+The route requires EXACTLY these keys: any extra key (`parentProfileId`,
+`userId`, `role`, `walletId`, `candyCost`, `price`, `paymentSource`, `status`,
+`balance`, `creditAmount`, `parent_id`) is `400 invalid_request`; headers
+(`X-User-Id`, `X-Role`, ...) are never read.
+
+### Consent
+
+PostgreSQL only. The BFF reads consent before uploading anything (an
+un-consented parent stores nothing); the function checks
+`consent_granted` again inside the write transaction, so the UI and the BFF
+are not the only guards (proved: an un-consented parent posting straight to
+Fastify gets `403 request_consent_required` and nothing is written).
+
+### Idempotency, outcome unknown, recovery
+
+Two different protections, kept apart:
+
+| | protects against | answer |
+|---|---|---|
+| nonce (v3 assertion) | the SAME assertion arriving twice (transport replay) | `409 replayed_request`, before the handler |
+| submission key | a legitimate retry: NEW assertion, NEW nonce, SAME key | the original order, `replayed: true`, no second charge |
+
+The BFF sends the write ONCE. If the answer is lost (timeout, reset, 5xx,
+unreadable 2xx, or `409 replayed_request`, which can only mean this request
+arrived before) it asks the backend by key with a fresh v2 read:
+
+| lookup | BFF answer | UI |
+|---|---|---|
+| found | `200` success (the order a replay would return) | redirect |
+| absent | `503 request_not_created` | "not registered yet, retry is safe (one charge only)" |
+| cannot ask | `503 request_outcome_unknown` | "نتوانستیم تأیید کنیم که درخواست ثبت شده است یا نه." + "check status" |
+
+The uploaded object is **kept** on both 503s (the order may exist and own it)
+and removed only on definite refusals and on a lost submission race. "Absent"
+is not proof: a write still in flight can commit after the lookup. That is
+why the retry is safe by construction (same key), proved with a held write
+that commits after the "absent" answer, after which the retry replays.
+`GET /api/requests/by-submission-key` (+ `GET /v1/parent/requests/by-submission-key`)
+returns the minimum (`found`, order id, type, status, cost, payment source)
+for the CALLER's own order only; another parent's key is `found: false`,
+identical to an unused key.
+
+### Submission-key audit (historical P1) and fix
+
+Audit of `complete-creation-request.tsx` before V0.1.50: the key lived in a
+React ref, minted on the first click, and was reset to `null` by **file
+selection, file removal and gallery selection**. Consequences: (1) after a lost
+answer, re-selecting the file (which the page requires for any draft with a
+reference file) and clicking again minted a NEW key = a second charge;
+(2) a reload or navigating away and back lost the key; (3) a second tab had
+its own.
+
+Fix: the key belongs to the draft, not the file, and is persisted
+(`localStorage`, record `{key, draftHash, uncertain}`, written BEFORE the first
+send). It is forgotten only when the outcome is known: a confirmed order, or a
+refusal that proves nothing was created (any 4xx of ours). Lost answers keep
+it and mark it `uncertain`; a different draft cannot mint a competing key
+while an uncertain attempt exists (it must resolve it by lookup first); a
+failure before `fetch` sends nothing and forgets the key. `crypto.randomUUID`
+only exists in secure contexts, so keys use `mintSubmissionKey` (falls back to
+`getRandomValues`): over plain http the old code threw before sending and the
+UI called it a network failure. Regression tests: `submission-attempt.test.ts`,
+the browser proof (reload while uncertain keeps the key: replay, one charge).
+
+### Storage boundary and what still reads Supabase
+
+Storage stays Supabase: the BFF uploads/copies with the parent's own session
+(bucket policies unchanged) and sends only the key, MIME type and file name to
+Fastify. PostgreSQL never reads `storage.objects` (the function takes the MIME
+as input). Remaining Supabase dependencies of the request path:
+
+| | dependency | note |
+|---|---|---|
+| Auth | session verification (`getUser`) | unchanged, by design |
+| Storage | upload, copy, remove in `parent-uploads` | bytes not migrated |
+| gallery source | `parent_profiles.id` + `media_assets` READ in `resolveOwnedSourceAsset` | read-only, only when a gallery file is chosen; needs the Supabase profile |
+| `/dashboard/*` middleware | `users.role` read | unrelated to the request route; the submit itself makes none |
+
+### Consequences of a PostgreSQL-only order (known, deliberate, V0.1.51)
+
+A request created now exists **only in PostgreSQL**. Everything that still
+reads orders from Supabase cannot see it:
+
+- **order detail page** `/dashboard/orders/[orderId]`, final media and the
+  parent gallery (media rows) read Supabase. The success redirect therefore
+  goes to `/dashboard/orders` (PostgreSQL list), not to the detail page; links
+  from that list to the detail of a NEW order will 404 until detail reads move;
+- **admin fulfilment** (request list/detail, status updates, final media,
+  coupons' redemption joins) reads and writes Supabase: new requests are not
+  visible to admins;
+- **candy purchases/payments** still credit the **Supabase** wallet, while
+  requests now debit the **PostgreSQL** wallet. A parent who buys candy does
+  not see it in the balance requests spend. The billing page already showed
+  the PostgreSQL balance (V0.1.46).
+
+These are the next blockers, not regressions to patch with dual writes: the
+branch was not deployable before and still is not.
+
+### Supabase request RPC migration
+
+`supabase/migrations/20261022100000_request_rpc_consent_gate_moved.sql`
+(V0.1.48) removed the stale consent clause from the Supabase RPC. After this
+release nothing calls that RPC (a static test: no application code names
+`create_parent_request_trusted` outside the repository). The migration is
+**transitional compatibility only**: it is committed history and stays, and
+should ship with (or before) the app only if an old Supabase writer could ever
+run again (rollback, below). If the RPC is never used after cutover it has no
+runtime effect either way; the Supabase function itself can be dropped in a
+later cleanup migration once rollback to the old writer is off the table.
+Future production ordering: Supabase migrations (this one) → data copy →
+PostgreSQL migrations 0001-0016 → app. Nothing here changes it.
+
+### Signup still creates a Supabase profile: re-audit
+
+`complete-signup` still writes the Supabase `parent_profiles` row (whose
+triggers also create a wallet and welcome credits there). After V0.1.50 the
+request path no longer needs it. Remaining runtime consumers of those Supabase
+records (grep over `app`, `lib`, `components`):
+
+| consumer | needs |
+|---|---|
+| candy purchase create / complete / coupon (`app/api/candy-purchases/**`, `app/api/coupons/validate`) | profile id; **credits the Supabase wallet** |
+| referrals bind / summary / dashboard (RPCs) | profile, referral code |
+| order detail, final media, gallery (`ParentRequestContext`, `final-media-queries`, `gallery/queries`, `source-asset`) | profile id for ownership filters |
+| admin request views | `orders` ⋈ `parent_profiles` ⋈ `users` |
+| `ensureParentProfile` (dev auth route, signup) | creates it |
+
+Nothing reads the Supabase **wallet balance** or **welcome credits** for a
+request or for the billing display any more (balance and credits come from
+PostgreSQL since V0.1.46/V0.1.50); the Supabase wallet is only credited by
+purchases and read by purchase completion. The duplicate-account state is
+therefore reduced to: two profile ids and referral codes (referrals), and a
+Supabase wallet/credit row that is stale by construction. It cannot be
+eliminated until purchases, referrals, detail/gallery/final media and admin
+views move: Five consumer groups remain (the table above). Signup creation
+is deliberately NOT removed.
+
+### Rollback
+
+Once a request/charge exists only in PostgreSQL, re-enabling the old Supabase
+writer would double-spend: its wallet and credits are stale. Rules:
+
+1. **Preferred (A): PostgreSQL stays the source of truth for requests even
+   during rollback.** Roll back the app artifacts, not the data path: the
+   previous release (V0.1.49) writes requests to Supabase and MUST NOT be run
+   against this data. Keep the request route on PostgreSQL and roll back other
+   things only.
+2. **(B) only with a reverse sync** of orders + request rows, wallet balances,
+   credit usage and ledger into Supabase BEFORE the old writer is enabled. No
+   such tool exists; it is a production prerequisite if (A) is not acceptable.
+3. The old Supabase writer must never be re-enabled against stale balances.
+4. A bad deploy of THIS release is fixed forward (the function is idempotent
+   per key; a half-finished request does not exist).
+
+### Data copy interaction
+
+The migration pin (`scripts/db/data-copy/mapping.ts`) lists 0016 (privileges
+only; no mapping change). Proved with the same assertions on both
+populations: a copied parent and a V0.1.49-provisioned parent starting from
+the same balance/credits produce identical outcomes for 4 images, a
+file image, a video and a drawing (`request-cutover-db.test.ts`).
+
+### Migration matrix
+
+| Surface | Source of truth after V0.1.50 |
+|---|---|
+| Auth (session, password, OTP) | **Supabase** |
+| Identity provisioning | **PostgreSQL** (V0.1.49) |
+| Consent | **PostgreSQL** (V0.1.48) |
+| Creation pricing | **PostgreSQL** (V0.1.41) |
+| Orders list | **PostgreSQL** (V0.1.45) |
+| Account reads (balance, welcome credits, name) | **PostgreSQL** (V0.1.46) |
+| **Request submission** | **PostgreSQL** (V0.1.50) |
+| **Welcome-credit spend by requests** | **PostgreSQL** (V0.1.50) |
+| **Candy debit by requests** | **PostgreSQL** (V0.1.50) |
+| Candy purchase / payment / coupons | **Supabase** (credits the Supabase wallet: split, see above) |
+| Storage (uploads, final media bytes) | **Supabase** |
+| Order detail, final media, gallery | Supabase (reads) |
+| Admin fulfilment, admin coupons/homepage/referrals | Supabase |
+| Referrals (bind, summary) | Supabase |
+| Profile name write | PostgreSQL (backend only, no UI) |
+
+Drift that remains: two profiles / referral codes / wallets per post-cutover
+parent (Supabase copies are stale); requests invisible to Supabase-backed
+readers (detail, gallery, admin); purchases not reflected in the balance
+requests spend; `users.email` NULL for provisioned parents.
+
+### Verified locally (2026-10-24)
+
+**Totals** (opt-in PostgreSQL suites on, `CARTOONA_PLAIN_PG=docker`): 105 files
+passed, **3083 tests passed**, 34 skipped (the opt-in suites that need a
+disposable Supabase project; unchanged), 0 failed. `npm run lint`: 0 errors
+(31 pre-existing warnings). `npx next build`, `npm run backend:typecheck`,
+`npm run backend:build`, `git diff --check`: clean.
+
+New and changed suites:
+
+| suite | tests | proves |
+|---|---|---|
+| `request-cutover-db.test.ts` (real PostgreSQL 17 + Fastify + Next routes + stub Auth/Storage) | 75 | privileges (17 forbidden probes, EXECUTE list), strict body and auth, each request type's rows and cost, welcome credits first (3 then candy), exact-cost / one-short / concurrent candy (12 videos for a balance of 3 x cost + 1 -> exactly 3), credit concurrency (8 for 3), same-key replay, 20 concurrent identical submissions -> 1 order / 1 charge, same assertion twice -> 409, per-parent keys, atomic rollback at 5 stages + a CHECK failure, recovery lookup and cross-parent probing, the whole Next chain with **zero Supabase database calls** (only Auth + Storage), read-after-write, CSRF, not consented / unprovisioned / insufficient candy, duplicate clicks, backend unreachable, write committed but answer lost -> success by lookup, write still in flight -> `request_not_created` then replay, answer AND lookup lost -> `request_outcome_unknown`, copied vs provisioned parent identical outcomes, timings |
+| `submission-attempt.test.ts` | 27 | key stability (retry, reload, file re-selection, draft edit while uncertain), when the key may be forgotten, secure-context fallback, status check |
+| `backend-request.test.ts` | 24 | the BFF decision table with a mocked backend, validators fail closed |
+| `request-cutover-static.test.ts` | 24 | no Supabase DB/RPC in `POST /api/requests`, v3 + parent route, exact body keys, repository has no other write, request function named nowhere else, Storage separate, purchases unmigrated, 0016 grants only |
+| ported | | `observability-routes`, `rate-limit-routes`, `request-upload-size-guard`, `welcome-image-credits` (route sections), the static guards, the DB suites' pins (16 migrations, role privileges) |
+
+**Docker / headless browser proof** (real `Dockerfile`s tagged `proof050`,
+frontend + backend containers, local PostgreSQL 17 scratch database migrated
+through 0016 and populated by the real copy tool, stub Supabase Auth +
+Storage on the host, Chromium talking ONLY to Next): **48/48 checks passed.**
+New parent: password sign-in -> account provisioning (profile, wallet, 3
+credits) -> consent -> `/complete-request` -> submit -> one welcome credit,
+no candy, one order, object under `<user>/<order>/`, zero Supabase database
+calls during the submit, the PostgreSQL orders list and account summary show
+it. Copied parent: same behaviour; image credit-funded, video 40 candy, 100 ->
+60. Failure matrix in the browser: insufficient candy (402 message, link, draft
+kept, upload removed), not consented (redirect, direct POST 403, nothing
+uploaded), double click (ONE POST, one order, one charge), backend
+unreachable before submit (retryable 503, no charge, nothing uploaded; the
+retry succeeds with one charge), response lost after commit (success by
+recovery), response AND lookup lost ("could not confirm" text; the "check
+status" button and a RELOAD + resubmit both finish with exactly one charge),
+replay of a v3 assertion (409), unprovisioned user (setup card, request
+refused 403, retry provisions). The browser only contacted
+`cartoona.test:3100` and the provider; no request carried an assertion; no
+secret, DB password or backend address appeared in the console.
+
+Not proven locally: real Supabase tokens (`amr`), a production `pg_dump`,
+the real Storage service (a stub with the same API shape), production load.
+
+Local timings, isolated run, 25 each, Docker, one machine (NOT production
+estimates):
+
+| path | median | p90 |
+|---|---|---|
+| Fastify direct, welcome-credit-funded image | 5.3 ms | 8.4 ms |
+| Fastify direct, candy-funded image | 4.5 ms | 6.7 ms |
+| Fastify direct, duplicate key (idempotent replay) | 3.8 ms | 5.0 ms |
+| Fastify direct, by-submission-key lookup | 3.0 ms | 3.5 ms |
+| Next -> Fastify -> PostgreSQL, candy image, no file | 16.0 ms | 23.5 ms |
+| Next -> Fastify -> PostgreSQL, candy image + stub-storage upload | 17.6 ms | 21.6 ms |
+| Next recovery lookup (timeout recovery) | 5.8 ms | 10.9 ms |
+
+(Inside the full parallel suite the same numbers are roughly 4-5x higher: the
+machine is loaded by other suites. The Next path adds the provider check and two
+backend reads - consent and the idempotency lookup - before the one write.)
+
+### Production status
+
+**Not deployable.** Unchanged blockers: the `amr` check against real Supabase
+tokens, a real `pg_dump` rehearsal (the local Supabase-shaped fixture proves
+logic, not production compatibility), backend deployment, Storage. New
+deployment prerequisites: migration 0016 ships with the app; the order-detail,
+gallery, admin-fulfilment and purchase/payment cutovers above must land
+before any user can use the request flow end to end; the rollback rules above
+must be agreed.
+
 ## Next
 
-V0.1.50, the first transactional write cutover. Before it:
+V0.1.51 candidates, in the order the V0.1.50 consequences force:
 
-- the read/write split (blocker 5), now sharper: post-cutover parents have a
-  PostgreSQL profile/wallet/credits AND a different Supabase
-  profile/wallet/credits; request submission and purchases still spend the
-  Supabase ones. The next write must move request submission (consent gate,
-  credits/candy spend, order rows) as ONE PostgreSQL transaction, with
-  storage still on Supabase or moved first;
-- decide whether signup stops writing the Supabase profile once requests and
-  purchases no longer need it;
-- a scripted reverse-sync (consent + provisioned accounts) or a
-  PostgreSQL-backed rollback path, per "V0.1.49 rollback implications";
-- the `amr` check, a real `pg_dump` rehearsal, backend deployment and the
-  storage migration (production blockers, unchanged).
+- **candy purchase / payment completion to PostgreSQL**: today a purchase
+  credits the Supabase wallet while requests debit the PostgreSQL wallet;
+- **order detail, final media and gallery reads** (and the media rows a new
+  request creates): the success page cannot link to a new order's detail yet;
+- **admin fulfilment** (request list/detail, status, final media): new
+  requests are invisible to admins;
+- referrals, then stop writing the Supabase profile/wallet/credits at signup
+  once no consumer is left;
+- production blockers, unchanged: the `amr` check, a real `pg_dump` rehearsal,
+  backend deployment, the Storage migration, and the rollback rules in
+  "V0.1.50 Rollback".

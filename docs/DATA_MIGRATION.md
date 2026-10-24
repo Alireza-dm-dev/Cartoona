@@ -549,3 +549,25 @@ provisioning a copied parent changes no byte of its rows.
 target no longer matches the source: a rerun stops with `validation_failed`
 and writes nothing (proven). The copy is a one-time cutover step; a
 post-cutover delta needs its own tool.
+
+### V0.1.50: request submission, re-audit of 0016
+
+0016 adds only privileges (EXECUTE on the request function, SELECT on
+`characters`): no table, column or function, so the mapping is unchanged and
+the pin (`EXPECTED_TARGET_MIGRATIONS`) just lists it. Copied pre-cutover
+parents and V0.1.49-provisioned parents run through the same request function
+with identical outcomes (tested). New facts for the production plan:
+
+- the copy is still a one-time step: never rerun it into a target that holds
+  PostgreSQL-only orders, wallets or ledger rows (V0.1.49 already refuses when
+  provisioned accounts exist) and never use it to "refresh" such a target;
+- **the Supabase wallet, credits and orders go stale at the first PostgreSQL
+  request**; rollback to the old writer is only safe under the rules in
+  ROUTE_CUTOVER "V0.1.50 Rollback";
+- `characters`: a never-copied database holds the 0008 seed rows with fresh
+  ids; the copy REPLACES them with the source rows (`reference_replace`), so
+  copied orders keep a valid `character_id`. Request bodies carry the character
+  NAME and Fastify resolves it in PostgreSQL, so the flow works on both;
+- the local Supabase-shaped fixture proves logic, not production migration
+  compatibility: the real `pg_dump` rehearsal blocker is unchanged, and so is
+  the open `amr` check.

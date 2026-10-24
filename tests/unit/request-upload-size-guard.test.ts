@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { setRateLimitStore, InMemoryRateLimitStore } from "@/lib/rate-limit"
-import { getSessionResult } from "../helpers/supabase-jwt"
 
 // POST /api/requests must refuse an oversized body from Content-Length alone,
 // BEFORE request.formData() buffers it. No real large buffers are allocated:
@@ -12,18 +11,21 @@ const BODY_CAP = FILE_LIMIT + 256 * 1024
 const m = vi.hoisted(() => ({
   createServerClient: vi.fn(),
   upload: vi.fn(),
-  rpc: vi.fn(),
+  create: vi.fn(),
+  lookup: vi.fn(),
+  verify: vi.fn(),
 }))
 
 vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient: m.createServerClient }))
-// V0.1.48: the consent gate reads PostgreSQL through the backend; these tests
-// cover the (still Supabase) submission path behind it.
+// V0.1.50: identity, consent, the idempotency lookup and the write all go
+// through the backend; these tests cover the upload-size guards in front of it.
+vi.mock("@/lib/parent/backend-caller", () => ({ verifyParentCaller: m.verify }))
 vi.mock("@/lib/parent/consent/backend-consent", () => ({
-  loadParentConsent: async () => ({ ok: true, status: "granted", consentGrantedAt: "2026-01-01T00:00:00.000Z" }),
+  fetchParentConsent: async () => ({ ok: true, status: "granted", consentGrantedAt: "2026-01-01T00:00:00.000Z" }),
 }))
-vi.mock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => ({ rpc: m.rpc }) }))
-vi.mock("@/lib/requests/resolve-character", () => ({
-  resolveCharacterId: async () => ({ ok: true, characterId: null }),
+vi.mock("@/lib/requests/backend-request", () => ({
+  createRequestViaBackend: m.create,
+  lookupRequestBySubmissionKey: m.lookup,
 }))
 vi.mock("@/lib/requests/request-submission", () => ({
   parseAndValidateDraft: () => ({
@@ -39,21 +41,7 @@ vi.mock("@/lib/requests/request-submission", () => ({
 const KEY = "11111111-1111-4111-8111-111111111111"
 
 function healthyClient() {
-  const chain = (data: unknown) => ({
-    select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }), maybeSingle: async () => ({ data, error: null }) }) }),
-  })
-  return {
-    auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), getSession: async () => getSessionResult("valid", "u1"), signOut: vi.fn() },
-    rpc: async () => ({
-      data: [{ is_valid: true, session_started_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-31T00:00:00Z" }],
-      error: null,
-    }),
-    from: (table: string) =>
-      table === "users" ? chain({ role: "parent" })
-      : table === "parent_profiles" ? chain({ id: "p1" })
-      : chain(null),
-    storage: { from: () => ({ upload: m.upload, remove: async () => ({}) }) },
-  }
+  return { storage: { from: () => ({ upload: m.upload, remove: async () => ({}) }) } }
 }
 
 function fakeForm(file: unknown) {
@@ -64,7 +52,7 @@ function fakeForm(file: unknown) {
 function post(headers: Record<string, string> = {}) {
   const req = new Request("http://x/api/requests", {
     method: "POST",
-    headers: { "content-type": "multipart/form-data; boundary=x", ...headers },
+    headers: { "content-type": "multipart/form-data; boundary=x", origin: "http://localhost:3000", ...headers },
     body: "x",
   })
   const formData = vi.fn()
@@ -80,7 +68,13 @@ beforeEach(() => {
   setRateLimitStore(new InMemoryRateLimitStore()) // fresh counters per test
   m.createServerClient.mockReset().mockImplementation(async () => healthyClient())
   m.upload.mockReset().mockResolvedValue({ error: null })
-  m.rpc.mockReset().mockResolvedValue({ data: [{ id: "o1", type: "image", status: "pending", candy_cost: 1 }], error: null })
+  m.verify.mockReset().mockResolvedValue({ ok: true, context: { identity: { provider: "supabase", subject: "u1" }, authenticatedAt: 1 } })
+  m.lookup.mockReset().mockResolvedValue({ ok: true, found: false })
+  m.create.mockReset().mockResolvedValue({
+    ok: true,
+    confirmedBy: "write",
+    order: { orderId: "11111111-2222-4333-8444-555555555555", type: "image", status: "pending_review", candyCost: 1, paymentSource: "candy", replayed: false },
+  })
 })
 
 describe("early Content-Length guard", () => {
@@ -167,7 +161,7 @@ describe("authoritative checks after parsing are unchanged", () => {
     formData.mockResolvedValue(fakeForm({ size: FILE_LIMIT, type: "image/png", name: "ok.png" }))
     const res = await POST(req)
     expect(res.status).toBe(200)
-    expect((await res.json()).orderId).toBe("o1")
+    expect((await res.json()).orderId).toBe("11111111-2222-4333-8444-555555555555")
     expect(m.upload).toHaveBeenCalledTimes(1)
   })
 
@@ -189,6 +183,6 @@ describe("authoritative checks after parsing are unchanged", () => {
     expect(res.status).toBe(500)
     expect(JSON.stringify(await res.json())).not.toMatch(/timed out|25000/)
     expect(m.upload).toHaveBeenCalledTimes(1)
-    expect(m.rpc).not.toHaveBeenCalled()
+    expect(m.create).not.toHaveBeenCalled()
   })
 })

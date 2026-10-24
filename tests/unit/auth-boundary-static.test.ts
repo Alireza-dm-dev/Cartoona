@@ -194,7 +194,8 @@ describe("V0.1.43: no runtime dependency on Supabase session internals", () => {
     // 13 since V0.1.48: POST /api/parent-consent verifies through
     // verifyParentCaller (same 30-day policy) and the backend (which also
     // enforces sessions_not_before), like the other cut-over routes.
-    expect(callers.length).toBe(13)
+    // 12 since V0.1.50: POST /api/requests does the same.
+    expect(callers.length).toBe(12)
     for (const file of callers) {
       expect(code(file), file).toMatch(/checkParentSessionLifetime\(supabase, (user\.id|ownership\.userId)\)/)
     }

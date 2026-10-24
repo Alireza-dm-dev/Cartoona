@@ -82,10 +82,10 @@ describe("data-copy mapping covers the plain schema exactly", () => {
     }
   })
 
-  it("is pinned to exactly the audited migrations 0001-0015", () => {
+  it("is pinned to exactly the audited migrations 0001-0016", () => {
     const files = fs.readdirSync(path.join(root, "database/migrations")).filter((f) => f.endsWith(".sql")).map((f) => f.replace(/\.sql$/, "")).sort()
     expect(EXPECTED_TARGET_MIGRATIONS).toEqual(files)
-    expect(files).toHaveLength(15)
+    expect(files).toHaveLength(16)
   })
 })
 

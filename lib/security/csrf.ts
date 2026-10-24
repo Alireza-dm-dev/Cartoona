@@ -97,11 +97,27 @@ export function isJsonContentType(header: string | null): boolean {
   })
 }
 
+/**
+ * multipart/form-data with the boundary parameter (V0.1.50, POST /api/requests
+ * only: the one browser write that carries a file). The type itself is one a
+ * cross-site form can send without a preflight, so unlike JSON it proves
+ * nothing; the Origin and Sec-Fetch-Site rules below are what protect it.
+ */
+export function isMultipartContentType(header: string | null): boolean {
+  if (!header) return false
+  const [type, ...params] = header.split(";")
+  if (type.trim().toLowerCase() !== "multipart/form-data") return false
+  return params.length > 0 && params.every((p) => /^\s*(boundary|charset)\s*=/i.test(p))
+}
+
+export type BrowserWriteBody = "json" | "multipart"
+
 /** Pure decision; null means the request may proceed. */
-export function checkBrowserWrite(request: Request, env: Env = process.env): BrowserWriteRejection | null {
+export function checkBrowserWrite(request: Request, env: Env = process.env, body: BrowserWriteBody = "json"): BrowserWriteRejection | null {
   if (SAFE_METHODS.has(request.method.toUpperCase())) return null
 
-  if (!isJsonContentType(request.headers.get("content-type"))) {
+  const contentType = request.headers.get("content-type")
+  if (!(body === "multipart" ? isMultipartContentType(contentType) : isJsonContentType(contentType))) {
     return { status: 415, code: "unsupported_media_type", reason: "content_type" }
   }
 
@@ -132,8 +148,8 @@ const MESSAGES: Record<BrowserWriteRejection["code"], string> = {
  * must be refused, otherwise null. Rejections are logged by category only,
  * never with the Origin value.
  */
-export function rejectUnsafeBrowserWrite(request: Request, env: Env = process.env): NextResponse | null {
-  const rejection = checkBrowserWrite(request, env)
+export function rejectUnsafeBrowserWrite(request: Request, env: Env = process.env, body: BrowserWriteBody = "json"): NextResponse | null {
+  const rejection = checkBrowserWrite(request, env, body)
   if (!rejection) return null
   log(rejection.status === 503 ? "error" : "info", "CSRF_REJECTED", {
     subsystem: "request",
@@ -142,7 +158,10 @@ export function rejectUnsafeBrowserWrite(request: Request, env: Env = process.en
     reason: rejection.reason,
   })
   return NextResponse.json(
-    { error: MESSAGES[rejection.code], code: rejection.code },
+    {
+      error: rejection.code === "unsupported_media_type" && body === "multipart" ? "فرمت درخواست باید multipart/form-data باشد." : MESSAGES[rejection.code],
+      code: rejection.code,
+    },
     { status: rejection.status, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } },
   )
 }

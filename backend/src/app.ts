@@ -12,6 +12,7 @@ import { registerHealthRoutes } from "./routes/health"
 import { registerParentAccountRoutes } from "./routes/parent-account"
 import { registerParentConsentRoutes } from "./routes/parent-consent"
 import { registerParentOrdersRoutes } from "./routes/parent-orders"
+import { registerParentRequestRoutes } from "./routes/parent-requests"
 
 /**
  * The backend HTTP app (V0.1.40), built WITHOUT listening: tests call
@@ -79,6 +80,7 @@ export function buildBackendApp(overrides: Partial<BackendDeps> = {}): FastifyIn
   registerParentOrdersRoutes(app, deps)
   registerParentAccountRoutes(app, deps)
   registerParentConsentRoutes(app, deps)
+  registerParentRequestRoutes(app, deps)
 
   app.addHook("onClose", async () => {
     await deps.closeDb()

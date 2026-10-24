@@ -1,25 +1,59 @@
 import { NextResponse } from "next/server"
 import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { createAdminSupabaseClient } from "@/lib/supabase/admin"
-import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
-import { createParentSessionFailureResponse, SESSION_CHECK_UNAVAILABLE_BODY } from "@/lib/auth/expired-parent-session-response"
 import { endParentSession } from "@/lib/auth/end-parent-session"
-import { loadParentConsent, type ParentConsentFailure } from "@/lib/parent/consent/backend-consent"
+import { SESSION_CHECK_UNAVAILABLE_BODY } from "@/lib/auth/expired-parent-session-response"
+import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf"
+import { verifyParentCaller } from "@/lib/parent/backend-caller"
+import { fetchParentConsent, type ParentConsentFailure } from "@/lib/parent/consent/backend-consent"
 import { parseAndValidateDraft } from "@/lib/requests/request-submission"
 import { mapRequestRpcError } from "@/lib/requests/request-rpc-error"
-import { toSubmissionSuccess } from "@/lib/requests/submission-response"
-import { resolveCharacterId } from "@/lib/requests/resolve-character"
+import {
+  createRequestViaBackend,
+  lookupRequestBySubmissionKey,
+  type BackendRequestCreate,
+  type BackendRequestPayload,
+} from "@/lib/requests/backend-request"
+import type { BackendCreatedRequest } from "@/lib/requests/backend-request-response"
+import type { SubmissionSuccess } from "@/lib/requests/submission-response"
 import { isValidSubmissionKey } from "@/lib/requests/submission-key"
 import { sanitizeFileName } from "@/lib/requests/sanitize-file-name"
 import { withObservability, log } from "@/lib/observability/request-context"
-import { logAuthLookup } from "@/lib/observability/auth-events"
 import { categorizeError } from "@/lib/observability/errors"
 import {
   resolveOwnedSourceAsset,
   sourceAssetCopyName,
   PRIVATE_UPLOADS_BUCKET,
 } from "@/lib/parent/gallery/source-asset"
+
+/**
+ * Parent request submission (V0.1.50): the business state is PostgreSQL.
+ *
+ *   browser (multipart: draft, submissionKey, file | sourceAssetId)
+ *   -> rejectUnsafeBrowserWrite (CSRF: multipart, Origin, Sec-Fetch-Site)
+ *   -> Supabase Auth verification (verifyParentCaller; sign-in time, 30 days)
+ *   -> consent read (PostgreSQL, via the backend)       cheap gate BEFORE any upload;
+ *                                                       the database function re-checks it
+ *   -> idempotency lookup by submission key (PostgreSQL) a retry never re-uploads
+ *   -> Supabase STORAGE: upload / copy the source file  (bytes are NOT migrated)
+ *   -> v3 assertion -> Fastify POST /v1/parent/requests
+ *   -> create_parent_request_trusted() in PostgreSQL    order + request rows + welcome-credit-or-candy
+ *                                                       spend + ledger: ONE transaction
+ *
+ * No Supabase Database table or RPC is read or written by the submission
+ * itself. The two Supabase reads that remain are for the optional gallery
+ * source only (media_assets + the profile id its ownership filter needs, see
+ * resolveOwnedSourceAsset) - read-only, and only when the browser chose a
+ * gallery file. No price, credit amount, wallet, profile id, user id or role
+ * is accepted from the browser: the backend derives them.
+ *
+ * The write is ONE attempt, never retried here. If its answer is lost the
+ * route asks the backend (by submission key) whether the order exists
+ * (lib/requests/backend-request.ts): found -> success; not found -> 503
+ * request_not_created; could not ask -> 503 request_outcome_unknown. In both
+ * 503 cases the uploaded object is KEPT (the order may exist and own it) and
+ * the client retries with the SAME submission key.
+ */
 
 const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"]
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MiB
@@ -36,12 +70,18 @@ const MULTIPART_OVERHEAD_ALLOWANCE = 256 * 1024
 const MAX_REQUEST_BODY_SIZE = MAX_FILE_SIZE + MULTIPART_OVERHEAD_ALLOWANCE
 
 const NO_STORE = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }
+const RETRY = { ...NO_STORE, "Retry-After": "2" }
 
-/**
- * The consent gate could not say "granted". An outage is a retryable 503,
- * never "consent required": "could not determine" is not "not consented".
- */
-async function consentGateFailure(reason: ParentConsentFailure): Promise<NextResponse> {
+const NO_PROFILE = "پروفایل والد یافت نشد. لطفاً ابتدا رضایت خود را ثبت کنید"
+const NOT_PARENT = "فقط حساب‌های والد می‌توانند درخواست ثبت کنند"
+const GENERIC = "ثبت درخواست با خطا مواجه شد. لطفاً دوباره تلاش کنید."
+/** Persian UX for a write whose outcome is not known: never "failed". */
+const OUTCOME_UNKNOWN_MESSAGE = "نتوانستیم تأیید کنیم که درخواست ثبت شده است یا نه."
+const NOT_CREATED_MESSAGE = "درخواست شما هنوز ثبت نشده است. می‌توانید دوباره تلاش کنید؛ هزینه فقط یک‌بار کسر می‌شود."
+const UNAVAILABLE_MESSAGE = "ثبت درخواست موقتاً ممکن نیست. لطفاً چند لحظه بعد دوباره تلاش کنید."
+
+/** The session / identity answers every authenticated parent route can give. */
+async function authFailure(reason: ParentConsentFailure | "session_expired" | "no_parent_profile"): Promise<NextResponse> {
   switch (reason) {
     case "unauthenticated":
       return NextResponse.json({ error: "لطفاً ابتدا وارد حساب خود شوید" }, { status: 401 })
@@ -54,21 +94,22 @@ async function consentGateFailure(reason: ParentConsentFailure): Promise<NextRes
       )
     case "identity_not_linked":
     case "forbidden":
-      return NextResponse.json({ error: "فقط حساب‌های والد می‌توانند درخواست ثبت کنند" }, { status: 403 })
+      return NextResponse.json({ error: NOT_PARENT }, { status: 403 })
+    case "no_parent_profile":
+      return NextResponse.json({ error: NO_PROFILE }, { status: 403 })
     case "auth_unavailable":
-      return NextResponse.json(SESSION_CHECK_UNAVAILABLE_BODY, { status: 503, headers: { ...NO_STORE, "Retry-After": "2" } })
+      return NextResponse.json(SESSION_CHECK_UNAVAILABLE_BODY, { status: 503, headers: RETRY })
     case "service_unavailable":
       return NextResponse.json(
-        { error: "بررسی رضایت والدین موقتاً ممکن نیست. لطفاً چند لحظه بعد دوباره تلاش کنید.", code: "consent_unavailable" },
-        { status: 503, headers: { ...NO_STORE, "Retry-After": "2" } },
+        { error: UNAVAILABLE_MESSAGE, code: "request_unavailable" },
+        { status: 503, headers: RETRY },
       )
   }
 }
 
 export const POST = withObservability("POST /api/requests", handlePost)
 
-// Orphan-file cleanup. Behaviour is unchanged (best effort, never throws), but a
-// failed removal is now visible instead of silently leaving a stray object.
+// Orphan-file cleanup. Best effort, never throws, failure is logged.
 async function removeOrphanedUpload(
   supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
   path: string,
@@ -88,11 +129,21 @@ async function removeOrphanedUpload(
   }
 }
 
-async function handlePost(request: Request) {
-  const contentType = request.headers.get("content-type") || ""
-  if (!contentType.startsWith("multipart/form-data")) {
-    return NextResponse.json({ error: "فرمت درخواست باید multipart/form-data باشد." }, { status: 415 })
+function successBody(order: BackendCreatedRequest): SubmissionSuccess {
+  return {
+    success: true,
+    orderId: order.orderId,
+    type: order.type,
+    status: order.status,
+    candyCost: order.candyCost,
+    replayed: order.replayed,
+    paymentSource: order.paymentSource,
   }
+}
+
+async function handlePost(request: Request) {
+  const rejected = rejectUnsafeBrowserWrite(request, process.env, "multipart")
+  if (rejected) return rejected
 
   // Absent Content-Length (e.g. chunked) is not rejected here; it falls through
   // to the parser and the post-parse file-size check.
@@ -116,64 +167,33 @@ async function handlePost(request: Request) {
     }
   }
 
-  const supabase = await createServerSupabaseClient()
+  // Identity: the provider verifies the session; the subject is the ONLY actor.
+  const caller = await verifyParentCaller()
+  if (!caller.ok) return authFailure(caller.reason)
+  const { context } = caller
+  const subject = context.identity.subject
 
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-  if (authError || !user) {
-    logAuthLookup(authError)
-    return NextResponse.json({ error: "لطفاً ابتدا وارد حساب خود شوید" }, { status: 401 })
-  }
-
-  // Keyed by the authenticated parent (never IP). Runs before the role/profile
-  // lookups, the idempotency check, and above all any upload, storage copy or
-  // RPC, so a limited request does no expensive work and creates no order. It
+  // Keyed by the authenticated parent (never IP). Runs before the consent read,
+  // the idempotency check, and above all any upload, storage copy or backend
+  // write, so a limited request does no expensive work and creates no order. It
   // does not weaken idempotency: a retry that is allowed still hits the same
-  // submission-key fast path / unique constraint, and a rejected one never
-  // reaches them. Nothing here retries.
+  // submission-key lookup / unique constraint. Nothing here retries.
   const limited = await enforceRateLimit(
-    user.id,
+    subject,
     RATE_LIMIT_POLICIES.requestSubmitBurst,
     RATE_LIMIT_POLICIES.requestSubmitHourly,
   )
   if (limited) return limited
 
-  const { data: userRow, error: roleError } = await supabase
-    .from("users")
-    .select("role")
-    .eq("id", user.id)
-    .maybeSingle()
-
-  if (roleError || !userRow || userRow.role !== "parent") {
-    return NextResponse.json({ error: "فقط حساب‌های والد می‌توانند درخواست ثبت کنند" }, { status: 403 })
-  }
-
-  const lifetime = await checkParentSessionLifetime(supabase, user.id)
-  if (!lifetime.valid) {
-    return createParentSessionFailureResponse(supabase, lifetime)
-  }
-
-  // Consent gate (V0.1.48): PostgreSQL, through the backend - the same source
-  // the consent write uses. TEMPORARY MIXED FLOW: everything after this gate
-  // (profile id, storage, the create_parent_request_trusted RPC) is still
-  // Supabase; request submission is NOT migrated. The RPC no longer re-checks
-  // Supabase's stale consent column (supabase/migrations/20261022100000).
-  const consent = await loadParentConsent()
-  if (!consent.ok) return consentGateFailure(consent.reason)
-  if (consent.status === "no_profile") {
-    return NextResponse.json({ error: "پروفایل والد یافت نشد. لطفاً ابتدا رضایت خود را ثبت کنید" }, { status: 403 })
-  }
+  // Consent gate: PostgreSQL, through the backend (a parent-only route, so a
+  // non-parent is refused here too). It runs before any upload so an
+  // unconsented parent stores nothing; create_parent_request_trusted checks it
+  // again in the write transaction, so this is not the only guard.
+  const consent = await fetchParentConsent(context)
+  if (!consent.ok) return authFailure(consent.reason)
+  if (consent.status === "no_profile") return authFailure("no_parent_profile")
   if (consent.status !== "granted") {
     return NextResponse.json({ error: "لطفاً ابتدا رضایت والدین را ثبت کنید" }, { status: 403 })
-  }
-
-  const { data: parentProfile } = await supabase
-    .from("parent_profiles")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
-
-  if (!parentProfile) {
-    return NextResponse.json({ error: "پروفایل والد یافت نشد. لطفاً ابتدا رضایت خود را ثبت کنید" }, { status: 403 })
   }
 
   let formData: FormData
@@ -200,8 +220,8 @@ async function handlePost(request: Request) {
   const normalized = parsed.data
 
   // The idempotency key for this logical submit attempt. Required and
-  // UUID-shaped only — never free text, never derived from the draft. The
-  // trusted RPC re-derives ownership from the resolved parent id below, so a
+  // UUID-shaped only - never free text, never derived from the draft. The
+  // database scopes it to the profile resolved from the assertion, so a
   // guessed or reused key can never retrieve another parent's order.
   const submissionKeyRaw = formData.get("submissionKey")
   if (!isValidSubmissionKey(submissionKeyRaw)) {
@@ -213,55 +233,23 @@ async function handlePost(request: Request) {
   const submissionKey = submissionKeyRaw
 
   // ── Idempotency fast path ───────────────────────────────────────────────
-  // A plain retry of an already-succeeded submission is the common case this
-  // whole feature exists for. Checked before any upload or copy, so a retry
-  // never re-uploads or re-copies a source file it already wrote the first
-  // time. This is an optimization only — the RPC enforces the same rule
-  // again, inside the transaction, guarded by the database's own unique
-  // constraint, which is what actually protects concurrent duplicate
-  // submissions (see 20260922100000_idempotent_order_submission.sql).
-  const { data: existingOrder } = await supabase
-    .from("orders")
-    .select("id, type, status, candy_cost, payment_source")
-    .eq("parent_id", parentProfile.id)
-    .eq("submission_key", submissionKey)
-    .maybeSingle()
-
-  if (existingOrder) {
-    const replayed = toSubmissionSuccess(existingOrder)
-    if (replayed) {
-      log("info", "SUBMISSION_REPLAYED", { orderId: replayed.orderId, replayed: true, reason: "idempotency_fast_path", paymentSource: replayed.paymentSource })
-      return NextResponse.json(
-        { ...replayed, replayed: true },
-        { headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } },
-      )
-    }
+  // A retry of an already-succeeded submission (the common recovery case) is
+  // answered before any upload or copy, so it never re-uploads a source file it
+  // wrote the first time. An optimization only: the write enforces the same
+  // rule again inside its transaction. If this lookup cannot be answered the
+  // request simply continues to the write, which is idempotent.
+  const earlier = await lookupRequestBySubmissionKey(context, submissionKey)
+  if (earlier.ok && earlier.found) {
+    log("info", "SUBMISSION_REPLAYED", { orderId: earlier.order.orderId, replayed: true, reason: "idempotency_fast_path", paymentSource: earlier.order.paymentSource })
+    return NextResponse.json(successBody({ ...earlier.order, replayed: true }), { headers: NO_STORE })
   }
+  if (!earlier.ok && earlier.reason !== "service_unavailable") return authFailure(earlier.reason)
 
-  // The draft names the character; the RPC needs its id. Resolved here, before
-  // anything is uploaded, so an unknown character costs no storage write.
-  const character = await resolveCharacterId(supabase, normalized.characterId)
-  if (!character.ok) {
-    if (character.reason === "read_failed") {
-      log("error", "SUBMISSION_CHARACTER_LOOKUP_FAILED", { subsystem: "database", errorCode: "DATABASE_UNAVAILABLE" })
-    }
-    return NextResponse.json(
-      character.reason === "not_found"
-        ? {
-            error: "شخصیت انتخاب‌شده در دسترس نیست. لطفاً شخصیت دیگری انتخاب کنید.",
-            code: "character_unavailable",
-          }
-        : {
-            error: "ثبت درخواست با خطا مواجه شد. لطفاً دوباره تلاش کنید.",
-            code: "character_lookup_failed",
-          },
-      { status: character.reason === "not_found" ? 422 : 500 },
-    )
-  }
-
+  const supabase = await createServerSupabaseClient()
   const orderId = crypto.randomUUID()
 
   let storagePath: string | null = null
+  let fileMimeType: string | null = null
   let fileUploaded = false
   // The parent's own file name, recorded on the source row so the private
   // gallery can label it. The storage path cannot serve this purpose: it holds
@@ -307,7 +295,7 @@ async function handlePost(request: Request) {
     }
 
     const safeName = sanitizeFileName(uploadedFile.name)
-    storagePath = `${user.id}/${orderId}/${safeName}`
+    storagePath = `${subject}/${orderId}/${safeName}`
     originalFilename = uploadedFile.name
 
     const { error: uploadError } = await supabase.storage
@@ -337,21 +325,26 @@ async function handlePost(request: Request) {
       }, { status: 500 })
     }
 
+    // The type the object was stored with: the allow-listed value this route
+    // just wrote, never a separate browser claim.
+    fileMimeType = uploadedFile.type
     fileUploaded = true
   } else if (hasGalleryChoice) {
     // ── Reuse of an existing private-gallery asset ────────────────────────
     // The browser sends a media_assets id and never a storage path, so the
     // path is resolved server-side from a row that is proven to belong to
-    // this parent. The object is then copied into the new order's own folder,
-    // which keeps the <uid>/<orderId>/ storage invariant the RPC and the
-    // storage policies both depend on.
+    // this parent (Supabase media metadata: the gallery is not migrated). The
+    // object is then copied into the new order's own folder, which keeps the
+    // <uid>/<orderId>/ storage invariant the function and the storage
+    // policies both depend on.
     {
       const sourceAssetId = (sourceAssetIdRaw as string).trim()
       const resolved = await resolveOwnedSourceAsset(supabase, sourceAssetId)
 
-      if (!resolved.ok) {
-        // A foreign id and a non-existent id answer identically, so this
-        // cannot be used to probe another parent's media.
+      // A foreign id, a non-existent id and a row without a recorded MIME type
+      // all answer identically, so this cannot be used to probe another
+      // parent's media.
+      if (!resolved.ok || !resolved.asset.mimeType || !ALLOWED_MIME_TYPES.includes(resolved.asset.mimeType)) {
         return NextResponse.json({
           error: "فایل انتخاب‌شده در دسترس نیست. لطفاً دوباره انتخاب کنید یا فایل جدیدی بارگذاری کنید.",
           code: "source_asset_unavailable",
@@ -359,7 +352,7 @@ async function handlePost(request: Request) {
       }
 
       const copyName = sourceAssetCopyName(resolved.asset, sanitizeFileName)
-      storagePath = `${user.id}/${orderId}/${copyName}`
+      storagePath = `${subject}/${orderId}/${copyName}`
       // The copy inherits the label the parent already knows this file by.
       originalFilename = resolved.asset.originalFilename
 
@@ -380,91 +373,106 @@ async function handlePost(request: Request) {
         }, { status: 500 })
       }
 
-      // Marked as uploaded so the rollback below removes the copy, not the
-      // original, if the request insert fails. storagePath is the new order's
-      // own path, so the rollback can never reach the source asset.
+      fileMimeType = resolved.asset.mimeType
+      // Marked as uploaded so a definite refusal removes the copy, not the
+      // original. storagePath is the new order's own path, so cleanup can never
+      // reach the source asset.
       fileUploaded = true
     }
   }
 
-  const { data: rpcData, error: rpcError } = await createAdminSupabaseClient()
-    .rpc("create_parent_request_trusted", {
-      p_parent_profile_id: parentProfile.id,
-      p_order_id: orderId,
-      p_type: normalized.type,
-      p_title: normalized.title,
-      p_description: normalized.description || null,
-      p_character_id: character.characterId,
-      p_duration_key: normalized.durationKey,
-      p_video_script: normalized.videoScript,
-      p_video_style: normalized.videoStyle,
-      p_animation_style: normalized.animationStyle,
-      p_file_path: storagePath,
-      p_duration_choice: normalized.durationChoice,
-      p_characters_speak: normalized.charactersSpeak,
-      p_child_name: normalized.childName,
-      p_original_filename: originalFilename,
-      p_submission_key: submissionKey,
-    })
+  const payload: BackendRequestPayload = {
+    submissionKey,
+    orderId,
+    type: normalized.type,
+    title: normalized.title,
+    description: normalized.description || null,
+    character: normalized.characterId,
+    durationKey: normalized.durationKey,
+    durationChoice: normalized.durationChoice,
+    videoScript: normalized.videoScript,
+    videoStyle: normalized.videoStyle,
+    animationStyle: normalized.animationStyle,
+    charactersSpeak: normalized.charactersSpeak,
+    childName: normalized.childName,
+    file: storagePath && fileMimeType ? { path: storagePath, mimeType: fileMimeType, originalFilename } : null,
+  }
 
-  if (rpcError) {
-    if (fileUploaded && storagePath) {
-      await removeOrphanedUpload(supabase, storagePath, "rpc_failed")
+  const result: BackendRequestCreate = await createRequestViaBackend(context, payload)
+
+  // A definite refusal created nothing, so the object this attempt stored
+  // belongs to no order: remove it. An UNCERTAIN outcome never removes it - the
+  // order may exist and own the object.
+  const cleanupRefused = async (reason: string) => {
+    if (fileUploaded && storagePath) await removeOrphanedUpload(supabase, storagePath, reason)
+  }
+
+  if (!result.ok) {
+    switch (result.reason) {
+      case "outcome_unknown":
+        return NextResponse.json(
+          { error: OUTCOME_UNKNOWN_MESSAGE, code: "request_outcome_unknown" },
+          { status: 503, headers: NO_STORE },
+        )
+      case "not_created":
+        return NextResponse.json(
+          { error: NOT_CREATED_MESSAGE, code: "request_not_created" },
+          { status: 503, headers: RETRY },
+        )
+      case "refused": {
+        await cleanupRefused("write_refused")
+        if (result.error === "character_unavailable") {
+          return NextResponse.json(
+            { error: "شخصیت انتخاب‌شده در دسترس نیست. لطفاً شخصیت دیگری انتخاب کنید.", code: "character_unavailable" },
+            { status: 422 },
+          )
+        }
+        if (result.error === "invalid_request") {
+          log("error", "SUBMISSION_BACKEND_CONTRACT_VIOLATION", { subsystem: "backend", errorCode: "INTERNAL_ERROR" })
+          return NextResponse.json({ error: GENERIC, code: "request_failed" }, { status: 500, headers: NO_STORE })
+        }
+        const mapped = mapRequestRpcError(result.error)
+        if (mapped.code === "INSUFFICIENT_CANDIES") {
+          log("info", "SUBMISSION_INSUFFICIENT_CANDIES", { reason: mapped.code })
+        } else {
+          // Only our own mapped code is logged; no database text exists here.
+          log(mapped.status >= 500 ? "error" : "warn", "SUBMISSION_REFUSED", { subsystem: "backend", reason: mapped.code })
+        }
+        return NextResponse.json({ error: mapped.error, code: mapped.code }, { status: mapped.status, headers: mapped.headers })
+      }
+      case "no_parent_profile":
+      case "session_expired":
+      case "session_invalidated":
+      case "identity_not_linked":
+      case "forbidden":
+      case "service_unavailable":
+        await cleanupRefused(result.reason)
+        return authFailure(result.reason)
+      case "unavailable":
+        await cleanupRefused("backend_not_configured")
+        return NextResponse.json({ error: UNAVAILABLE_MESSAGE, code: "request_unavailable" }, { status: 503, headers: RETRY })
     }
-
-    const mapped = mapRequestRpcError(rpcError.message)
-    if (mapped.code === "INSUFFICIENT_CANDIES") {
-      log("info", "SUBMISSION_INSUFFICIENT_CANDIES", { reason: mapped.code })
-    } else {
-      // Only our own mapped code is logged; the raw database message is not.
-      log(mapped.status >= 500 ? "error" : "warn", "SUBMISSION_RPC_FAILED", {
-        subsystem: "database",
-        reason: mapped.code,
-        errorCode: categorizeError(rpcError, "database"),
-      })
-    }
-    return NextResponse.json(
-      { error: mapped.error, code: mapped.code },
-      {
-        status: mapped.status,
-        headers: mapped.headers,
-      },
-    )
   }
 
-  const row = Array.isArray(rpcData) ? rpcData[0] : rpcData
-  const success = toSubmissionSuccess(row)
+  const { order } = result
 
-  // The order was created and paid for, so this is not a rollback case: the
-  // row simply could not be read back in a usable shape. Removing the file
-  // here would strip a real order of its source, so the storage object stays.
-  if (!success) {
-    log("error", "SUBMISSION_RESPONSE_UNREADABLE", { subsystem: "database", errorCode: "INTERNAL_ERROR" })
-    return NextResponse.json(
-      { error: "ثبت درخواست با خطا مواجه شد. لطفاً سفارش‌های خود را بررسی کنید." },
-      { status: 500, headers: { "Cache-Control": "no-store" } },
-    )
+  // The write answered with (or the lookup found) an order that is not the one
+  // this attempt built the storage key for: an earlier attempt with the same
+  // submission key won. Whatever this attempt stored belongs to no order and
+  // never will, so it is removed exactly like a refusal.
+  if (order.orderId !== orderId) {
+    await cleanupRefused("replay_lost_race")
   }
 
-  // A concurrent duplicate lost the race inside the RPC: `success.orderId` is
-  // the winner's order, not `orderId` (the one generated above and used to
-  // build `storagePath`). Whatever this request wrote to storage belongs to
-  // no order and never will, so it is removed exactly like a rollback — the
-  // same cleanup the error branch above already performs.
-  if (success.replayed && fileUploaded && storagePath && success.orderId !== orderId) {
-    await removeOrphanedUpload(supabase, storagePath, "replay_lost_race")
-  }
-
-  log("info", success.replayed ? "SUBMISSION_REPLAYED" : "SUBMISSION_ACCEPTED", {
-    orderId: success.orderId,
-    replayed: success.replayed,
-    ...(success.replayed ? { reason: "idempotency_race" } : {}),
+  log("info", order.replayed ? "SUBMISSION_REPLAYED" : "SUBMISSION_ACCEPTED", {
+    orderId: order.orderId,
+    replayed: order.replayed,
+    ...(order.replayed ? { reason: "idempotency_race" } : {}),
+    ...(result.confirmedBy === "lookup" ? { confirmedBy: "lookup" } : {}),
     operation: hasUpload ? "upload" : hasGalleryChoice ? "gallery_copy" : "no_file",
     // Which source paid (welcome image credit or candy). No balances, no key.
-    paymentSource: success.paymentSource,
+    paymentSource: order.paymentSource,
   })
 
-  return NextResponse.json(success, {
-    headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
-  })
+  return NextResponse.json(successBody(order), { headers: NO_STORE })
 }

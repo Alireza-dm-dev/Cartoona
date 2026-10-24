@@ -14,7 +14,6 @@ import {
 import { toSubmissionSuccess } from "@/lib/requests/submission-response"
 import { setLogSink, sanitizeFields, type LogRecord } from "@/lib/observability/logger"
 import { setRateLimitStore, InMemoryRateLimitStore } from "@/lib/rate-limit"
-import { getSessionResult } from "../helpers/supabase-jwt"
 
 const root = process.cwd()
 const OID = "123e4567-e89b-42d3-a456-426614174000"
@@ -129,17 +128,24 @@ describe("submission success shape", () => {
 
 const m = vi.hoisted(() => ({
   client: null as unknown,
-  rpc: vi.fn(),
-  existingOrder: null as unknown,
+  create: vi.fn(),
+  lookup: vi.fn(),
 }))
 vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient: async () => m.client }))
-// V0.1.48: the consent gate reads PostgreSQL through the backend; these tests
-// cover the (still Supabase) submission path behind it.
-vi.mock("@/lib/parent/consent/backend-consent", () => ({
-  loadParentConsent: async () => ({ ok: true, status: "granted", consentGrantedAt: "2026-01-01T00:00:00.000Z" }),
+// V0.1.50: identity, consent, the idempotency lookup and the write all go
+// through the backend; the payment source is decided in PostgreSQL and merely
+// reported by the route (the database rule itself: welcome-credits-db.test.ts,
+// request-cutover-db.test.ts).
+vi.mock("@/lib/parent/backend-caller", () => ({
+  verifyParentCaller: async () => ({ ok: true, context: { identity: { provider: "supabase", subject: "u1" }, authenticatedAt: 1 } }),
 }))
-vi.mock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => ({ rpc: m.rpc }) }))
-vi.mock("@/lib/requests/resolve-character", () => ({ resolveCharacterId: async () => ({ ok: true, characterId: null }) }))
+vi.mock("@/lib/parent/consent/backend-consent", () => ({
+  fetchParentConsent: async () => ({ ok: true, status: "granted", consentGrantedAt: "2026-01-01T00:00:00.000Z" }),
+}))
+vi.mock("@/lib/requests/backend-request", () => ({
+  createRequestViaBackend: m.create,
+  lookupRequestBySubmissionKey: m.lookup,
+}))
 vi.mock("@/lib/requests/request-submission", () => ({
   parseAndValidateDraft: () => ({
     ok: true,
@@ -149,29 +155,26 @@ vi.mock("@/lib/requests/request-submission", () => ({
 
 let records: LogRecord[]
 let restoreSink: () => void
+const order = (candyCost: number, paymentSource: "candy" | "welcome_image_credit", replayed = false) => ({
+  ok: true as const,
+  confirmedBy: "write" as const,
+  order: { orderId: OID, type: "image", status: "pending_review", candyCost, paymentSource, replayed },
+})
 beforeEach(() => {
   records = []
   restoreSink = setLogSink((r) => records.push(r))
   setRateLimitStore(new InMemoryRateLimitStore())
-  m.existingOrder = null
-  m.rpc.mockReset().mockResolvedValue({ data: [{ id: OID, type: "image", status: "pending_review", candy_cost: 0, replayed: false, payment_source: "welcome_image_credit" }], error: null })
+  m.lookup.mockReset().mockResolvedValue({ ok: true, found: false })
+  m.create.mockReset().mockResolvedValue(order(0, "welcome_image_credit"))
 })
 afterEach(() => restoreSink())
 
 function submitClient() {
-  const chain = (data: unknown) => ({
-    select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: m.existingOrder, error: null }) }), maybeSingle: async () => ({ data, error: null }) }) }),
-  })
-  return {
-    auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), getSession: async () => getSessionResult("valid", "u1"), signOut: vi.fn() },
-    rpc: async () => ({ data: null, error: null }),
-    from: (t: string) => t === "users" ? chain({ role: "parent" }) : t === "parent_profiles" ? chain({ id: "p1" }) : chain(null),
-    storage: { from: () => ({ upload: async () => ({ error: null }), remove: async () => ({ error: null }) }) },
-  }
+  return { storage: { from: () => ({ upload: async () => ({ error: null }), remove: async () => ({ error: null }) }) } }
 }
 
 function submit() {
-  const r = new Request("http://x/api/requests", { method: "POST", headers: { "content-type": "multipart/form-data; boundary=x" }, body: "x" })
+  const r = new Request("http://x/api/requests", { method: "POST", headers: { "content-type": "multipart/form-data; boundary=x", origin: "http://localhost:3000" }, body: "x" })
   const fields: Record<string, unknown> = { draft: "{}", submissionKey: KEY, file: { size: 100, type: "image/png", name: "SECRET-FILE.png" }, sourceAssetId: null }
   ;(r as unknown as { formData: unknown }).formData = async () => ({ get: (k: string) => fields[k] ?? null })
   return r
@@ -194,7 +197,7 @@ describe("POST /api/requests payment source", () => {
 
   it("a candy-paid order reports candy", async () => {
     m.client = submitClient()
-    m.rpc.mockResolvedValue({ data: [{ id: OID, type: "image", status: "pending_review", candy_cost: 12, replayed: false, payment_source: "candy" }], error: null })
+    m.create.mockResolvedValue(order(12, "candy"))
     const { POST } = await import("@/app/api/requests/route")
     const body = await (await POST(submit())).json()
     expect(body).toMatchObject({ candyCost: 12, paymentSource: "candy" })
@@ -202,17 +205,17 @@ describe("POST /api/requests payment source", () => {
 
   it("a replay via the idempotency fast path reports the ORIGINAL source and spends nothing", async () => {
     m.client = submitClient()
-    m.existingOrder = { id: OID, type: "image", status: "pending_review", candy_cost: 0, payment_source: "welcome_image_credit" }
+    m.lookup.mockResolvedValue({ ok: true, found: true, order: { orderId: OID, type: "image", status: "pending_review", candyCost: 0, paymentSource: "welcome_image_credit" } })
     const { POST } = await import("@/app/api/requests/route")
     const body = await (await POST(submit())).json()
     expect(body).toMatchObject({ replayed: true, paymentSource: "welcome_image_credit", candyCost: 0 })
-    expect(m.rpc).not.toHaveBeenCalled()
+    expect(m.create).not.toHaveBeenCalled()
     expect(records.find((r) => r.event === "SUBMISSION_REPLAYED")).toMatchObject({ paymentSource: "welcome_image_credit", replayed: true })
   })
 
   it("a replay won inside the RPC (race) also reports the original source", async () => {
     m.client = submitClient()
-    m.rpc.mockResolvedValue({ data: [{ id: OID, type: "image", status: "pending_review", candy_cost: 0, replayed: true, payment_source: "welcome_image_credit" }], error: null })
+    m.create.mockResolvedValue(order(0, "welcome_image_credit", true))
     const { POST } = await import("@/app/api/requests/route")
     const body = await (await POST(submit())).json()
     expect(body).toMatchObject({ replayed: true, paymentSource: "welcome_image_credit" })
@@ -220,7 +223,7 @@ describe("POST /api/requests payment source", () => {
 
   it("insufficient balance keeps its existing safe 402 semantics", async () => {
     m.client = submitClient()
-    m.rpc.mockResolvedValue({ data: null, error: { message: "INSUFFICIENT_CANDIES" } })
+    m.create.mockResolvedValue({ ok: false, reason: "refused", error: "INSUFFICIENT_CANDIES" })
     const { POST } = await import("@/app/api/requests/route")
     const res = await POST(submit())
     expect(res.status).toBe(402)

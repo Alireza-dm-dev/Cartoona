@@ -36,13 +36,14 @@ describe("runtime Supabase consent DB access is zero", () => {
     expect(offenders).toEqual([])
   })
 
-  it("every remaining Supabase parent_profiles query selects no consent (and the request route selects only id)", () => {
+  it("every remaining Supabase parent_profiles query selects no consent (and the request route reads no Supabase table at all)", () => {
     for (const f of nextRuntime) {
       for (const m of code(f).matchAll(/\.from\(["']parent_profiles["']\)([\s\S]{0,200})/g)) {
         expect(m[1], f).not.toMatch(/consent/i)
       }
     }
-    expect(code("app/api/requests/route.ts")).toMatch(/\.from\("parent_profiles"\)\s*\.select\("id"\)/)
+    // V0.1.50: the profile id is resolved by the backend from the assertion.
+    expect(code("app/api/requests/route.ts")).not.toMatch(/\.from\(["'](?!parent-uploads)/)
   })
 
   it("the only code that names consent columns is the PostgreSQL repository and migrations", () => {
@@ -67,7 +68,7 @@ describe("every consent decision uses the one PostgreSQL-backed loader", () => {
   it.each([
     ["app/(auth)/parent-consent/page.tsx", /loadParentConsent\(\)/],
     ["app/(auth)/complete-request/page.tsx", /loadParentConsent\(\)/],
-    ["app/api/requests/route.ts", /loadParentConsent\(\)/],
+    ["app/api/requests/route.ts", /fetchParentConsent\(context\)/],
     ["app/api/parent-consent/route.ts", /grantParentConsent\(caller\.context\)/],
     ["app/api/dev/parent-auth/route.ts", /fetchParentConsent\(verification\.context\)/],
   ])("%s", (file, pattern) => {
@@ -100,8 +101,8 @@ describe("every consent decision uses the one PostgreSQL-backed loader", () => {
     expect(page).toMatch(/if \(consent\.ok\) \{\s*if \(consent\.status !== "granted"\) redirect\("\/parent-consent"\)/)
     expect(page).toMatch(/case "service_unavailable":\s*return \(/)
     const requests = code("app/api/requests/route.ts")
-    expect(requests).toMatch(/if \(!consent\.ok\) return consentGateFailure\(consent\.reason\)/)
-    expect(requests).toMatch(/code: "consent_unavailable"/)
+    expect(requests).toMatch(/if \(!consent\.ok\) return authFailure\(consent\.reason\)/)
+    expect(requests).toMatch(/code: "request_unavailable"/)
   })
 })
 
@@ -171,6 +172,7 @@ describe("the consent write: CSRF -> session -> v3 -> parent-only backend route"
       "app/api/parent/account-setup/route.ts",
       "app/api/parent/password/route.ts",
       "app/api/referrals/bind/route.ts",
+      "app/api/requests/route.ts", // V0.1.50: the multipart variant of the same guard
     ])
   })
 
@@ -183,18 +185,18 @@ describe("the consent write: CSRF -> session -> v3 -> parent-only backend route"
 })
 
 describe("scope: only consent moved", () => {
-  it("request creation is still the Supabase RPC + Supabase Storage, and calls no backend write", () => {
+  it("request creation is PostgreSQL (V0.1.50) through the backend; Storage is still Supabase", () => {
     const requests = code("app/api/requests/route.ts")
-    expect(requests).toMatch(/\.rpc\("create_parent_request_trusted"/)
+    expect(requests).toMatch(/createRequestViaBackend\(context, payload\)/)
     expect(requests).toMatch(/storage\.from\("parent-uploads"\)/)
-    expect(requests).not.toMatch(/backendWriteJson|@\/lib\/backend\/client/)
+    expect(requests).not.toMatch(/\.rpc\(|create_parent_request_trusted|createAdminSupabaseClient/)
   })
 
-  it("the backend has exactly three writes (V0.1.47 proof + consent + V0.1.49 provisioning) and no money, media, coupon, order or Storage code", () => {
+  it("the backend has exactly four writes (V0.1.47 proof + consent + V0.1.49 provisioning + V0.1.50 requests) and no purchase, media, coupon or Storage code", () => {
     const writes = backendRuntime.flatMap((f) => [...code(f).matchAll(/app\.(post|put|patch|delete)\(\s*([A-Z_]+|"[^"]+")/g)].map((m) => `${m[1]} ${m[2]}`))
-    expect(writes.sort()).toEqual(["patch PROFILE_PATH", "post CONSENT_PATH", "post PROVISION_PATH"])
+    expect(writes.sort()).toEqual(["patch PROFILE_PATH", "post CONSENT_PATH", "post PROVISION_PATH", "post REQUESTS_PATH"])
     for (const f of backendRuntime) {
-      expect(code(f), f).not.toMatch(/candy_purchases|payment_attempts|coupon|create_parent_request|record_final_media|storage\.|\.rpc\(/i)
+      expect(code(f), f).not.toMatch(/candy_purchases|payment_attempts|coupon|record_final_media|storage\.|\.rpc\(/i)
     }
   })
 

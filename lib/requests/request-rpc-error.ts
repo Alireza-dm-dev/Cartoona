@@ -32,6 +32,12 @@ const MESSAGES: Record<string, string> = {
   request_invalid_type: "نوع این درخواست پشتیبانی نمی‌شود.",
   request_character_required: "لطفاً یک شخصیت انتخاب کنید.",
   request_character_not_found: "شخصیت انتخاب‌شده در دسترس نیست. لطفاً شخصیت دیگری انتخاب کنید.",
+  // The function raises this token (not _not_found) for an unknown/inactive character.
+  request_character_invalid: "شخصیت انتخاب‌شده در دسترس نیست. لطفاً شخصیت دیگری انتخاب کنید.",
+  // Raised by the function for the draft's story; the draft check normally stops these first.
+  request_script_required: "لطفاً توضیح داستان را وارد کنید.",
+  request_script_too_long: "توضیح داستان بیش از حد طولانی است.",
+  request_style_too_long: "سبک ویدیو بیش از حد طولانی است.",
   request_character_not_allowed: "برای این نوع درخواست نمی‌توان شخصیت انتخاب کرد.",
   request_invalid_duration: "مدت زمان انتخاب‌شده معتبر نیست.",
   request_invalid_duration_choice: "مدت زمان انتخاب‌شده معتبر نیست. لطفاً دوباره انتخاب کنید.",
@@ -55,6 +61,11 @@ const MESSAGES: Record<string, string> = {
   request_file_not_found: "فایل انتخاب‌شده در دسترس نیست. لطفاً دوباره انتخاب کنید.",
   request_file_type_invalid: "فرمت فایل پشتیبانی نمی‌شود. فقط JPEG، PNG و WebP مجاز هستند.",
   request_invalid_file_path: "فایل انتخاب‌شده در دسترس نیست. لطفاً دوباره انتخاب کنید.",
+}
+
+/** Whether `code` is one of the tokens the request function raises that this module has a message for. */
+export function isKnownRequestCode(code: unknown): code is string {
+  return typeof code === "string" && Object.prototype.hasOwnProperty.call(MESSAGES, code)
 }
 
 const GENERIC_MESSAGE = "ثبت درخواست با خطا مواجه شد. لطفاً دوباره تلاش کنید."

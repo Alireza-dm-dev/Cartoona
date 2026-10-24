@@ -402,6 +402,30 @@ READ   every gate ─> loadParentConsent() ─> v2 ─> GET /v1/parent/consent �
   `SESSION_CHECK_UNAVAILABLE`, no sign-out; admin, super_admin, deleted →
   403 `forbidden`; unlinked identity → 403 `identity_not_linked`.
 
+## Request submission (V0.1.50)
+
+The first financial write follows the V0.1.48 template and adds nothing new
+to the trust model; it reuses it:
+
+- identity: Supabase verifies the session; the verified **subject** is the only
+  actor. The BFF signs a v3 assertion (body digest + nonce); Fastify resolves
+  `subject -> user_identities -> users -> parent_profiles` itself. The browser
+  never names a user, profile, wallet, role, price or status, and the Next ->
+  Fastify body has none of those fields (exact keys; extras are `400`).
+- the Supabase `users.role`, `checkParentSessionLifetime` and `parent_profiles`
+  reads are gone from the request route: role comes from `requireRole("parent")`,
+  the session policy from `verifyParentCaller`, the profile from PostgreSQL.
+- **two replay protections, not one**: the assertion nonce refuses the same
+  request arriving twice (`409`); the submission key makes a deliberate retry
+  (new assertion, new nonce, same key) return the original order. The BFF never
+  re-sends an assertion; on a lost answer it asks by key (see ROUTE_CUTOVER
+  "V0.1.50").
+- CSRF: the shared guard has a multipart variant for the one browser write that
+  carries a file (same Origin and Sec-Fetch-Site rules).
+- cross-parent: a key, order id or file path belonging to another parent
+  resolves to nothing (`found: false`, `400` for a foreign folder); keys are
+  unique per `(parent_id, submission_key)`, so two parents can use the same key.
+
 ## Identity mapping and bootstrap
 
 `user_identities(provider, provider_subject) UNIQUE → users.id`

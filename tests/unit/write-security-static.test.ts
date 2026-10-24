@@ -90,7 +90,7 @@ describe("Fastify: writes go through requireWriteAuth, reads cannot consume a no
   it("every non-GET backend route uses requireWriteAuth with an explicit role, and nothing else", () => {
     const writes: string[] = []
     for (const file of backendRoutes) {
-      for (const m of code(file).matchAll(/app\.(post|put|patch|delete)\(\s*([A-Z_]+|"[^"]+"),\s*\{ preHandler: \[([^\]]*)\] \}/g)) {
+      for (const m of code(file).matchAll(/app\.(post|put|patch|delete)\(\s*([A-Z_]+|"[^"]+"),\s*\{ (?:bodyLimit: [A-Z_]+, )?preHandler: \[([^\]]*)\] \}/g)) {
         writes.push(`${m[1]} ${m[2]}`)
         // V0.1.49: the provisioning route alone uses requireProvisioningAuth (v3 + nonce, identity not yet linked).
         if (m[2] === "PROVISION_PATH") expect(m[3], file).toBe("requireProvisioningAuth(deps)")
@@ -101,7 +101,8 @@ describe("Fastify: writes go through requireWriteAuth, reads cannot consume a no
     const anyWrite = backendRoutes.flatMap((f) => code(f).match(/app\.(post|put|patch|delete|route)\(/g) ?? [])
     expect(anyWrite).toHaveLength(writes.length)
     // V0.1.47 proof write + V0.1.48 consent (the first product write) + V0.1.49 provisioning.
-    expect(writes.sort()).toEqual(["patch PROFILE_PATH", "post CONSENT_PATH", "post PROVISION_PATH"])
+    // V0.1.50: + the request submission write.
+    expect(writes.sort()).toEqual(["patch PROFILE_PATH", "post CONSENT_PATH", "post PROVISION_PATH", "post REQUESTS_PATH"])
   })
 
   it("the raw JSON bytes are kept for the digest, parsed by Fastify's safe default parser", () => {
@@ -132,7 +133,8 @@ describe("the proof write PATCH /v1/parent/profile", () => {
 describe("exactly one Next.js write is cut over: consent (V0.1.48)", () => {
   it("backendWriteJson has exactly two callers outside the client module: the consent loader and the account bootstrap", () => {
     const callers = frontendFiles.filter((f) => f !== "lib/backend/client.ts" && /backendWriteJson/.test(code(f)))
-    expect(callers.sort()).toEqual(["lib/parent/account-setup/backend-provision.ts", "lib/parent/consent/backend-consent.ts"])
+    // V0.1.50: the request loader is the third.
+    expect(callers.sort()).toEqual(["lib/parent/account-setup/backend-provision.ts", "lib/parent/consent/backend-consent.ts", "lib/requests/backend-request.ts"])
   })
 
   it("no other Next write handler imports the backend client, the parent backend caller or the consent writer", () => {
@@ -140,7 +142,8 @@ describe("exactly one Next.js write is cut over: consent (V0.1.48)", () => {
     expect(handlers.length).toBeGreaterThan(15)
     const writers = handlers.filter((f) => /@\/lib\/backend\/client|@\/lib\/parent\/backend-caller|signWriteAssertion|grantParentConsent/.test(code(f)))
     // V0.1.49: the account bootstrap is the second (it verifies the caller and provisions; no business write).
-    expect(writers.sort()).toEqual(["app/api/parent-consent/route.ts", "app/api/parent/account-setup/route.ts"])
+    // V0.1.50: request submission verifies the caller and hands off to the request loader.
+    expect(writers.sort()).toEqual(["app/api/parent-consent/route.ts", "app/api/parent/account-setup/route.ts", "app/api/requests/route.ts"])
   })
 
   it("the browser never signs: assertion signing stays in server-only modules", () => {

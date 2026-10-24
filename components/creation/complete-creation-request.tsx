@@ -19,10 +19,22 @@ import { calculateCreationCost } from "@/lib/pricing/calculate-creation-cost";
 import { FORM_TO_INTERNAL, VIDEO_DURATION_TO_INTERNAL, isVideoDurationChoice } from "@/lib/pricing/pricing-keys";
 import {
   buildRequestFormData,
+  checkSubmissionStatus,
   checkUploadFile,
   classifySubmissionError,
+  failureProvesNothingCreated,
   readCreatedOrderId,
 } from "@/lib/requests/submission-client";
+import {
+  beginAttempt,
+  endAttempt,
+  hashDraft,
+  markUncertain,
+  mintSubmissionKey,
+  staleAttempt,
+  type AttemptStore,
+  type SubmissionAttempt,
+} from "@/lib/requests/submission-attempt";
 import type { SubmitErrorKind } from "@/lib/requests/submission-client";
 import type { InternalDuration } from "@/lib/pricing/pricing-keys";
 
@@ -65,15 +77,15 @@ export default function CompleteCreationRequest() {
    */
   const inFlight = useRef(false);
   /**
-   * The idempotency key for the current logical submit attempt.
-   *
-   * Minted once, on the first submit, and reused unchanged across every
-   * retry of that same attempt — including a retry after a timeout or a lost
-   * response, which is exactly the case client-side in-flight locking cannot
-   * cover by itself. Cleared only when the parent materially changes the
-   * source file (a new logical submission) or after a confirmed success.
+   * The current logical submit attempt (V0.1.50): its idempotency key, kept in
+   * localStorage as well as here so a reload, navigating away and back, or a
+   * second tab reuses the SAME key (lib/requests/submission-attempt.ts). The
+   * key does not depend on the chosen file, so (re)selecting a file never
+   * changes it. It is forgotten only when the outcome is known: a confirmed
+   * order, or a refusal that provably created nothing.
    */
-  const submissionKeyRef = useRef<string | null>(null);
+  const attemptRef = useRef<SubmissionAttempt | null>(null);
+  const [checkingStatus, setCheckingStatus] = useState(false);
   const router = useRouter();
 
   const { catalog, loading: pricingLoading, error: pricingError, refresh: refreshPricing } = useCreationPricing();
@@ -212,9 +224,9 @@ export default function CompleteCreationRequest() {
 
     setSelectedGalleryMedia(null);
     setSelectedFile(file);
-    // A new source file is a new logical submission: the next submit gets a
-    // fresh key rather than one tied to whatever the previous file was.
-    submissionKeyRef.current = null;
+    // Deliberately NOT an identity change: the submission key belongs to the
+    // draft, not the file. Resetting it here is how a re-selected file used to
+    // allow a second charge after a lost answer.
   }
 
   function handleRemoveFile() {
@@ -222,7 +234,6 @@ export default function CompleteCreationRequest() {
     setSelectedGalleryMedia(null);
     setFileError("");
     setSubmitError(null);
-    submissionKeyRef.current = null;
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -243,8 +254,51 @@ export default function CompleteCreationRequest() {
       fileInputRef.current.value = "";
     }
     setSelectedGalleryMedia(media);
-    // A new source choice is a new logical submission.
-    submissionKeyRef.current = null;
+    // Not an identity change either; see handleFileChange.
+  }
+
+  const store = (): AttemptStore | null => {
+    try {
+      return typeof window === "undefined" ? null : window.localStorage;
+    } catch {
+      return null;
+    }
+  };
+
+  /** Order confirmed: forget the key, drop the draft, go to the PostgreSQL-backed orders list. */
+  function finishWithOrder(): void {
+    setPhase("success");
+    endAttempt(store(), attemptRef);
+    clearCreationDraft();
+    // The list, not /dashboard/orders/<id>: the detail page still reads
+    // Supabase, which does not hold a request created in PostgreSQL.
+    router.push("/dashboard/orders");
+  }
+
+  /**
+   * "Check the status" after an uncertain answer: ask the server whether this
+   * attempt's key created an order. Found -> done. Absent or unclear -> the
+   * parent keeps the same key and may submit again; nothing is minted here.
+   */
+  async function handleCheckStatus(): Promise<void> {
+    const attempt = attemptRef.current;
+    if (!attempt || checkingStatus || phase !== "idle") return;
+    setCheckingStatus(true);
+    const result = await checkSubmissionStatus(attempt.key);
+    setCheckingStatus(false);
+    if (result.kind === "found") {
+      finishWithOrder();
+    } else if (result.kind === "absent") {
+      setSubmitError({
+        kind: "not_created",
+        message: "هنوز ثبتی برای این درخواست پیدا نشد. می‌توانید دوباره تلاش کنید؛ هزینه فقط یک‌بار کسر می‌شود.",
+      });
+    } else {
+      setSubmitError({
+        kind: "uncertain",
+        message: "نتوانستیم تأیید کنیم که درخواست ثبت شده است یا نه.",
+      });
+    }
   }
 
   function handleUseUpload() {
@@ -279,14 +333,30 @@ export default function CompleteCreationRequest() {
       setPhase("idle");
     };
 
+    // True once the request has been handed to fetch: only from then on may the
+    // server have acted. A failure before it (key, form data) sent nothing.
+    let sent = false;
+
     try {
-      // Minted once per logical submission and kept for every retry — a
-      // timed-out response must not cause a second order, so the key does
-      // not regenerate just because this is not the first attempt.
-      if (!submissionKeyRef.current) {
-        submissionKeyRef.current = crypto.randomUUID();
+      // The key belongs to this draft and survives reloads (see attemptRef).
+      // An unresolved attempt of ANOTHER draft is checked first: its order may
+      // exist, and this click must not be what mints a competing key.
+      const draftHash = hashDraft(draft);
+      const stale = staleAttempt(store(), draftHash);
+      if (stale) {
+        const earlier = await checkSubmissionStatus(stale.key);
+        if (earlier.kind === "unknown") {
+          fail({ kind: "uncertain", message: "نتوانستیم تأیید کنیم که درخواست قبلی شما ثبت شده است یا نه. لطفاً کمی بعد دوباره تلاش کنید." });
+          return;
+        }
+        endAttempt(store(), attemptRef);
+        if (earlier.kind === "found") {
+          fail({ kind: "request", message: "درخواست قبلی شما ثبت شده بود. لطفاً فهرست سفارش‌ها را بررسی کنید." });
+          return;
+        }
       }
-      const submissionKey = submissionKeyRef.current;
+      const attempt = beginAttempt(store(), draftHash, mintSubmissionKey, attemptRef);
+      const submissionKey = attempt.key;
 
       // At most one source. The two pieces of state are already mutually
       // exclusive; the builder refuses the impossible case rather than picking.
@@ -303,6 +373,7 @@ export default function CompleteCreationRequest() {
         return;
       }
 
+      sent = true;
       const res = await fetch("/api/requests", { method: "POST", body: built.formData });
 
       // An expired or missing session is not an error to render in place —
@@ -321,6 +392,13 @@ export default function CompleteCreationRequest() {
       const body = await res.json().catch(() => ({}));
 
       if (!res.ok) {
+        // The key is forgotten only when the answer PROVES nothing was created.
+        // A lost or ambiguous answer keeps it, so the retry replays, not recharges.
+        if (failureProvesNothingCreated(res.status, body?.code)) {
+          endAttempt(store(), attemptRef);
+        } else {
+          markUncertain(store(), attempt, attemptRef);
+        }
         fail({
           kind: classifySubmissionError(res.status, body?.code),
           message:
@@ -346,14 +424,21 @@ export default function CompleteCreationRequest() {
 
       // Only now, with a real order id in hand, is the draft safe to discard.
       // Clearing it any earlier would lose the parent's work on a failure.
-      setPhase("success");
-      submissionKeyRef.current = null;
-      clearCreationDraft();
-      router.push(`/dashboard/orders/${orderId}`);
+      finishWithOrder();
     } catch {
+      if (!sent) {
+        // Nothing left the browser, so nothing can exist: forget the key.
+        endAttempt(store(), attemptRef);
+        fail({ kind: "request", message: "ثبت درخواست انجام نشد. لطفاً دوباره تلاش کنید." });
+        return;
+      }
+      // The request may have reached the server and committed: this is NOT
+      // "failed". Keep the key; the parent can check the status or retry.
+      const current = attemptRef.current;
+      if (current) markUncertain(store(), current, attemptRef);
       fail({
-        kind: "request",
-        message: "ارتباط با سرور برقرار نشد. لطفاً دوباره تلاش کنید.",
+        kind: "uncertain",
+        message: "نتوانستیم تأیید کنیم که درخواست ثبت شده است یا نه.",
       });
     }
   }
@@ -571,6 +656,23 @@ export default function CompleteCreationRequest() {
               <p className="mt-1 text-xs text-text-dark/60">
                 لطفاً فایل را دوباره انتخاب کنید.
               </p>
+            )}
+            {(submitError.kind === "uncertain" || submitError.kind === "not_created") && (
+              <div className="mt-1">
+                <p className="text-xs text-text-dark/60">
+                  {submitError.kind === "uncertain"
+                    ? "قبل از ثبت دوباره، وضعیت را بررسی کنید. اگر درخواست ثبت شده باشد، هزینه دوباره کسر نمی‌شود."
+                    : "ثبت دوباره امن است و هزینه فقط یک‌بار کسر می‌شود."}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleCheckStatus}
+                  disabled={checkingStatus}
+                  className="mt-2 min-h-[44px] text-sm font-medium text-candy-pink hover:opacity-80 disabled:opacity-50"
+                >
+                  {checkingStatus ? "در حال بررسی…" : "بررسی وضعیت درخواست"}
+                </button>
+              </div>
             )}
             {submitError.kind === "pricing" && (
               <button

@@ -23,6 +23,16 @@ export type SubmitErrorKind =
   | "gallery"
   | "pricing"
   | "request"
+  /**
+   * The answer was lost and the server could not say whether the order exists
+   * (code request_outcome_unknown, or the network dropped). NOT a failure: the
+   * UI offers a status check and a retry with the SAME submission key.
+   */
+  | "uncertain"
+  /** The server looked and found no order for the key: a retry is safe (same key). */
+  | "not_created"
+  /** The request could not be sent at all (backend not reachable / not configured). Retry. */
+  | "unavailable"
 
 /**
  * Translate an API failure into the state the UI distinguishes.
@@ -33,6 +43,9 @@ export type SubmitErrorKind =
  */
 export function classifySubmissionError(status: number, code: unknown): SubmitErrorKind {
   if (status === 402) return "insufficient_candy"
+  if (code === "request_outcome_unknown") return "uncertain"
+  if (code === "request_not_created") return "not_created"
+  if (code === "request_unavailable" || code === "SESSION_CHECK_UNAVAILABLE") return "unavailable"
   if (status === 503) return "pricing"
 
   switch (code) {
@@ -137,6 +150,52 @@ export function readCreatedOrderId(body: unknown): string | null {
   if (!body || typeof body !== "object") return null
   const id = (body as { orderId?: unknown }).orderId
   return typeof id === "string" && id.length > 0 ? id : null
+}
+
+/**
+ * Whether a failed attempt left NO order behind, so its submission key can be
+ * forgotten. Only an answer that PROVES nothing was created qualifies: our own
+ * 4xx refusals (validation, consent, insufficient candy, ...). Everything else
+ * - a network error, a 5xx, an unreadable body, request_outcome_unknown,
+ * request_not_created (the order may still be in flight) - keeps the key.
+ */
+export function failureProvesNothingCreated(status: number, code: unknown): boolean {
+  if (code === "request_outcome_unknown" || code === "request_not_created" || code === "request_unavailable") return false
+  return status >= 400 && status < 500
+}
+
+export type StatusCheck =
+  | { kind: "found"; orderId: string }
+  | { kind: "absent" }
+  | { kind: "unknown" }
+
+/**
+ * Ask the server whether this submission key created an order
+ * (GET /api/requests/by-submission-key). One request, never cached, never
+ * retried here. Anything but a clear answer is `unknown`, which the UI reports
+ * as "could not confirm" - never as "not registered".
+ */
+export async function checkSubmissionStatus(
+  submissionKey: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<StatusCheck> {
+  try {
+    const response = await fetchImpl(`/api/requests/by-submission-key?submissionKey=${encodeURIComponent(submissionKey)}`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      credentials: "same-origin",
+    })
+    if (!response.ok) return { kind: "unknown" }
+    const body = (await response.json()) as { found?: unknown; orderId?: unknown }
+    if (body.found === false) return { kind: "absent" }
+    if (body.found === true && typeof body.orderId === "string" && body.orderId.length > 0) {
+      return { kind: "found", orderId: body.orderId }
+    }
+    return { kind: "unknown" }
+  } catch {
+    return { kind: "unknown" }
+  }
 }
 
 /**

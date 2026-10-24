@@ -43,6 +43,7 @@ const BACKEND_CLIENT_USERS = [
   "lib/parent/account/backend-account.ts",
   "lib/parent/consent/backend-consent.ts",
   "lib/parent/orders/backend-orders.ts",
+  "lib/requests/backend-request.ts", // V0.1.50 request submission + recovery lookup
 ]
 // V0.1.48: every consent decision goes through the consent loader.
 const CONSENT_SURFACES = [
@@ -64,6 +65,7 @@ const BACKEND_ROUTES = [
   // V0.1.48: consent (the route itself, and the gates in these two).
   "app/api/parent-consent/route.ts",
   "app/api/requests/route.ts",
+  "app/api/requests/by-submission-key/route.ts", // V0.1.50 recovery read
   "app/api/dev/parent-auth/route.ts",
 ]
 

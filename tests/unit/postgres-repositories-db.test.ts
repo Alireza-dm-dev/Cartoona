@@ -114,7 +114,7 @@ describe.skipIf(!enabled)("PostgreSQL data-access layer (real SQL, local Docker 
     await owner(`create database ${DB}`, "postgres")
 
     const migrated = await withPgClusterLock(() => script("scripts/db/migrate-local.sh", { DATABASE_URL: ownerUrl }))
-    expect(migrated.stdout).toMatch(/done - 15 applied/)
+    expect(migrated.stdout).toMatch(/done - 16 applied/)
 
     const login = await script("scripts/db/app-login-role.sh", { DATABASE_URL: ownerUrl, CARTOONA_APP_DB_PASSWORD: PASSWORD }, [ROLE])
     expect(login.code).toBe(0)

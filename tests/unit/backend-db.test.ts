@@ -79,7 +79,7 @@ describe.skipIf(!enabled)("backend against real PostgreSQL (local Docker Postgre
 
     const ownerUrl = `postgresql://cartoona@postgres:5432/${DB}`
     const migrated = await withPgClusterLock(() => script("scripts/db/migrate-local.sh", { DATABASE_URL: ownerUrl }))
-    expect(migrated.stdout).toMatch(/done - 15 applied/)
+    expect(migrated.stdout).toMatch(/done - 16 applied/)
     for (const role of [APP_ROLE, OWNER_ROLE]) {
       const r = await script("scripts/db/app-login-role.sh", { DATABASE_URL: ownerUrl, CARTOONA_APP_DB_PASSWORD: PASSWORD }, [role])
       expect(r.code).toBe(0)
@@ -193,7 +193,8 @@ describe.skipIf(!enabled)("backend against real PostgreSQL (local Docker Postgre
       ["UPDATE", "UPDATE public.candy_wallets SET balance = 1000"],
       ["DELETE", "DELETE FROM public.order_status_history"],
       ["read an ungranted table", "SELECT * FROM public.candy_transactions"],
-      ["execute a trusted write function", "SELECT public.create_parent_request_trusted(NULL::uuid, NULL::uuid, NULL::text, NULL::text)"],
+      // V0.1.50: create_parent_request_trusted IS executable (0016); the purchase function is not.
+      ["execute a trusted write function", "SELECT * FROM public.complete_candy_purchase_trusted(gen_random_uuid(), gen_random_uuid(), 'ref')"],
       ["disable triggers", "ALTER TABLE public.order_status_history DISABLE TRIGGER ALL"],
       ["change replication role", "SET session_replication_role = replica"],
       ["create a role", "CREATE ROLE bk_evil"],

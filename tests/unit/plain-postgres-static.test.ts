@@ -55,10 +55,10 @@ describe("database/migrations — no Supabase dependency", () => {
     // (V0.1.39) creates `cartoona_app` and grants to it, 0010 (V0.1.42) adds a
     // read grant, 0012 (V0.1.47) EXECUTE on the nonce function, 0013 (V0.1.47)
     // UPDATE on two profile columns, 0014 (V0.1.48) EXECUTE on the consent
-    // function, 0015 (V0.1.49) EXECUTE on the provisioning function. They may grant to `cartoona_app` and nothing else.
+    // function, 0015 (V0.1.49) EXECUTE on the provisioning function, 0016 (V0.1.50) EXECUTE on the request function and SELECT on characters. They may grant to `cartoona_app` and nothing else.
     // As statements (the candy ledger has a 'grant' transaction type).
     const APP_ROLE_FILE = "0009_application_role.sql"
-    const GRANT_FILES = [APP_ROLE_FILE, "0010_identity_read_grant.sql", "0012_internal_write_nonces.sql", "0013_parent_profile_name_update_grant.sql", "0014_parent_consent_write.sql", "0015_supabase_parent_provisioning.sql"]
+    const GRANT_FILES = [APP_ROLE_FILE, "0010_identity_read_grant.sql", "0012_internal_write_nonces.sql", "0013_parent_profile_name_update_grant.sql", "0014_parent_consent_write.sql", "0015_supabase_parent_provisioning.sql", "0016_parent_request_privileges.sql"]
     const baseline = Object.entries(sql)
       .filter(([f]) => !GRANT_FILES.includes(f))
       .map(([, s]) => s.replace(/--.*$/gm, ""))
@@ -96,6 +96,14 @@ describe("database/migrations — no Supabase dependency", () => {
     expect([...provision.matchAll(/^\s*GRANT\s+([^;]+);/gim)].map((m) => m[1].replace(/\s+/g, " "))).toEqual([
       "EXECUTE ON FUNCTION public.provision_supabase_parent_identity(uuid) TO cartoona_app",
     ])
+    // 0016: EXECUTE on the one request function + SELECT on the reference table
+    // `characters`; no INSERT/UPDATE/DELETE on any table, ever.
+    const request = sql["0016_parent_request_privileges.sql"].replace(/--.*$/gm, "")
+    expect([...request.matchAll(/^\s*GRANT\s+([^;]+);/gim)].map((m) => m[1].replace(/\s+/g, " "))).toEqual([
+      "EXECUTE ON FUNCTION public.create_parent_request_trusted(uuid, uuid, text, text, text, uuid, text, text, text, text, text, text, boolean, text, text, uuid, text) TO cartoona_app",
+      "SELECT ON public.characters TO cartoona_app",
+    ])
+    expect(request).not.toMatch(/\b(INSERT|UPDATE|DELETE|TRUNCATE|ALL)\b[^;]*\bTO\b/i)
   })
 
   it("4. never calls auth.uid() / auth.jwt() / auth.role()", () => {

@@ -186,8 +186,8 @@ describe("scope: no financial, request or media write migrated", () => {
     expect(sqlCode(MIGRATION)).not.toMatch(/candy_purchases|payment_attempts|coupon|orders|media_assets|candy_transactions|create_parent_request/i)
   })
 
-  it("request creation, candy purchases, coupons and media still go to Supabase", () => {
-    expect(code("app/api/requests/route.ts")).toMatch(/create_parent_request_trusted/)
+  it("candy purchases, coupons and media still go to Supabase (request creation moved in V0.1.50)", () => {
+    expect(code("app/api/requests/route.ts")).toMatch(/createRequestViaBackend/)
     expect(code("app/api/candy-purchases/route.ts")).toMatch(/createServerSupabaseClient|createAdminSupabaseClient/)
     for (const f of ["app/api/candy-purchases/route.ts", ...walk("app/api/coupons"), ...walk("app/api/admin/requests")]) {
       expect(code(f), f).not.toMatch(/@\/lib\/backend|backend-caller/)

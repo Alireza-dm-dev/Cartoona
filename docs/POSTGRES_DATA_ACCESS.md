@@ -238,6 +238,22 @@ of a direct UPDATE. The privileges are proven against a real login role in
 `tests/unit/write-security-db.test.ts` and (consent, V0.1.48)
 `tests/unit/consent-cutover-db.test.ts`.
 
+### Request grants (V0.1.50)
+
+Migration 0016: `GRANT EXECUTE` on `create_parent_request_trusted` (revoked
+from PUBLIC) and `GRANT SELECT` on `characters`. `lib/repositories/parent-requests.ts`
+has one write (the function) and two reads (the caller's order by
+`(parent_id, submission_key)`; a character by name). The role still cannot
+INSERT/UPDATE `orders`, `video_requests`, `drawing_animation_requests`,
+`media_assets`, `candy_wallets`, `candy_transactions`, `parent_welcome_credits`,
+`parent_welcome_credit_usages` or `order_status_history`, nor execute any other
+financial function (17 probes in `request-cutover-db.test.ts`). The function
+is SECURITY DEFINER with an empty `search_path`; a failure anywhere inside it
+(proved with injected failures at the child-row, usage and ledger inserts and
+a CHECK violation on the order row) leaves no order, child row, credit use,
+debit or ledger row.
+
+
 ## Tests
 
 | File | Database | Covers |

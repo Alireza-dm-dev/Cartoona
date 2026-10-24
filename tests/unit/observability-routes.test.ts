@@ -12,20 +12,25 @@ const m = vi.hoisted(() => ({
   serverClient: vi.fn(),
   upload: vi.fn(),
   copy: vi.fn(),
-  rpc: vi.fn(),
-  existingOrder: null as unknown,
+  remove: vi.fn(),
+  create: vi.fn(),
+  lookup: vi.fn(),
+  verify: vi.fn(),
   audit: vi.fn(),
-  finalClient: null as unknown,
 }))
 
 vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient: m.serverClient }))
-// V0.1.48: the consent gate reads PostgreSQL through the backend; these tests
-// cover the (still Supabase) submission path behind it.
+// V0.1.50: identity, consent, the idempotency lookup and the write all go
+// through the backend; the route touches Supabase only for Storage (and the
+// optional gallery metadata read, mocked below).
+vi.mock("@/lib/parent/backend-caller", () => ({ verifyParentCaller: m.verify }))
 vi.mock("@/lib/parent/consent/backend-consent", () => ({
-  loadParentConsent: async () => ({ ok: true, status: "granted", consentGrantedAt: "2026-01-01T00:00:00.000Z" }),
+  fetchParentConsent: async () => ({ ok: true, status: "granted", consentGrantedAt: "2026-01-01T00:00:00.000Z" }),
 }))
-vi.mock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => ({ rpc: m.rpc }) }))
-vi.mock("@/lib/requests/resolve-character", () => ({ resolveCharacterId: async () => ({ ok: true, characterId: null }) }))
+vi.mock("@/lib/requests/backend-request", () => ({
+  createRequestViaBackend: m.create,
+  lookupRequestBySubmissionKey: m.lookup,
+}))
 vi.mock("@/lib/parent/gallery/source-asset", async (orig) => ({
   ...(await orig<typeof import("@/lib/parent/gallery/source-asset")>()),
   resolveOwnedSourceAsset: async () => ({
@@ -49,19 +54,28 @@ vi.mock("@/lib/audit/final-media-audit", () => ({ recordFinalMediaAudit: m.audit
 let records: LogRecord[]
 let restore: () => void
 
-const chain = (data: unknown) => ({
-  select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: m.existingOrder, error: null }) }), maybeSingle: async () => ({ data, error: null }) }) }),
+const created = (replayed = false) => ({
+  ok: true as const,
+  confirmedBy: "write" as const,
+  order: { orderId: OID, type: "image", status: "pending_review", candyCost: 1, paymentSource: "candy" as const, replayed },
 })
-function healthyClient() {
-  return {
-    auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), getSession: async () => getSessionResult("valid", "u1"), signOut: vi.fn() },
-    rpc: async () => ({ data: [{ is_valid: true, session_started_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-31T00:00:00Z" }], error: null }),
-    from: (t: string) => t === "users" ? chain({ role: "parent" }) : t === "parent_profiles" ? chain({ id: "p1" }) : chain(null),
-    storage: { from: () => ({ upload: m.upload, copy: m.copy, remove: async () => ({ error: null }) }) },
-  }
-}
+// The request route only uses .storage; the final-media route below still reads
+// Supabase (auth, role, session lifetime), so the client keeps those too.
+const chain = (data: unknown) => ({
+  select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }), maybeSingle: async () => ({ data, error: null }) }) }),
+})
+const healthyClient = () => ({
+  auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), getSession: async () => getSessionResult("valid", "u1"), signOut: vi.fn() },
+  rpc: async () => ({ data: [{ is_valid: true, session_started_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-31T00:00:00Z" }], error: null }),
+  from: (t: string) => t === "users" ? chain({ role: "parent" }) : t === "parent_profiles" ? chain({ id: "p1" }) : chain(null),
+  storage: { from: () => ({ upload: m.upload, copy: m.copy, remove: m.remove }) },
+})
 function post(file: unknown, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}) {
-  const r = new Request("http://x/api/requests", { method: "POST", headers: { "content-type": "multipart/form-data; boundary=x", ...headers }, body: "x" })
+  const r = new Request("http://x/api/requests", {
+    method: "POST",
+    headers: { "content-type": "multipart/form-data; boundary=x", origin: "http://localhost:3000", ...headers },
+    body: "x",
+  })
   const fields: Record<string, unknown> = { draft: "{}", submissionKey: KEY, file, sourceAssetId: null, ...extra }
   ;(r as unknown as { formData: unknown }).formData = async () => ({ get: (k: string) => fields[k] ?? null })
   return r
@@ -73,11 +87,13 @@ beforeEach(() => {
   setRateLimitStore(new InMemoryRateLimitStore()) // fresh counters per test
   records = []
   restore = setLogSink((r) => records.push(r))
-  m.existingOrder = null
   m.serverClient.mockReset().mockImplementation(async () => healthyClient())
   m.upload.mockReset().mockResolvedValue({ error: null })
   m.copy.mockReset().mockResolvedValue({ error: null })
-  m.rpc.mockReset().mockResolvedValue({ data: [{ id: OID, type: "image", status: "pending", candy_cost: 1, replayed: false }], error: null })
+  m.remove.mockReset().mockResolvedValue({ error: null })
+  m.verify.mockReset().mockResolvedValue({ ok: true, context: { identity: { provider: "supabase", subject: "u1" }, authenticatedAt: 1 } })
+  m.lookup.mockReset().mockResolvedValue({ ok: true, found: false })
+  m.create.mockReset().mockResolvedValue(created())
   m.audit.mockReset().mockResolvedValue(undefined)
 })
 afterEach(() => restore())
@@ -102,42 +118,60 @@ describe("POST /api/requests observability", () => {
     expect(records[0].requestId).toBe(records[1].requestId)
   })
 
-  it("idempotent replay is distinguishable from a new submission (fast path and RPC race)", async () => {
-    m.existingOrder = { id: OID, type: "image", status: "pending", candy_cost: 1 }
+  it("idempotent replay is distinguishable from a new submission (fast path and write race)", async () => {
+    m.lookup.mockResolvedValue({ ok: true, found: true, order: { orderId: OID, type: "image", status: "pending_review", candyCost: 1, paymentSource: "candy" } })
     await (await POST())(post(png))
     expect(events()).toEqual(["SUBMISSION_REPLAYED", "REQUEST_COMPLETED"])
     expect(records[0]).toMatchObject({ replayed: true, reason: "idempotency_fast_path", orderId: OID })
     expect(m.upload).not.toHaveBeenCalled()
+    expect(m.create).not.toHaveBeenCalled()
 
     records.length = 0
-    m.existingOrder = null
-    m.rpc.mockResolvedValue({ data: [{ id: OID, type: "image", status: "pending", candy_cost: 1, replayed: true }], error: null })
+    m.lookup.mockResolvedValue({ ok: true, found: false })
+    m.create.mockResolvedValue(created(true))
     await (await POST())(post(png))
     expect(events()).toContain("SUBMISSION_REPLAYED")
     expect(events()).not.toContain("SUBMISSION_ACCEPTED")
+    // The race loser's own upload belongs to no order: removed.
+    expect(m.remove).toHaveBeenCalledTimes(1)
   })
 
   it("insufficient candies -> info SUBMISSION_INSUFFICIENT_CANDIES, no error noise", async () => {
-    m.rpc.mockResolvedValue({ data: null, error: { message: "INSUFFICIENT_CANDIES" } })
+    m.create.mockResolvedValue({ ok: false, reason: "refused", error: "INSUFFICIENT_CANDIES" })
     const res = await (await POST())(post(png))
     expect(res.status).toBe(402)
     expect(records.find((r) => r.event === "SUBMISSION_INSUFFICIENT_CANDIES")).toMatchObject({ level: "info" })
     expect(records.some((r) => r.level === "error")).toBe(false)
-    expect(events()).not.toContain("SUBMISSION_RPC_FAILED")
+    expect(events()).not.toContain("SUBMISSION_REFUSED")
+    // A definite refusal created nothing: the uploaded object is removed.
+    expect(m.remove).toHaveBeenCalledTimes(1)
   })
 
-  it("trusted RPC failure -> SUBMISSION_RPC_FAILED with our code, never the database text", async () => {
-    m.rpc.mockResolvedValue({ data: null, error: { message: 'invalid input syntax for type uuid: "Robo Bobo" (host 10.0.0.5)' } })
+  it("an unknown refusal token -> SUBMISSION_REFUSED with OUR code only", async () => {
+    m.create.mockResolvedValue({ ok: false, reason: "refused", error: 'invalid input syntax for type uuid: "Robo Bobo" (host 10.0.0.5)' })
     await (await POST())(post(png))
-    const rec = records.find((r) => r.event === "SUBMISSION_RPC_FAILED")!
-    expect(rec).toMatchObject({ subsystem: "database", reason: "request_failed", errorCode: "DATABASE_UNAVAILABLE" })
+    const rec = records.find((r) => r.event === "SUBMISSION_REFUSED")!
+    expect(rec).toMatchObject({ subsystem: "backend", reason: "request_failed" })
     expect(JSON.stringify(records)).not.toMatch(/Robo|10\.0\.0\.5|invalid input/)
   })
 
-  it("RPC timeout is categorized REQUEST_TIMEOUT", async () => {
-    m.rpc.mockResolvedValue({ data: null, error: { message: "FetchTimeoutError: Request timed out after 10000ms" } })
-    await (await POST())(post(png))
-    expect(records.find((r) => r.event === "SUBMISSION_RPC_FAILED")!.errorCode).toBe("REQUEST_TIMEOUT")
+  it("a lost write answer is reported as UNCERTAIN (503 request_outcome_unknown), never as failed, and keeps the upload", async () => {
+    m.create.mockResolvedValue({ ok: false, reason: "outcome_unknown" })
+    const res = await (await POST())(post(png))
+    expect(res.status).toBe(503)
+    const body = await res.json()
+    expect(body.code).toBe("request_outcome_unknown")
+    expect(body.error).toContain("نتوانستیم تأیید کنیم که درخواست ثبت شده است یا نه")
+    // The order may exist and own the object.
+    expect(m.remove).not.toHaveBeenCalled()
+  })
+
+  it("a lost answer whose lookup found no order -> 503 request_not_created, upload kept, retry allowed", async () => {
+    m.create.mockResolvedValue({ ok: false, reason: "not_created" })
+    const res = await (await POST())(post(png))
+    expect(res.status).toBe(503)
+    expect((await res.json()).code).toBe("request_not_created")
+    expect(m.remove).not.toHaveBeenCalled()
   })
 
   it("storage upload failure -> SUBMISSION_STORAGE_FAILED (safe category, no path/filename)", async () => {
@@ -147,7 +181,7 @@ describe("POST /api/requests observability", () => {
     expect(records.find((r) => r.event === "SUBMISSION_STORAGE_FAILED")).toMatchObject({
       level: "error", operation: "upload", bucket: "parent-uploads", mediaType: "image/png", errorCode: "STORAGE_UNAVAILABLE",
     })
-    expect(m.rpc).not.toHaveBeenCalled()
+    expect(m.create).not.toHaveBeenCalled()
   })
 
   it("gallery copy failure -> SUBMISSION_STORAGE_FAILED operation=copy", async () => {
@@ -166,7 +200,7 @@ describe("POST /api/requests observability", () => {
   })
 
   it("unexpected throw inside the submit path -> one REQUEST_FAILED, generic 500 with request id", async () => {
-    m.rpc.mockImplementation(() => { throw new Error(`boom ${SECRET_TITLE}`) })
+    m.create.mockImplementation(() => { throw new Error(`boom ${SECRET_TITLE}`) })
     const res = await (await POST())(post(png))
     expect(res.status).toBe(500)
     expect(records.filter((r) => r.event === "REQUEST_FAILED")).toHaveLength(1)
@@ -174,22 +208,20 @@ describe("POST /api/requests observability", () => {
     expect(JSON.stringify(await res.json())).not.toContain("boom")
   })
 
-  it("transient getUser failure logs a warn and keeps the 401 contract", async () => {
-    const { AuthRetryableFetchError } = await import("@supabase/supabase-js")
-    m.serverClient.mockImplementation(async () => ({
-      ...healthyClient(),
-      auth: { getUser: async () => ({ data: { user: null }, error: new AuthRetryableFetchError("Request timed out after 10000ms", 0) }) },
-    }))
+  it("an identity provider outage keeps the retryable 503 contract and does no work", async () => {
+    m.verify.mockResolvedValue({ ok: false, reason: "auth_unavailable" })
     const res = await (await POST())(post(png))
-    expect(res.status).toBe(401)
-    expect(records.find((r) => r.event === "AUTH_USER_LOOKUP_FAILED")).toMatchObject({ level: "warn", errorCode: "REQUEST_TIMEOUT" })
+    expect(res.status).toBe(503)
+    expect(res.headers.get("Retry-After")).toBe("2")
+    expect(m.upload).not.toHaveBeenCalled()
+    expect(m.create).not.toHaveBeenCalled()
   })
 
   it("no prompt, child name, title, filename, path, submission key or token is ever logged", async () => {
     m.upload.mockResolvedValue({ error: { message: "bad u1/o/sara-birthday.png" } })
     await (await POST())(post(png))
     await (await POST())(post(null, { sourceAssetId: OID }))
-    m.rpc.mockResolvedValue({ data: null, error: { message: "boom Sara free text prompt" } })
+    m.create.mockResolvedValue({ ok: false, reason: "refused", error: "boom Sara free text prompt" })
     await (await POST())(post(png))
     const out = JSON.stringify(records)
     expect(out).not.toMatch(/Sara|sara|prompt|birthday|secret|path\.png|\.png|\.jpg|u1\/|11111111-1111/i)

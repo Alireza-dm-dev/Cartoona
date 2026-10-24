@@ -257,6 +257,27 @@ route --> repositories({ parentProfileId, ... })   (explicit ids, from the princ
 - `CARTOONA_INTERNAL_AUTH_SECRET` is required at startup. It is shared with
   the frontend only.
 
+## Request submission (V0.1.50)
+
+| Route | Auth | |
+|---|---|---|
+| `POST /v1/parent/requests` | v3 (`requireWriteAuth(deps, "parent")`), body limit 64 KiB | one call to `create_parent_request_trusted`: order + request rows + welcome-credit-or-candy spend + ledger in ONE transaction |
+| `GET /v1/parent/requests/by-submission-key?submissionKey=<uuid>` | v2, parent | the caller's own order for a key: `{found:false}` or the minimum fields |
+
+Body: exactly `submissionKey, orderId, type, title, description, character,
+durationKey, durationChoice, videoScript, videoStyle, animationStyle,
+charactersSpeak, childName, file` (file = `{path, mimeType, originalFilename}`
+or `null`; the path must start with `<caller>/<orderId>/`). No file bytes, user
+id, profile id, price, balance or status. Answers: `200 {orderId, type, status,
+candyCost, replayed, paymentSource}`; function refusals as `{error: <token>}`
+(`402 INSUFFICIENT_CANDIES`, `403 request_consent_required`, `409
+CANDY_WALLET_NOT_FOUND`, `422 request_*`, `503 CREATION_PRICING_UNAVAILABLE`);
+`404 parent_profile_not_found`; `422 character_unavailable`; `503
+service_unavailable` (the outcome of a write is then **unknown**). The app role
+holds EXECUTE on the function and nothing that writes the request tables
+(migration 0016).
+
+
 ## Local timings (informational)
 
 Warm, keep-alive, 200 sequential requests each, from the Mac to Docker

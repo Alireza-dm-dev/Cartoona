@@ -14,7 +14,8 @@ const m = vi.hoisted(() => ({
   role: "parent",
   upload: vi.fn(),
   rpc: vi.fn(),
-  adminRpc: vi.fn(),
+  create: vi.fn(),
+  lookup: vi.fn(),
   existingOrder: null as unknown,
   sign: vi.fn(),
   audit: vi.fn(),
@@ -25,13 +26,20 @@ const m = vi.hoisted(() => ({
 vi.mock("@/lib/supabase/server", () => ({
   createServerSupabaseClient: async () => healthyClient(),
 }))
-// V0.1.48: the consent gate reads PostgreSQL through the backend; these tests
-// cover the (still Supabase) submission path behind it.
-vi.mock("@/lib/parent/consent/backend-consent", () => ({
-  loadParentConsent: async () => ({ ok: true, status: "granted", consentGrantedAt: "2026-01-01T00:00:00.000Z" }),
+// V0.1.50: identity, consent, the idempotency lookup and the write all go
+// through the backend; these tests cover the rate limit in front of them.
+vi.mock("@/lib/parent/backend-caller", () => ({
+  verifyParentCaller: async () => ({ ok: true, context: { identity: { provider: "supabase", subject: m.userId }, authenticatedAt: 1 } }),
 }))
+vi.mock("@/lib/parent/consent/backend-consent", () => ({
+  fetchParentConsent: async () => ({ ok: true, status: "granted", consentGrantedAt: "2026-01-01T00:00:00.000Z" }),
+}))
+// The coupon route below still uses the Supabase admin client.
 vi.mock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => ({ rpc: m.rpc }) }))
-vi.mock("@/lib/requests/resolve-character", () => ({ resolveCharacterId: async () => ({ ok: true, characterId: null }) }))
+vi.mock("@/lib/requests/backend-request", () => ({
+  createRequestViaBackend: m.create,
+  lookupRequestBySubmissionKey: m.lookup,
+}))
 vi.mock("@/lib/requests/request-submission", () => ({
   parseAndValidateDraft: () => ({
     ok: true,
@@ -73,6 +81,14 @@ beforeEach(() => {
   m.existingOrder = null
   m.upload.mockReset().mockResolvedValue({ error: null })
   m.rpc.mockReset().mockResolvedValue({ data: [{ id: OID, type: "image", status: "pending", candy_cost: 1, replayed: false }], error: null })
+  m.create.mockReset().mockResolvedValue({
+    ok: true,
+    confirmedBy: "write",
+    order: { orderId: OID, type: "image", status: "pending_review", candyCost: 1, paymentSource: "candy", replayed: false },
+  })
+  m.lookup.mockReset().mockImplementation(async () =>
+    m.existingOrder ? { ok: true, found: true, order: m.existingOrder } : { ok: true, found: false },
+  )
   m.sign.mockReset().mockResolvedValue("https://signed.example/x?token=abc")
   m.audit.mockReset().mockResolvedValue(undefined)
   m.ownership.mockReset().mockImplementation(async () => ({ ok: true, userId: m.userId }))
@@ -80,7 +96,7 @@ beforeEach(() => {
 afterEach(() => restoreSink())
 
 function submit(headers: Record<string, string> = {}) {
-  const r = new Request("http://x/api/requests", { method: "POST", headers: { "content-type": "multipart/form-data; boundary=x", ...headers }, body: "x" })
+  const r = new Request("http://x/api/requests", { method: "POST", headers: { "content-type": "multipart/form-data; boundary=x", origin: "http://localhost:3000", ...headers }, body: "x" })
   const fields: Record<string, unknown> = { draft: "{}", submissionKey: KEY, file: { size: 100, type: "image/png", name: "a.png" }, sourceAssetId: null }
   ;(r as unknown as { formData: unknown }).formData = async () => ({ get: (k: string) => fields[k] ?? null })
   return r
@@ -92,7 +108,7 @@ describe("POST /api/requests rate limiting", () => {
     const route = await POST()
     for (let i = 0; i < 5; i++) expect((await route(submit())).status).toBe(200)
     expect(m.upload).toHaveBeenCalledTimes(5)
-    expect(m.rpc).toHaveBeenCalledTimes(5)
+    expect(m.create).toHaveBeenCalledTimes(5)
 
     const res = await route(submit())
     expect(res.status).toBe(429)
@@ -102,7 +118,7 @@ describe("POST /api/requests rate limiting", () => {
     expect(res.headers.get("X-Request-Id")).toBeTruthy()
     // No upload, no storage copy, no order RPC for the rejected request.
     expect(m.upload).toHaveBeenCalledTimes(5)
-    expect(m.rpc).toHaveBeenCalledTimes(5)
+    expect(m.create).toHaveBeenCalledTimes(5)
   })
 
   it("different parents have separate buckets; the same parent shares one", async () => {
@@ -143,16 +159,16 @@ describe("POST /api/requests rate limiting", () => {
     const route = await POST()
     // A new submission, then replays of the same key (existing order found).
     expect((await route(submit())).status).toBe(200)
-    m.existingOrder = { id: OID, type: "image", status: "pending", candy_cost: 1 }
+    m.existingOrder = { orderId: OID, type: "image", status: "pending_review", candyCost: 1, paymentSource: "candy" }
     const replay = await (await route(submit())).json()
     expect(replay).toMatchObject({ orderId: OID, replayed: true })
     for (let i = 0; i < 3; i++) await route(submit())
     // Burn through the limit, then confirm a limited retry creates nothing.
-    const rpcCallsBefore = m.rpc.mock.calls.length
+    const rpcCallsBefore = m.create.mock.calls.length
     const limited = await route(submit())
     expect(limited.status).toBe(429)
-    expect(m.rpc.mock.calls.length).toBe(rpcCallsBefore)
-    expect(m.rpc).toHaveBeenCalledTimes(1) // only the very first request ever created an order
+    expect(m.create.mock.calls.length).toBe(rpcCallsBefore)
+    expect(m.create).toHaveBeenCalledTimes(1) // only the very first request ever created an order
     expect(m.upload).toHaveBeenCalledTimes(1)
   })
 
@@ -229,11 +245,11 @@ describe("coupon / purchase routes", () => {
     expect(bad.status).toBe(400)
 
     for (let i = 0; i < 18; i++) await validate(json("http://x/api/coupons/validate", body))
-    const callsAtLimit = m.rpc.mock.calls.length
+    const callsAtLimit = m.create.mock.calls.length
     const limited = await validate(json("http://x/api/coupons/validate", body))
     expect(limited.status).toBe(429)
     expect(await limited.json()).toEqual({ error: "rate_limited" })
-    expect(m.rpc.mock.calls.length).toBe(callsAtLimit)
+    expect(m.create.mock.calls.length).toBe(callsAtLimit)
   })
 
   it("coupon apply (10/min) and purchase creation (10/min) are limited before role/RPC work", async () => {
@@ -247,7 +263,7 @@ describe("coupon / purchase routes", () => {
 
     for (let i = 0; i < 10; i++) expect((await create(json("http://x", { package_id: OID }))).status).toBe(403)
     expect((await create(json("http://x", { package_id: OID }))).status).toBe(429)
-    expect(m.rpc).not.toHaveBeenCalled()
+    expect(m.create).not.toHaveBeenCalled()
   })
 })
 

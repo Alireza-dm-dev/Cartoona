@@ -33,6 +33,18 @@ export interface StubAuthOptions {
    * scope can still render around the parts served by the backend.
    */
   tables?: Record<string, unknown[]>
+  /**
+   * Browser proof only: listen on this port / host instead of an ephemeral
+   * loopback port (default 0 / 127.0.0.1).
+   */
+  port?: number
+  host?: string
+  /**
+   * Browser proof only: phone (or email) -> user id for POST
+   * /auth/v1/token?grant_type=password. Any password is accepted for a listed
+   * login: this is a stand-in for the provider, not an authentication test.
+   */
+  logins?: Record<string, string>
 }
 
 interface IssuedSession {
@@ -43,8 +55,16 @@ interface IssuedSession {
   amr?: unknown
 }
 
+export type StorageMode = "ok" | "upload_fail"
+
 export interface StubAuth {
   url: string
+  /**
+   * V0.1.50: a minimal in-memory stand-in for Supabase STORAGE (upload, copy,
+   * remove), so the request route's real storage calls run locally. Keys are
+   * "<bucket>/<path>". Never contacts a hosted service.
+   */
+  storage: { objects: Set<string>; mode: StorageMode; removed: string[] }
   options: Required<StubAuthOptions>
   requests: Array<{ method: string; path: string; authorization: string | null }>
   /** Access tokens issued by refreshes, in order. */
@@ -69,11 +89,15 @@ export async function startStubAuth(initial: StubAuthOptions): Promise<StubAuth>
     role: "parent",
     fullName: "Test Parent",
     tables: {},
+    port: 0,
+    host: "127.0.0.1",
+    logins: {},
     ...initial,
   }
   const requests: StubAuth["requests"] = []
   const refreshedTokens: string[] = []
   const hanging = new Set<http.ServerResponse>()
+  const storage: StubAuth["storage"] = { objects: new Set(), mode: "ok", removed: [] }
   /** access token -> its session; refresh token -> its session. */
   const accessTokens = new Map<string, IssuedSession>()
   const refreshTokens = new Map<string, IssuedSession>()
@@ -91,6 +115,11 @@ export async function startStubAuth(initial: StubAuthOptions): Promise<StubAuth>
   }
 
   const server = http.createServer((req, res) => {
+    // A browser calls the provider cross-origin, exactly as it calls Supabase.
+    res.setHeader("access-control-allow-origin", "*")
+    res.setHeader("access-control-allow-headers", "*")
+    res.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS")
+    if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return }
     const path = (req.url ?? "").split("?")[0]
     requests.push({ method: req.method ?? "", path, authorization: req.headers.authorization ?? null })
     let raw = ""
@@ -112,6 +141,22 @@ export async function startStubAuth(initial: StubAuthOptions): Promise<StubAuth>
             })
           }
         }
+      }
+
+      if (path === "/auth/v1/token" && (req.url ?? "").includes("grant_type=password")) {
+        let creds: { phone?: string; email?: string } = {}
+        try { creds = JSON.parse(raw) } catch { /* empty */ }
+        const sub = options.logins[creds.phone ?? creds.email ?? ""]
+        if (!sub) return json(res, 400, { code: 400, error_code: "invalid_credentials", msg: "Invalid login credentials" })
+        const session: IssuedSession = { sub, sessionId: `5e5e5e5e-0000-4000-8000-${String(++counter).padStart(12, "0")}`, authenticatedAt: Date.now() }
+        const token = issueAccess(session)
+        const refresh = `refresh-${++counter}`
+        refreshTokens.set(refresh, session)
+        const now = Math.floor(Date.now() / 1000)
+        return json(res, 200, {
+          access_token: token, token_type: "bearer", expires_in: 3600, expires_at: now + 3600, refresh_token: refresh,
+          user: { id: sub, aud: "authenticated", role: "authenticated", phone: creds.phone ?? "", email: "" },
+        })
       }
 
       if (path === "/auth/v1/token") {
@@ -138,6 +183,33 @@ export async function startStubAuth(initial: StubAuthOptions): Promise<StubAuth>
         }
       }
 
+      if (path.startsWith("/storage/v1/object/")) {
+        const rest = decodeURIComponent(path.slice("/storage/v1/object/".length))
+        if (req.method === "POST" && rest === "copy") {
+          let body: { bucketId?: string; sourceKey?: string; destinationKey?: string } = {}
+          try { body = JSON.parse(raw) } catch { /* empty */ }
+          if (!storage.objects.has(`${body.bucketId}/${body.sourceKey}`)) return json(res, 404, { statusCode: "404", error: "not_found", message: "Object not found" })
+          storage.objects.add(`${body.bucketId}/${body.destinationKey}`)
+          return json(res, 200, { Key: `${body.bucketId}/${body.destinationKey}` })
+        }
+        if (req.method === "POST") {
+          if (storage.mode === "upload_fail") return json(res, 500, { statusCode: "500", error: "internal", message: "storage unavailable" })
+          if (storage.objects.has(rest)) return json(res, 409, { statusCode: "409", error: "Duplicate", message: "The resource already exists" })
+          storage.objects.add(rest)
+          return json(res, 200, { Key: rest })
+        }
+        if (req.method === "DELETE") {
+          const bucket = rest
+          let body: { prefixes?: string[] } = {}
+          try { body = JSON.parse(raw) } catch { /* empty */ }
+          for (const key of body.prefixes ?? []) {
+            storage.objects.delete(`${bucket}/${key}`)
+            storage.removed.push(`${bucket}/${key}`)
+          }
+          return json(res, 200, (body.prefixes ?? []).map((name) => ({ name })))
+        }
+      }
+
       if (path === "/rest/v1/users") return json(res, 200, [{ role: options.role }])
       if (path === "/rest/v1/parent_profiles") return json(res, 200, [{ full_name: options.fullName }])
       const table = path.startsWith("/rest/v1/") ? options.tables[path.slice("/rest/v1/".length)] : undefined
@@ -146,11 +218,12 @@ export async function startStubAuth(initial: StubAuthOptions): Promise<StubAuth>
     })
   })
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  await new Promise<void>((resolve) => server.listen(options.port, options.host, resolve))
   const { port } = server.address() as AddressInfo
   const url = `http://127.0.0.1:${port}`
   return {
     url,
+    storage,
     options,
     requests,
     refreshedTokens,

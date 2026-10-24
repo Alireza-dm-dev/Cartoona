@@ -125,7 +125,7 @@ describe.skipIf(!enabled)("identity chain: Next -> assertion -> Fastify -> Postg
     await owner(`create database ${DB}`, "postgres")
     const ownerUrl = `postgresql://cartoona@postgres:5432/${DB}`
     const migrated = await withPgClusterLock(() => script("scripts/db/migrate-local.sh", { DATABASE_URL: ownerUrl }))
-    expect(migrated.stdout).toMatch(/done - 15 applied/)
+    expect(migrated.stdout).toMatch(/done - 16 applied/)
     expect((await script("scripts/db/app-login-role.sh", { DATABASE_URL: ownerUrl, CARTOONA_APP_DB_PASSWORD: DB_PASSWORD }, [ROLE])).code).toBe(0)
 
     // "Migrated" users (id = Supabase uid), then the documented backfill.
