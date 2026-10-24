@@ -79,7 +79,7 @@ describe.skipIf(!enabled)("backend against real PostgreSQL (local Docker Postgre
 
     const ownerUrl = `postgresql://cartoona@postgres:5432/${DB}`
     const migrated = await withPgClusterLock(() => script("scripts/db/migrate-local.sh", { DATABASE_URL: ownerUrl }))
-    expect(migrated.stdout).toMatch(/done - 16 applied/)
+    expect(migrated.stdout).toMatch(/done - 17 applied/)
     for (const role of [APP_ROLE, OWNER_ROLE]) {
       const r = await script("scripts/db/app-login-role.sh", { DATABASE_URL: ownerUrl, CARTOONA_APP_DB_PASSWORD: PASSWORD }, [role])
       expect(r.code).toBe(0)

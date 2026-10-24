@@ -16,6 +16,9 @@ const m = vi.hoisted(() => ({
   rpc: vi.fn(),
   create: vi.fn(),
   lookup: vi.fn(),
+  validateCoupon: vi.fn(),
+  applyCoupon: vi.fn(),
+  createPurchase: vi.fn(),
   existingOrder: null as unknown,
   sign: vi.fn(),
   audit: vi.fn(),
@@ -36,6 +39,12 @@ vi.mock("@/lib/parent/consent/backend-consent", () => ({
 }))
 // The coupon route below still uses the Supabase admin client.
 vi.mock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => ({ rpc: m.rpc }) }))
+// V0.1.51: purchases and coupons go through the backend as well.
+vi.mock("@/lib/candy-purchases/backend-purchases", () => ({
+  validateCoupon: m.validateCoupon,
+  applyCoupon: m.applyCoupon,
+  createPurchase: m.createPurchase,
+}))
 vi.mock("@/lib/requests/backend-request", () => ({
   createRequestViaBackend: m.create,
   lookupRequestBySubmissionKey: m.lookup,
@@ -227,54 +236,61 @@ describe("POST /api/parent/orders/[orderId]/final-media rate limiting", () => {
 
 describe("coupon / purchase routes", () => {
   const json = (url: string, body: unknown) =>
-    new Request(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    new Request(url, { method: "POST", headers: { "content-type": "application/json", origin: "http://localhost:3000" }, body: JSON.stringify(body) })
 
-  it("coupon validate: business behaviour is unchanged below the limit, 429 at 21 with no RPC", async () => {
+  it("coupon validate: business behaviour is unchanged below the limit, 429 at 21 with no backend call", async () => {
     const { POST: validate } = await import("@/app/api/coupons/validate/route")
-    const rpcCoupon = { normalized_code: "SAVE10", discount_type: "percent", original_price_amount: 100, discount_amount: 10, final_price_amount: 90, currency: "IRR" }
-    m.rpc.mockResolvedValue({ data: [rpcCoupon], error: null })
+    const coupon = { normalized_code: "SAVE10", discount_type: "percentage", original_price_amount: 100, discount_amount: 10, final_price_amount: 90, currency: "IRR" }
+    m.validateCoupon.mockReset().mockResolvedValue({ ok: true, coupon })
     const body = { purchase_id: OID, code: "save10" }
 
     const first = await validate(json("http://x/api/coupons/validate", body))
     expect(first.status).toBe(200)
     expect((await first.json()).coupon).toMatchObject({ normalizedCode: "SAVE10", finalPriceAmount: 90 })
-    expect(m.rpc.mock.calls[0][1]).toMatchObject({ p_purchase_id: OID, p_coupon_code: "SAVE10", p_parent_profile_id: "p1" })
+    // The backend gets the VERIFIED context, the purchase id and the normalized code - never a profile id.
+    expect(m.validateCoupon.mock.calls[0].slice(1)).toEqual([OID, "SAVE10"])
+    expect(m.validateCoupon.mock.calls[0][0]).toMatchObject({ identity: { subject: m.userId } })
 
     // Existing validation errors still surface as before (and still count).
     const bad = await validate(json("http://x/api/coupons/validate", { purchase_id: OID, code: "!!" }))
     expect(bad.status).toBe(400)
 
     for (let i = 0; i < 18; i++) await validate(json("http://x/api/coupons/validate", body))
-    const callsAtLimit = m.create.mock.calls.length
+    const callsAtLimit = m.validateCoupon.mock.calls.length
     const limited = await validate(json("http://x/api/coupons/validate", body))
     expect(limited.status).toBe(429)
     expect(await limited.json()).toEqual({ error: "rate_limited" })
-    expect(m.create.mock.calls.length).toBe(callsAtLimit)
+    expect(m.validateCoupon.mock.calls.length).toBe(callsAtLimit)
   })
 
-  it("coupon apply (10/min) and purchase creation (10/min) are limited before role/RPC work", async () => {
+  it("coupon apply (10/min) and purchase creation (10/min) are limited before any backend work", async () => {
     const { POST: apply } = await import("@/app/api/candy-purchases/[id]/coupon/route")
     const { POST: create } = await import("@/app/api/candy-purchases/route")
-    m.role = "admin" // downstream is a cheap, deterministic 403 - proves the limiter ran first and left behaviour alone
+    // Downstream is a cheap, deterministic 403 (the backend refused the role): proves the limiter ran first and left behaviour alone.
+    m.applyCoupon.mockReset().mockResolvedValue({ ok: false, kind: "auth", reason: "forbidden" })
+    m.createPurchase.mockReset().mockResolvedValue({ ok: false, kind: "auth", reason: "forbidden" })
+    const applyBody = { code: "SAVE10", idempotency_key: "11111111-2222-4333-8444-555555555555" }
     for (let i = 0; i < 10; i++) {
-      expect((await apply(json("http://x", { code: "A" }), { params: Promise.resolve({ id: OID }) })).status).toBe(403)
+      expect((await apply(json("http://x", applyBody), { params: Promise.resolve({ id: OID }) })).status).toBe(403)
     }
-    expect((await apply(json("http://x", { code: "A" }), { params: Promise.resolve({ id: OID }) })).status).toBe(429)
+    expect((await apply(json("http://x", applyBody), { params: Promise.resolve({ id: OID }) })).status).toBe(429)
+    expect(m.applyCoupon).toHaveBeenCalledTimes(10)
 
     for (let i = 0; i < 10; i++) expect((await create(json("http://x", { package_id: OID }))).status).toBe(403)
     expect((await create(json("http://x", { package_id: OID }))).status).toBe(429)
-    expect(m.create).not.toHaveBeenCalled()
+    expect(m.createPurchase).toHaveBeenCalledTimes(10)
   })
 })
 
 describe("wiring: every protected route limits after identity and before expensive work", () => {
   const read = (p: string) => fs.readFileSync(path.join(process.cwd(), p), "utf8")
   const cases: [string, RegExp, RegExp[]][] = [
-    ["app/api/requests/route.ts", /auth\.getUser\(\)/, [/request\.formData\(\)/, /\.upload\(/, /\.copy\(/, /\.rpc\(\s*"create_parent_request_trusted"/]],
-    ["app/api/coupons/validate/route.ts", /auth\.getUser\(\)/, [/validate_coupon_for_purchase_trusted/]],
-    ["app/api/candy-purchases/[id]/coupon/route.ts", /auth\.getUser\(\)/, [/\.rpc\(/]],
-    ["app/api/candy-purchases/[id]/complete/route.ts", /auth\.getUser\(\)/, [/\.rpc\(/]],
-    ["app/api/candy-purchases/route.ts", /auth\.getUser\(\)/, [/\.insert\(/]],
+    // V0.1.50/51: identity is verifyParentCaller(); the expensive work is the backend call.
+    ["app/api/requests/route.ts", /verifyParentCaller\(\)/, [/request\.formData\(\)/, /\.upload\(/, /\.copy\(/, /createRequestViaBackend\(/]],
+    ["app/api/coupons/validate/route.ts", /verifyParentCaller\(\)/, [/validateCoupon\(/]],
+    ["app/api/candy-purchases/[id]/coupon/route.ts", /verifyParentCaller\(\)/, [/applyCoupon\(/]],
+    ["app/api/candy-purchases/[id]/pay/route.ts", /verifyParentCaller\(\)/, [/startPayment\(/]],
+    ["app/api/candy-purchases/route.ts", /verifyParentCaller\(\)/, [/createPurchase\(/]],
     ["app/api/parent/password/route.ts", /auth\.getUser\(\)/, [/updateUser|updateUserById|\.auth\.admin/]],
     ["app/api/parent/orders/[orderId]/final-media/route.ts", /resolveParentOwnsOrder\(/, [/createPrivateSignedUrl\(/, /recordFinalMediaAudit\(/]],
   ]
@@ -282,6 +298,7 @@ describe("wiring: every protected route limits after identity and before expensi
     const src = read(file)
     const limit = src.lastIndexOf("enforceRateLimit(")
     expect(limit, "enforceRateLimit missing").toBeGreaterThan(-1)
+    expect(src.search(identity), "identity step missing").toBeGreaterThan(-1)
     expect(src.search(identity)).toBeLessThan(limit)
     for (const re of expensive) {
       const at = src.search(re)

@@ -44,7 +44,11 @@ const BACKEND_CLIENT_USERS = [
   "lib/parent/consent/backend-consent.ts",
   "lib/parent/orders/backend-orders.ts",
   "lib/requests/backend-request.ts", // V0.1.50 request submission + recovery lookup
-]
+  // V0.1.51: purchases, coupons, payments, admin coupons.
+  "lib/admin/coupons/queries.ts",
+  "lib/admin/coupons/service.ts",
+  "lib/candy-purchases/backend-purchases.ts",
+].sort()
 // V0.1.48: every consent decision goes through the consent loader.
 const CONSENT_SURFACES = [
   "app/(auth)/complete-request/page.tsx",
@@ -67,6 +71,16 @@ const BACKEND_ROUTES = [
   "app/api/requests/route.ts",
   "app/api/requests/by-submission-key/route.ts", // V0.1.50 recovery read
   "app/api/dev/parent-auth/route.ts",
+  // V0.1.51: purchases, coupons, payments (provider-authenticated routes included), admin coupons.
+  "app/api/admin/coupons/[id]/route.ts",
+  "app/api/admin/coupons/route.ts",
+  "app/api/candy-packages/route.ts",
+  "app/api/candy-purchases/[id]/coupon/route.ts",
+  "app/api/candy-purchases/[id]/pay/route.ts",
+  "app/api/candy-purchases/route.ts",
+  "app/api/coupons/validate/route.ts",
+  "app/api/payments/return/[provider]/route.ts",
+  "app/api/payments/webhooks/[provider]/route.ts",
 ]
 
 describe("scope: creation pricing, the parent orders LIST and the parent account reads are the only migrated business reads", () => {
@@ -97,11 +111,13 @@ describe("scope: creation pricing, the parent orders LIST and the parent account
     expect(routes.length).toBeGreaterThan(10)
     expect(routes).toContain("app/api/parent/orders/[orderId]/final-media/route.ts")
     // Storage-backed and write routes in particular:
-    for (const r of ["app/api/parent/gallery/route.ts", "app/api/candy-purchases/route.ts", "app/api/referrals/route.ts", "app/api/parent/password/route.ts", "app/api/parent/complete-signup/route.ts"]) {
+    for (const r of ["app/api/parent/gallery/route.ts", "app/api/referrals/route.ts", "app/api/parent/password/route.ts", "app/api/parent/complete-signup/route.ts"]) {
       expect(routes, r).toContain(r)
     }
     for (const route of routes) expect(read(route), route).not.toMatch(/@\/lib\/backend|BACKEND_INTERNAL_URL|backend-orders|backend-account|backend-consent|backend-caller/)
-    for (const page of walk("app").filter((f) => f.endsWith("page.tsx") && !ORDERS_LIST_SURFACES.includes(f) && !CONSENT_SURFACES.includes(f))) {
+    // V0.1.51: the two admin coupon pages read through the admin coupon loader.
+    const ADMIN_COUPON_PAGES = ["app/admin/coupons/[couponId]/page.tsx", "app/admin/coupons/new/page.tsx"]
+    for (const page of walk("app").filter((f) => f.endsWith("page.tsx") && !ORDERS_LIST_SURFACES.includes(f) && !CONSENT_SURFACES.includes(f) && !ADMIN_COUPON_PAGES.includes(f))) {
       expect(read(page), page).not.toMatch(/@\/lib\/backend|backend-orders|backend-account|backend-consent|backend-caller/)
     }
   })
@@ -109,7 +125,15 @@ describe("scope: creation pricing, the parent orders LIST and the parent account
   it("the backend exposes exactly the migrated routes: GETs plus the one V0.1.47 proof write", () => {
     const routes = walk("backend/src/routes").map((f) => read(f)).join("\n")
     const registered = [...routes.matchAll(/app\.(get|post|put|patch|delete|route)\(\s*"([^"]+)"/g)].map((m) => `${m[1].toUpperCase()} ${m[2]}`)
-    expect(registered.sort()).toEqual(["GET /health", "GET /ready", "GET /v1/auth/me", "GET /v1/creation-pricing", "GET /v1/parent/orders"])
+    expect(registered.sort()).toEqual([
+      "GET /health", "GET /ready", "GET /v1/admin/coupons", "GET /v1/admin/coupons/:couponId", "GET /v1/admin/coupons/packages",
+      "GET /v1/auth/me", "GET /v1/candy-packages", "GET /v1/creation-pricing", "GET /v1/parent/candy-purchases",
+      "GET /v1/parent/candy-purchases/:purchaseId/coupon-validation", "GET /v1/parent/orders",
+      // V0.1.51 writes registered with a literal path (the others use *_PATH constants)
+      "PATCH /v1/admin/coupons/:couponId", "POST /v1/admin/coupons", "POST /v1/parent/candy-purchases",
+      "POST /v1/parent/candy-purchases/:purchaseId/coupon", "POST /v1/parent/candy-purchases/:purchaseId/payment-attempts",
+      "POST /v1/parent/candy-purchases/:purchaseId/payment-attempts/:attemptId/session",
+    ].sort())
     // The account routes are registered from a table of exactly three read paths, each a GET.
     const account = code("backend/src/routes/parent-account.ts")
     expect([...account.matchAll(/^\s+"(\/v1\/[^"]+)": \{/gm)].map((m) => m[1]).sort()).toEqual(["/v1/parent/candy-balance", "/v1/parent/profile", "/v1/parent/welcome-credits"])

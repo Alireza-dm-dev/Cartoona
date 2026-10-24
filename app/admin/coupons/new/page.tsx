@@ -1,15 +1,19 @@
+import { notFound } from "next/navigation"
 import { PageHeader } from "@/components/ui/page-header"
 import { Card } from "@/components/ui/card"
 import { CouponForm } from "@/components/admin/coupons/coupon-form"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { verifyParentCaller } from "@/lib/parent/backend-caller"
 import { queryAdminCouponPackages } from "@/lib/admin/coupons/queries"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 export default async function AdminNewCouponPage() {
-  const supabase = await createServerSupabaseClient()
-  const packages = await queryAdminCouponPackages(supabase)
+  // V0.1.51: the backend decides the admin role on each read (null = not found / not allowed).
+  const caller = await verifyParentCaller()
+  if (!caller.ok) notFound()
+  const context = caller.context
+  const packages = await queryAdminCouponPackages(context)
 
   return (
     <div className="mx-auto max-w-[820px]">

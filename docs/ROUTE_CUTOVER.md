@@ -8,6 +8,7 @@ Routes served through the Fastify backend instead of Supabase:
 | V0.1.45 | `GET /api/parent/orders` + the `/dashboard/orders` first page | **authenticated** read, the parent orders **LIST** only ([below](#v0145-parent-orders-list)) |
 | V0.1.46 | `GET /api/parent/welcome-credits`, `GET /api/parent/account-summary` (new), the public header's parent name | **authenticated** reads: welcome credits, candy balance, profile name ([below](#v0146-parent-account-reads)) |
 | V0.1.47 | none (backend-only `PATCH /v1/parent/profile`) | write-security foundation; **no Next.js route cut over** ([below](#v0147-write-security-foundation)) |
+| V0.1.51 | `GET`/`POST /api/candy-purchases`, `/api/candy-packages`, `/api/coupons/validate`, `/api/candy-purchases/[id]/coupon`, new `/pay`, `/api/payments/webhooks/[provider]`, `/api/payments/return/[provider]`, `/api/admin/coupons[/id]` + pages; `/complete` removed | **purchases, payments, coupons**: one wallet database ([below](#v0151-candy-purchases-and-payments-on-postgresql)) |
 | V0.1.50 | `POST /api/requests` (+ new `GET /api/requests/by-submission-key`) | **the first financial write**: request submission as one PostgreSQL transaction ([below](#v0150-transactional-parent-request-submission)) |
 | V0.1.48 | `POST`/`GET /api/parent-consent`; the consent gates of `/parent-consent`, `/complete-request`, `POST /api/requests`, `/login` and the dev auth route | **the first browser-facing WRITE** (consent) + every consent read; shared CSRF guard ([below](#v0148-parent-consent-read--write)) |
 
@@ -20,8 +21,9 @@ Routes served through the Fastify backend instead of Supabase:
 | parent profile name (public header) | `parent_profiles.full_name` | **PostgreSQL** (V0.1.46) |
 | candy balance (billing) | `candy_wallets.balance` | **PostgreSQL** (V0.1.46) |
 | welcome image credits (billing, creation review) | `parent_welcome_credits` | **PostgreSQL** (V0.1.46) |
-| billing purchase history | `candy_purchases`, `payment_attempts`, `coupon_redemptions`, `coupons` | Supabase (old path) |
-| candy package catalog | `candy_packages` | Supabase (old path) |
+| billing purchase history | `candy_purchases`, `payment_attempts`, `coupon_redemptions`, `coupons` | **PostgreSQL** (V0.1.51) |
+| candy package catalog | `candy_packages` | **PostgreSQL** (V0.1.51) |
+| purchase creation, coupons, payment attempts, provider-verified credit | 0017 functions | **PostgreSQL** (V0.1.51) |
 | consent read (`/parent-consent`, `/complete-request`, `/login`, dev route) | `parent_profiles.consent_granted[_at]` | **PostgreSQL** (V0.1.48); middleware no longer checks consent |
 | consent write (`POST /api/parent-consent`) | `record_parent_consent_trusted` | **PostgreSQL** (V0.1.48), CSRF guard + v3 |
 | request submission: consent gate | `parent_profiles.consent_granted` | **PostgreSQL** (V0.1.48) |
@@ -1367,7 +1369,7 @@ reads orders from Supabase cannot see it:
 - **admin fulfilment** (request list/detail, status updates, final media,
   coupons' redemption joins) reads and writes Supabase: new requests are not
   visible to admins;
-- **candy purchases/payments** still credit the **Supabase** wallet, while
+- (**resolved in V0.1.51**, see below) **candy purchases/payments** still credit the **Supabase** wallet, while
   requests now debit the **PostgreSQL** wallet. A parent who buys candy does
   not see it in the balance requests spend. The billing page already showed
   the PostgreSQL balance (V0.1.46).
@@ -1533,18 +1535,273 @@ gallery, admin-fulfilment and purchase/payment cutovers above must land
 before any user can use the request flow end to end; the rollback rules above
 must be agreed.
 
+## V0.1.51: candy purchases and payments on PostgreSQL
+
+From V0.1.51 the candy wallet has ONE authoritative database: PostgreSQL.
+Purchases are created, priced, discounted and credited there; requests
+(V0.1.50) debit it; the account summary (V0.1.46) reads it. The external
+payment provider stays external: it runs checkout and proves payment; it
+never writes Cartoona state.
+
+### Purchase-flow audit (before any change)
+
+| step | caller / auth | read or write | source of truth (before) | idempotency | money |
+|---|---|---|---|---|---|
+| `GET /api/candy-packages` | browser, Supabase session (RLS) | read | Supabase `candy_packages` | - | - |
+| `GET /api/candy-purchases` | browser, session; role + lifetime + profile from Supabase | read | Supabase purchases, attempts, redemptions, coupon names | - | - |
+| `POST /api/candy-purchases` `{package_id}` | browser, session | **direct INSERT** (RLS) | Supabase `candy_purchases`, snapshot from the package row | none (each POST = one pending purchase) | none |
+| `POST /api/coupons/validate` | browser, session | read (RPC) | Supabase `validate_coupon_for_purchase_trusted` | - | - |
+| `POST /api/candy-purchases/[id]/coupon` | browser, session | write (RPC, service role) | Supabase `apply_coupon_to_purchase_trusted` | `(purchase_id, idempotency_key)` | price only |
+| `POST /api/candy-purchases/[id]/complete` | browser, session; **dev only** (`CARTOONA_ENABLE_DEV_PAYMENT_SIMULATION`, never production) | write (RPC) | Supabase `complete_candy_purchase_trusted`: purchase paid + wallet credit + ledger `purchase_credit:<id>` | already-paid returns current state | **wallet credit** |
+| payment session / callback / webhook | - | - | **did not exist**: no provider code, no route | - | - |
+
+Findings that shaped the release:
+
+1. **No payment provider existed.** In production no purchase could ever
+   become paid; the only crediting path was a parent-triggered development
+   simulation. The schema already had the provider-neutral pieces
+   (`payment_attempts`, `payment_webhook_events`, unique verified-attempt and
+   provider-transaction indexes) and `docs/PAYMENT_PROVIDER_ARCHITECTURE.md`
+   §8-§11 specified the flow; nothing called them.
+2. **Coupon apply and validate never worked** (Supabase too):
+   `apply_coupon_to_purchase_trusted`, `validate_coupon_for_purchase_trusted`,
+   `create_payment_attempt_trusted` and `record_payment_attempt_session_trusted`
+   raise `42702 column reference ... is ambiguous` at run time (their RETURNS
+   TABLE names collide with the columns they read). Supabase migration
+   20260925100000 fixed exactly this for `create/update_coupon_trusted` and
+   missed these four. Proved on a scratch database before any change.
+3. **Coupon usage limits could be exceeded concurrently**: apply counted
+   redemptions without locking the coupon. With the pre-V0.1.51 body (plus
+   the 42702 fix) 12 concurrent applications against a global limit of 3
+   succeeded 7-10 times in each of 4 runs.
+4. **The attempt charged the pre-coupon price**: `create_payment_attempt_trusted`
+   requested `price_amount`, not `final_price_amount` (doc §8.2 rule 4).
+5. Coupon redemptions were never promoted `reserved -> redeemed` (the column
+   comment says "redeemed = paid+verified"; no code did it).
+6. Purchase coupons cannot stay in Supabase while purchases move: apply
+   writes the redemption AND the purchase price in one transaction, and the
+   limits count redemptions. So coupon definitions, the admin coupon CRUD
+   and redemptions moved too.
+
+### State machine (existing statuses, no new ones)
+
+| transition | trigger | allowed from | idempotency | wallet | coupon | provider ref |
+|---|---|---|---|---|---|---|
+| (new) -> `pending` | parent creates | - | none (a pending purchase moves nothing) | - | - | - |
+| `pending` -> `pending` + coupon | parent applies | `pending`, no attempt | `(purchase, key)` | - | `reserved` | - |
+| attempt `created` -> `awaiting_payment` | parent pays | purchase `pending`/`failed`/`expired` | `(purchase, key)`; `failed`/`expired` purchase -> `pending` | - | frozen (no apply once an attempt exists) | session id stored |
+| `pending` -> `paid` | **provider-verified** success | `pending`, `failed`, `expired` (money was taken) | event id unique; purchase lock; `purchase_credit:<id>` unique; one verified attempt per purchase | **+candy_amount once** | `reserved` -> `redeemed` | transaction id (unique per provider), amount = `final_price_amount`, currency |
+| `pending` -> `failed` | provider-verified failure of the CURRENT attempt | `pending` | event id unique | - | stays `reserved` (retry allowed) | session id |
+| `paid` -> anything | never (a late failure is `already_paid`) | - | - | - | - | - |
+| `cancelled` | no code path sets it today (unchanged) | - | - | - | - | - |
+
+Refunds: none exist (no `refunded` status, no reversal); nothing invented. A
+second capture for an already-paid purchase (two attempts both paid) is
+recorded `already_paid` and never credited: a manual refund case.
+
+### Migration 0017
+
+New: `create_candy_purchase_trusted` (pending purchase from the ACTIVE package
+row), `confirm_payment_attempt_trusted` (event dedupe -> purchase and attempt
+locks -> already-paid / cancelled / reused-transaction / amount / currency
+checks -> attempt verified, purchase paid, wallet + ledger, coupon redeemed;
+one transaction), `fail_payment_attempt_trusted`. Replaced:
+`create_payment_attempt_trusted` (payable amount, zero refused), the four
+42702 functions (`#variable_conflict use_column`, bodies verbatim),
+`apply_coupon_to_purchase_trusted` (+ `FOR UPDATE` on the coupon). Grants:
+EXECUTE on those nine functions (incl. `create/update_coupon_trusted`),
+SELECT on `candy_packages`, `candy_purchases`, `coupons`,
+`coupon_package_rules`, `coupon_redemptions`, and column-level SELECT
+`(id, purchase_id, status)` on `payment_attempts`. **No** INSERT/UPDATE/DELETE
+on any financial table; `complete_candy_purchase_trusted` (the simulation) is
+not executable (16 privilege probes, all 42501). The Supabase originals are
+not changed (history untouched; nothing calls them).
+
+### Routes
+
+Fastify (`backend/src/routes/candy-purchases.ts`, `payment-events.ts`, `admin-coupons.ts`):
+
+| route | auth |
+|---|---|
+| `GET /v1/candy-packages` | public |
+| `GET /v1/parent/candy-purchases` | v2 parent |
+| `POST /v1/parent/candy-purchases` `{packageId}` | v3 parent |
+| `GET /v1/parent/candy-purchases/:id/coupon-validation?code=` | v2 parent |
+| `POST /v1/parent/candy-purchases/:id/coupon` `{code, idempotencyKey}` | v3 parent |
+| `POST /v1/parent/candy-purchases/:id/payment-attempts` `{provider, idempotencyKey, checkoutExpiresAt}` | v3 parent |
+| `POST .../payment-attempts/:attemptId/session` `{providerSessionId, checkoutUrl, checkoutExpiresAt}` | v3 parent (ownership checked in the route) |
+| `POST /v1/payments/events` | **service assertion s1, svc `payments`** (no parent) |
+| `GET/POST/PATCH /v1/admin/coupons[...]` | v2/v3, admin or super_admin |
+
+Next: `/api/candy-packages`, `/api/candy-purchases` (GET/POST),
+`/api/coupons/validate`, `/api/candy-purchases/[id]/coupon` keep their public
+contracts; new `/api/candy-purchases/[id]/pay` `{idempotency_key}`,
+`/api/payments/webhooks/[provider]` (provider signature only: no CSRF, no
+cookie, no session), `/api/payments/return/[provider]?session=` (browser
+return; the server asks the PROVIDER, never trusts the query);
+`/api/candy-purchases/[id]/complete` is **removed**. Admin coupon pages and
+API read/write PostgreSQL (role from `/v1/auth/me`, re-checked by every
+backend route and by the functions).
+
+Provider boundary: `lib/payments/providers/` (adapter interface;
+`stub` adapter for local/test only, refused under `NODE_ENV=production`
+unless `CARTOONA_PAYMENT_STUB_UNSAFE_ALLOW_IN_PRODUCTION=1`). Provider
+secrets stay in Next; the backend never sees them. With no provider
+configured (production today) `pay` answers `503 PAYMENT_UNAVAILABLE`.
+
+Service assertion (s1): `s1.<payload>.<mac>`, MAC context
+`cartoona-internal-auth\ns1\n` (domain-separated from v2/v3), keys `v, svc,
+iat, exp, rid, mth, pth, nce, bdg`, POST only, body digest, single-use nonce
+(same store as v3). An identity token is refused on the service route and an
+s1 token on every identity route.
+
+### Ordering and outcome-unknown
+
+`pay`: (1) attempt in PostgreSQL with OUR id (idempotent per key, amount = the
+payable snapshot), (2) provider session referencing that attempt id,
+(3) session recorded. A retry with the same key returns the stored checkout
+URL; a lost record answer is resolved by the same key. Nothing here moves
+money.
+
+| case | what happens |
+|---|---|
+| A. browser did not get the pay answer | retry with the same key -> the same attempt / checkout URL |
+| B. provider outcome unknown (user closed checkout, webhook late) | purchase stays `pending`; billing shows "در انتظار تأیید پرداخت" and re-reads; the webhook or the next return resolves it |
+| C. confirmation committed, answer lost (Next -> Fastify) | the webhook answers 500, the provider retries, the retry is `duplicate_event` / `already_paid`: one credit |
+
+Webhook vs callback: both reach the same function with different event ids;
+the purchase lock serializes them; the second is `already_paid`.
+
+### Idempotency keys
+
+| action | key |
+|---|---|
+| create purchase | none by design (a pending purchase has no financial effect); the UI guards double clicks |
+| apply coupon | client `idempotency_key`, unique per purchase |
+| start payment | client `idempotency_key` per purchase pay action, unique per purchase |
+| provider event | `(provider, provider_event_id)` unique in `payment_webhook_events`, written in the confirming transaction |
+| return-route verification | deterministic `verify:<session>:<transaction>` |
+| wallet credit | `purchase_credit:<purchase>` unique ledger key + purchase `paid` check + one verified attempt per purchase |
+| provider transaction | `(provider, provider_transaction_id)` unique: one payment cannot fund two attempts |
+
+### Copied data
+
+Pin: 0017 (functions and grants only; no mapping change). A copied paid
+purchase given a provider session and then a success event answers
+`already_paid` and keeps exactly one `purchase_credit` row; a copied pending
+purchase with a reserved WELCOME10 redemption is paid at the discounted price
+and its redemption becomes `redeemed` (tested).
+
+### Supabase profile: what still needs it
+
+Purchases and coupons no longer need it. Remaining runtime consumers:
+order detail + final media (`ParentRequestContext`, `final-media-queries`),
+the gallery (`gallery/queries`, `source-asset`, also used by the request
+route for gallery sources), admin request views + fulfilment, and the
+referral RPCs; `ensureParentProfile` (signup, dev route) creates it. Four
+consumer groups remain (purchases removed one); signup creation is NOT
+removed. The Supabase wallet, welcome credits, purchases and coupon
+redemptions are now stale by construction and read by nothing.
+
+### Rollback (HARD rule)
+
+After V0.1.51 every wallet movement is in PostgreSQL. **Never re-enable a
+Supabase purchase or request writer against the stale Supabase balances.**
+Preferred: frontend/backend artifacts may roll back, but financial writes stay
+routed to PostgreSQL-compatible endpoints (i.e. roll back only to builds at or
+after V0.1.51 for anything touching money). If that is impossible: a write
+freeze (pay, purchase, request routes return 503) until forward recovery. No
+dual write, no reverse sync tool exists.
+
+### Still NOT migrated
+
+Order detail, gallery, final media and admin fulfilment (a new request is in
+the orders list only; success still redirects there), Storage bytes,
+referrals, other admin writes (homepage, referral settings, request status).
+
+### Migration matrix (after V0.1.51)
+
+| Surface | Source of truth |
+|---|---|
+| Auth | Supabase |
+| Identity provisioning | PostgreSQL |
+| Consent | PostgreSQL |
+| Account reads (balance, credits, name) | PostgreSQL |
+| Orders list | PostgreSQL |
+| Request submission | PostgreSQL |
+| Candy request debit | PostgreSQL |
+| **Candy purchase / payment state** | **PostgreSQL** |
+| **Candy purchase wallet credit** | **PostgreSQL** (provider-verified events only) |
+| **Purchase history, package catalog** | **PostgreSQL** |
+| **Purchase coupons + admin coupon management** | **PostgreSQL** |
+| Payment provider (checkout, proof) | external (stub only locally; none configured in production) |
+| Order detail / gallery / final media | legacy (Supabase) |
+| Admin fulfilment | legacy (Supabase) |
+| Referrals | legacy (Supabase) |
+| Storage | Supabase |
+
+### Verified locally (2026-10-24)
+
+**Totals** (`CARTOONA_PLAIN_PG=docker`): 108 files, **3179 passed**, 34
+skipped (the opt-in suites that need a disposable Supabase project), 0 failed.
+`npm run lint`: 0 errors (29 pre-existing warnings). `npx next build`,
+`npm run backend:typecheck`, `npm run backend:build`, `git diff --check`:
+clean. Repo-wide `tsc` still reports the known test-only type errors (e2e
+specs, legacy-csrf-routes, parent-auth, pricing-calculation, test-env, the
+`execFile` env typing in two plain-postgres tests); no runtime file has one.
+
+| suite | tests | proves |
+|---|---|---|
+| `purchase-cutover-db.test.ts` (real PostgreSQL 17, copy, restricted role, Fastify, Next routes, stub Auth, stub provider) | 47 (x4 runs, all green) | 16 forbidden privilege probes + exact EXECUTE list; catalog/history from PostgreSQL; server-derived price, strict bodies, CSRF; coupon validate/apply idempotent; **global limit 3 under 10 concurrent -> 3**, per-parent 2 under 6 -> 2 (the pre-V0.1.51 body allowed 7-10 of 12); pay: post-coupon amount, our attempt id, same key resumes, zero price refused; webhook -> one credit; **same event x20 concurrent -> 1 processed + 19 duplicates**; **20 different events racing -> 1 credit**; return + webhook racing -> 1 credit; return alone confirms a lost webhook; decline -> failed -> retry pays once; late failure never regresses; amount/currency mismatch, unknown session, reused transaction credit nothing; forged/tampered/stale signatures 401; parent v3 on the event route 401; service token on parent routes 401; service assertion replay 409; DB down at confirmation -> 500 -> retry processed once; committed-but-lost -> 500 -> retry duplicate; purchase -> balance -> request -> balance for copied and provisioned parents, zero Supabase DB calls; copied paid purchase never re-credited; copied pending coupon purchase paid at the discount, coupon redeemed; admin coupon list/create/update (409 on stale), parent 403 |
+| `purchase-cutover-static.test.ts` | 14 | no Supabase financial table/RPC access in Next; simulation gone; only the confirm function credits; event route service-only; only webhook/return deliver events, after provider verification; provider routes have no CSRF/session; stub refused in production; UI bodies carry no price/amount/owner; detail/gallery/admin fulfilment/Storage untouched |
+| `payment-provider-stub.test.ts`, `service-assertion.test.ts` | 24 | adapter config + production refusal, signature/tamper/stale/unknown events, provider errors, deterministic verify ids; s1 round trip, binding/body/expiry, no interchange with v2/v3 |
+| ported | | rate-limit routes, admin coupon `expectedUpdatedAt`, static guards (CSRF users, backend writes, backend client users, write auth incl. the service route), migration pins (17), schema parity (4 more intentionally changed bodies, 3 target-only functions) |
+
+**Docker / headless browser proof** (real `Dockerfile`s tagged `proof051`,
+frontend + backend containers on the compose network, scratch PostgreSQL 17
+migrated through 0017 and populated by the real copy tool, stub Supabase Auth
+and the stub payment provider on the host): **32/32 checks passed.** New
+parent: password sign-in -> provisioning -> consent -> billing shows 0 ->
+select package -> order -> "پرداخت" -> provider checkout shows exactly the
+catalog price -> Pay -> back to billing with the success notice -> one credit,
+balance = candy amount, history paid -> video request -> orders list ->
+balance Y - 40, ledger reconciles. Copied parent: WELCOME10 applied in the UI,
+the checkout shows the DISCOUNTED amount, X -> X+Y -> X+Y-Z, coupon redeemed.
+Failure matrix: decline (failed, no credit, retry pays once), invalid and
+exhausted coupons (existing messages, nothing reserved), parent on the admin
+coupon API 403, webhook x5 (1 processed + 4 duplicates), double click on pay
+(one credit), webhook dropped (the return confirms once; revisiting is a
+duplicate), invalid signature 401, forged browser POST 401, forged return
+query for an unpaid session (pending, no credit), backend container STOPPED
+at confirmation (webhook 500, nothing credited; after restart the provider
+retry is processed exactly once). The browser contacted only Next, the auth
+stub and the provider's checkout page; no assertion header; no secret, DB
+password, provider key or backend address in the console.
+
+Local timings (Docker, one machine, 20 each, NOT production estimates):
+
+| path | median | p90 |
+|---|---|---|
+| Next purchase creation (CSRF, provider, v3 -> Fastify -> PG) | 8.1 ms | 14.8 ms |
+| provider confirmation transaction (service event -> confirm) | 3.9 ms | 6.5 ms |
+| duplicate confirmation (already paid) | 4.1 ms | 6.1 ms |
+| Next purchase history (PG) | 6.2 ms | 8.4 ms |
+| Next account summary after purchases | 6.1 ms | 7.6 ms |
+| full roundtrip: create + pay + webhook + request + summary | 37.4 ms | 46.5 ms |
+
+### Production status
+
+**Not deployable.** New: no real payment provider exists (an adapter must be
+written and reviewed; until then production cannot be paid, as before);
+migration 0017 ships with the app; the rollback rule above. Unchanged: the
+`amr` check against real Supabase tokens, a real `pg_dump` rehearsal, backend
+deployment, Storage, and V0.1.52 scope (order detail, gallery, final media,
+admin fulfilment) before parents can use new requests end to end.
+
 ## Next
 
-V0.1.51 candidates, in the order the V0.1.50 consequences force:
-
-- **candy purchase / payment completion to PostgreSQL**: today a purchase
-  credits the Supabase wallet while requests debit the PostgreSQL wallet;
-- **order detail, final media and gallery reads** (and the media rows a new
-  request creates): the success page cannot link to a new order's detail yet;
-- **admin fulfilment** (request list/detail, status, final media): new
-  requests are invisible to admins;
-- referrals, then stop writing the Supabase profile/wallet/credits at signup
-  once no consumer is left;
-- production blockers, unchanged: the `amr` check, a real `pg_dump` rehearsal,
-  backend deployment, the Storage migration, and the rollback rules in
-  "V0.1.50 Rollback".
+V0.1.52: order detail, final media, gallery (and the media rows new requests
+create) and admin fulfilment on PostgreSQL, so a new request is usable end to
+end; then referrals, then stop writing the Supabase profile at signup.
+Production blockers: a real payment provider adapter, the `amr` check, a real
+`pg_dump` rehearsal, backend deployment, Storage.

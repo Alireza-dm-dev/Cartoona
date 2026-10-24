@@ -195,7 +195,8 @@ describe("V0.1.43: no runtime dependency on Supabase session internals", () => {
     // verifyParentCaller (same 30-day policy) and the backend (which also
     // enforces sessions_not_before), like the other cut-over routes.
     // 12 since V0.1.50: POST /api/requests does the same.
-    expect(callers.length).toBe(12)
+    // 8 since V0.1.51: the purchase, coupon and coupon-validation routes verify through verifyParentCaller.
+    expect(callers.length).toBe(8)
     for (const file of callers) {
       expect(code(file), file).toMatch(/checkParentSessionLifetime\(supabase, (user\.id|ownership\.userId)\)/)
     }

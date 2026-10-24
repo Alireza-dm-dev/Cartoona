@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest, preHandlerAsyncHookHandler } from "fastify"
 import { DbConfigError, DbError } from "@/lib/db/errors"
-import { InternalAuthConfigError, verifyAssertion } from "@/lib/identity/assertion"
+import { InternalAuthConfigError, verifyAssertion, verifyServiceAssertion, type InternalService } from "@/lib/identity/assertion"
 import { DEFAULT_SESSION_POLICY, evaluateSessionPolicy } from "@/lib/identity/session-policy"
 import type { AuthPrincipal, PrincipalRole } from "@/lib/identity/types"
 import { logEvent } from "@/lib/observability/logger"
@@ -60,6 +60,8 @@ declare module "fastify" {
     rawBody: Buffer | null
     /** Verified provider subject, set ONLY by requireProvisioningAuth (V0.1.49). */
     provisioningSubject: string | null
+    /** The internal service a verified s1 assertion named, set ONLY by requireServiceAuth (V0.1.51). */
+    serviceCaller: InternalService | null
   }
 }
 
@@ -89,6 +91,7 @@ export function registerAuth(app: FastifyInstance): void {
   app.decorateRequest("authPrincipal", null)
   app.decorateRequest("rawBody", null)
   app.decorateRequest("provisioningSubject", null)
+  app.decorateRequest("serviceCaller", null)
 }
 
 type Verified = Extract<ReturnType<typeof verifyAssertion>, { ok: true }>["claims"]
@@ -98,12 +101,8 @@ type Verified = Extract<ReturnType<typeof verifyAssertion>, { ok: true }>["claim
  * over the received bytes). Returns the claims, or undefined after it has
  * already sent the rejection. Nothing is looked up yet.
  */
-async function verifyRequestAssertion(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  deps: BackendDeps,
-  kind: "read" | "write",
-): Promise<Verified | undefined> {
+/** Step 1 for every kind (identity read/write, service): the one header and the key. Undefined after a rejection. */
+function headerAndSecret(request: FastifyRequest, reply: FastifyReply, deps: BackendDeps): { header: string; secret: Buffer } | undefined {
   const header = request.headers[HEADER]
   if (header === undefined) {
     reject(request, reply, 401, "unauthenticated", "AUTH_MISSING")
@@ -114,10 +113,8 @@ async function verifyRequestAssertion(
     reject(request, reply, 401, "unauthenticated", "AUTH_INVALID", "malformed")
     return
   }
-
-  let secret: Buffer
   try {
-    secret = deps.authSecret()
+    return { header, secret: deps.authSecret() }
   } catch (error) {
     if (error instanceof InternalAuthConfigError) {
       reject(request, reply, 503, "service_unavailable", "AUTH_UNAVAILABLE", "config")
@@ -125,6 +122,17 @@ async function verifyRequestAssertion(
     }
     throw error
   }
+}
+
+async function verifyRequestAssertion(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  deps: BackendDeps,
+  kind: "read" | "write",
+): Promise<Verified | undefined> {
+  const hs = headerAndSecret(request, reply, deps)
+  if (!hs) return
+  const { header, secret } = hs
 
   const result = verifyAssertion({
     token: header,
@@ -186,7 +194,12 @@ function sessionAllowed(
 }
 
 /** Step 6: consume the write's nonce, last. False after the rejection is sent. */
-async function nonceConsumed(request: FastifyRequest, reply: FastifyReply, deps: BackendDeps, claims: Verified): Promise<boolean> {
+async function nonceConsumed(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  deps: BackendDeps,
+  claims: { nonce?: string; expiresAt: number; requestId: string },
+): Promise<boolean> {
   let consumed: boolean
   try {
     consumed = await consumeWriteNonce(deps.db(), {
@@ -304,5 +317,36 @@ export function requireRole(...roles: PrincipalRole[]): preHandlerAsyncHookHandl
     const principal = request.authPrincipal
     if (!principal) return reject(request, reply, 401, "unauthenticated", "AUTH_MISSING")
     if (!roles.includes(principal.role)) return reject(request, reply, 403, "forbidden", "AUTH_FORBIDDEN", "role")
+  }
+}
+
+/**
+ * PROVIDER-AUTHENTICATED internal writes (V0.1.51): a service assertion (s1)
+ * for exactly `service`, bound to method, path and the received body, then its
+ * nonce consumed LAST (same store and same 409 as v3). No identity, no session
+ * policy, no role: there is no parent behind a payment event. Identity (v2/v3)
+ * tokens are refused here and s1 tokens are refused by every identity route.
+ *
+ *   no header / malformed / forged / expired / rebound / other service   401 unauthenticated
+ *   secret missing                                                        503 service_unavailable
+ *   nonce replayed                                                        409 replayed_request
+ */
+export function requireServiceAuth(deps: BackendDeps, service: InternalService): preHandlerAsyncHookHandler {
+  return async function authenticateService(request, reply) {
+    const hs = headerAndSecret(request, reply, deps)
+    if (!hs) return reply
+    const result = verifyServiceAssertion({
+      token: hs.header,
+      secret: hs.secret,
+      method: request.method,
+      path: request.url.split("?")[0],
+      body: request.rawBody ?? Buffer.alloc(0),
+      now: deps.now(),
+    })
+    if (!result.ok) return reject(request, reply, 401, "unauthenticated", "AUTH_INVALID", result.reason)
+    if (result.claims.service !== service) return reject(request, reply, 401, "unauthenticated", "AUTH_INVALID", "service")
+    if (!(await nonceConsumed(request, reply, deps, result.claims))) return reply
+    request.serviceCaller = service
+    logEvent("debug", "AUTH_VERIFIED", { requestId: request.id, subsystem: "auth", reason: "service" })
   }
 }

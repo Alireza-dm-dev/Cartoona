@@ -194,8 +194,8 @@ Rules:
 - `docker build` never contacts a backend: every authenticated page is
   `force-dynamic`, so nothing is prerendered against Supabase. Do not "fix" a
   build failure by passing production credentials into the build.
-- Dev-only switches (`CARTOONA_ENABLE_DEV_PAYMENT_SIMULATION`,
-  `DEV_PARENT_AUTH_*`) and the destructive-test variables (`CARTOONA_TEST_*`)
+- Dev-only switches (the V0.1.51 stub payment provider `CARTOONA_PAYMENT_PROVIDER=stub`
+  + `CARTOONA_PAYMENT_STUB_*`, `DEV_PARENT_AUTH_*`) and the destructive-test variables (`CARTOONA_TEST_*`)
   belong in `.env.local`, never in a container.
 
 ## Local PostgreSQL

@@ -217,7 +217,7 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
         DATABASE_URL: `postgresql://cartoona@postgres:5432/${DB}`,
       },
     }))
-    expect(stdout).toMatch(/done - 16 applied/)
+    expect(stdout).toMatch(/done - 17 applied/)
 
     // The Supabase reference: real historical chain over the stub.
     await psql("", { db: REF, file: path.join(root, "tests/helpers/supabase-stub.sql") })
@@ -372,6 +372,8 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
       const modified = [
         "create_parent_request_trusted", "record_final_media_trusted", "generate_parent_referral_code",
         "record_homepage_media_replacement_trusted", "update_homepage_content_trusted", "update_order_status_trusted",
+        // V0.1.51 (0017): #variable_conflict fix; payable amount; coupon row lock.
+        "apply_coupon_to_purchase_trusted", "create_payment_attempt_trusted", "record_payment_attempt_session_trusted", "validate_coupon_for_purchase_trusted",
       ]
 
       expect([...new Set(d.onlyInSupabase.map(fnName))].sort()).toEqual(
@@ -381,11 +383,13 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
         // consume_internal_write_nonce: target-only replay protection (V0.1.47, 0012).
         // record_parent_consent_trusted: target-only consent write (V0.1.48, 0014).
         // provision_supabase_parent_identity: target-only account provisioning (V0.1.49, 0015).
-        [...Object.values(renamed), ...modified, "append_only_guard", "consume_internal_write_nonce", "provision_supabase_parent_identity", "record_parent_consent_trusted"].sort(),
+        // confirm/fail_payment_attempt_trusted, create_candy_purchase_trusted: target-only purchase/payment functions (V0.1.51, 0017).
+        [...Object.values(renamed), ...modified, "append_only_guard", "confirm_payment_attempt_trusted", "consume_internal_write_nonce", "create_candy_purchase_trusted", "fail_payment_attempt_trusted", "provision_supabase_parent_identity", "record_parent_consent_trusted"].sort(),
       )
       // Every other function body is byte-identical (same md5 of prosrc).
       const unchanged = ref.filter((r) => !d.onlyInSupabase.includes(r))
-      expect(unchanged.length).toBeGreaterThanOrEqual(20)
+      // 19 since V0.1.51: four more bodies are intentionally replaced (0017).
+      expect(unchanged.length).toBeGreaterThanOrEqual(19)
     })
   })
 

@@ -254,6 +254,29 @@ a CHECK violation on the order row) leaves no order, child row, credit use,
 debit or ledger row.
 
 
+### Purchase grants (V0.1.51)
+
+Migration 0017: EXECUTE on `create_candy_purchase_trusted`,
+`apply_coupon_to_purchase_trusted`, `validate_coupon_for_purchase_trusted`,
+`create_payment_attempt_trusted`, `record_payment_attempt_session_trusted`,
+`confirm_payment_attempt_trusted`, `fail_payment_attempt_trusted`,
+`create_coupon_trusted`, `update_coupon_trusted`; SELECT on `candy_packages`,
+`candy_purchases`, `coupons`, `coupon_package_rules`, `coupon_redemptions`;
+column SELECT `(id, purchase_id, status)` on `payment_attempts` (never provider
+references or checkout URLs). No INSERT/UPDATE/DELETE on `candy_purchases`,
+`payment_attempts`, `payment_webhook_events`, `coupon_redemptions`, `coupons`,
+`coupon_package_rules`, `candy_wallets`, `candy_transactions`, `candy_packages`;
+`complete_candy_purchase_trusted` is not executable. The role's SECURITY
+DEFINER EXECUTE list is pinned in `purchase-cutover-db.test.ts`.
+`lib/repositories/candy-purchases.ts` and `admin-coupons.ts` hold constant SQL
+only (filters are bind parameters).
+
+Four function bodies carried the 42702 ambiguous-column defect in both
+databases (see ROUTE_CUTOVER "V0.1.51"); they are replaced with
+`#variable_conflict use_column`, otherwise verbatim. The schema-parity test
+lists them as intentionally changed.
+
+
 ## Tests
 
 | File | Database | Covers |

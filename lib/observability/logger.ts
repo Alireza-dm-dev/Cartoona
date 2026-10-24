@@ -16,7 +16,7 @@
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
 
-export const SUBSYSTEMS = ["request", "auth", "database", "storage", "audit", "backend"] as const
+export const SUBSYSTEMS = ["request", "auth", "database", "storage", "audit", "backend", "payment"] as const
 export type Subsystem = (typeof SUBSYSTEMS)[number]
 
 export interface LogFields {

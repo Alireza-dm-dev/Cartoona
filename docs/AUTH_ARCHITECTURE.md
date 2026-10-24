@@ -426,6 +426,31 @@ to the trust model; it reuses it:
   resolves to nothing (`found: false`, `400` for a foreign folder); keys are
   unique per `(parent_id, submission_key)`, so two parents can use the same key.
 
+## Provider-authenticated writes: service assertions (V0.1.51)
+
+A payment event has no parent behind it, so it is never expressed as an
+identity. The Next server first verifies the PROVIDER (webhook HMAC over the
+raw body with a timestamp tolerance, or a server-to-server verify call on the
+browser return), then signs a **service assertion**:
+
+    s1.<base64url(payload)>.<base64url(HMAC-SHA256)>
+    payload: v=1, svc="payments", iat, exp (<= 60 s), rid, mth=POST, pth, nce, bdg
+
+- MAC context `cartoona-internal-auth\ns1\n`: domain-separated from v2/v3 on
+  the same key; `verifyAssertion` refuses the `s1` prefix and
+  `verifyServiceAssertion` refuses `v2`/`v3` before any MAC work.
+- Body digest and single-use nonce exactly like v3 (same nonce store): a
+  replay is 409.
+- Only `POST /v1/payments/events` accepts it (`requireServiceAuth(deps,
+  "payments")`), and that route accepts nothing else: a parent's v3 assertion
+  there is 401, so **a parent cannot confirm their own purchase** through any
+  internal route. The development "simulated completion" route is removed.
+- Provider routes are not browser routes: no CSRF guard, no cookie, no
+  Supabase session. The browser-facing purchase writes (create, coupon, pay)
+  use the shared CSRF guard and v3 as before; admin coupon writes too (admin
+  role from PostgreSQL via `/v1/auth/me`, re-checked by the backend routes and
+  the functions).
+
 ## Identity mapping and bootstrap
 
 `user_identities(provider, provider_subject) UNIQUE → users.id`

@@ -29,6 +29,12 @@
 
 ---
 
+> **V0.1.51 status:** purchases, coupons, attempts and provider-verified
+> confirmation are implemented on PostgreSQL (migration 0017; ROUTE_CUTOVER
+> "V0.1.51"). The dev simulation (§1.3 `/complete`) is removed; a provider-neutral
+> adapter (`lib/payments/providers/`) with a local `stub` adapter exists; no real
+> provider is integrated yet. Sections below describe the pre-V0.1.51 state.
+
 ## 1. Current Foundation
 
 ### 1.1 Tables Created (migration `20260729100000`)

@@ -94,6 +94,8 @@ describe("Fastify: writes go through requireWriteAuth, reads cannot consume a no
         writes.push(`${m[1]} ${m[2]}`)
         // V0.1.49: the provisioning route alone uses requireProvisioningAuth (v3 + nonce, identity not yet linked).
         if (m[2] === "PROVISION_PATH") expect(m[3], file).toBe("requireProvisioningAuth(deps)")
+        // V0.1.51: provider events alone use a SERVICE assertion (s1, svc payments): there is no parent.
+        else if (m[2] === "PAYMENT_EVENTS_PATH") expect(m[3], file).toBe('requireServiceAuth(deps, "payments")')
         else expect(m[3], file).toMatch(/^requireWriteAuth\(deps, "(parent|admin|super_admin)"(, "(parent|admin|super_admin)")*\)$/)
       }
     }
@@ -102,7 +104,12 @@ describe("Fastify: writes go through requireWriteAuth, reads cannot consume a no
     expect(anyWrite).toHaveLength(writes.length)
     // V0.1.47 proof write + V0.1.48 consent (the first product write) + V0.1.49 provisioning.
     // V0.1.50: + the request submission write.
-    expect(writes.sort()).toEqual(["patch PROFILE_PATH", "post CONSENT_PATH", "post PROVISION_PATH", "post REQUESTS_PATH"])
+    expect(writes.sort()).toEqual([
+      'patch "/v1/admin/coupons/:couponId"', "patch PROFILE_PATH", 'post "/v1/admin/coupons"', 'post "/v1/parent/candy-purchases"',
+      'post "/v1/parent/candy-purchases/:purchaseId/coupon"', 'post "/v1/parent/candy-purchases/:purchaseId/payment-attempts"',
+      'post "/v1/parent/candy-purchases/:purchaseId/payment-attempts/:attemptId/session"', "post CONSENT_PATH", "post PAYMENT_EVENTS_PATH",
+      "post PROVISION_PATH", "post REQUESTS_PATH",
+    ].sort())
   })
 
   it("the raw JSON bytes are kept for the digest, parsed by Fastify's safe default parser", () => {
@@ -134,7 +141,11 @@ describe("exactly one Next.js write is cut over: consent (V0.1.48)", () => {
   it("backendWriteJson has exactly two callers outside the client module: the consent loader and the account bootstrap", () => {
     const callers = frontendFiles.filter((f) => f !== "lib/backend/client.ts" && /backendWriteJson/.test(code(f)))
     // V0.1.50: the request loader is the third.
-    expect(callers.sort()).toEqual(["lib/parent/account-setup/backend-provision.ts", "lib/parent/consent/backend-consent.ts", "lib/requests/backend-request.ts"])
+    // V0.1.51: purchases/payments and admin coupons.
+    expect(callers.sort()).toEqual([
+      "lib/admin/coupons/service.ts", "lib/candy-purchases/backend-purchases.ts", "lib/parent/account-setup/backend-provision.ts",
+      "lib/parent/consent/backend-consent.ts", "lib/requests/backend-request.ts",
+    ])
   })
 
   it("no other Next write handler imports the backend client, the parent backend caller or the consent writer", () => {
@@ -143,7 +154,11 @@ describe("exactly one Next.js write is cut over: consent (V0.1.48)", () => {
     const writers = handlers.filter((f) => /@\/lib\/backend\/client|@\/lib\/parent\/backend-caller|signWriteAssertion|grantParentConsent/.test(code(f)))
     // V0.1.49: the account bootstrap is the second (it verifies the caller and provisions; no business write).
     // V0.1.50: request submission verifies the caller and hands off to the request loader.
-    expect(writers.sort()).toEqual(["app/api/parent-consent/route.ts", "app/api/parent/account-setup/route.ts", "app/api/requests/route.ts"])
+    // V0.1.51: purchase, coupon, coupon validation and pay verify the caller and hand off to the purchase loader.
+    expect(writers.sort()).toEqual([
+      "app/api/candy-purchases/[id]/coupon/route.ts", "app/api/candy-purchases/[id]/pay/route.ts", "app/api/candy-purchases/route.ts",
+      "app/api/coupons/validate/route.ts", "app/api/parent-consent/route.ts", "app/api/parent/account-setup/route.ts", "app/api/requests/route.ts",
+    ])
   })
 
   it("the browser never signs: assertion signing stays in server-only modules", () => {

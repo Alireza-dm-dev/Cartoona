@@ -58,7 +58,7 @@ describe("database/migrations — no Supabase dependency", () => {
     // function, 0015 (V0.1.49) EXECUTE on the provisioning function, 0016 (V0.1.50) EXECUTE on the request function and SELECT on characters. They may grant to `cartoona_app` and nothing else.
     // As statements (the candy ledger has a 'grant' transaction type).
     const APP_ROLE_FILE = "0009_application_role.sql"
-    const GRANT_FILES = [APP_ROLE_FILE, "0010_identity_read_grant.sql", "0012_internal_write_nonces.sql", "0013_parent_profile_name_update_grant.sql", "0014_parent_consent_write.sql", "0015_supabase_parent_provisioning.sql", "0016_parent_request_privileges.sql"]
+    const GRANT_FILES = [APP_ROLE_FILE, "0010_identity_read_grant.sql", "0012_internal_write_nonces.sql", "0013_parent_profile_name_update_grant.sql", "0014_parent_consent_write.sql", "0015_supabase_parent_provisioning.sql", "0016_parent_request_privileges.sql", "0017_candy_purchase_payment.sql"]
     const baseline = Object.entries(sql)
       .filter(([f]) => !GRANT_FILES.includes(f))
       .map(([, s]) => s.replace(/--.*$/gm, ""))
@@ -104,6 +104,20 @@ describe("database/migrations — no Supabase dependency", () => {
       "SELECT ON public.characters TO cartoona_app",
     ])
     expect(request).not.toMatch(/\b(INSERT|UPDATE|DELETE|TRUNCATE|ALL)\b[^;]*\bTO\b/i)
+
+    // 0017 (V0.1.51): EXECUTE on the purchase/payment/coupon functions, SELECT on the read tables,
+    // column-level SELECT on attempts. Never a table write, never complete_candy_purchase_trusted.
+    const purchase = sql["0017_candy_purchase_payment.sql"].replace(/--.*$/gm, "")
+    const grants = [...purchase.matchAll(/^\s*GRANT\s+([^;]+);/gim)].map((m) => m[1].replace(/\s+/g, " "))
+    expect(grants.every((g) => /^(EXECUTE ON FUNCTION public\.[a-z_]+\(|SELECT (\([a-z_, ]+\) )?ON public\.)/.test(g)), grants.join("\n")).toBe(true)
+    expect(grants.filter((g) => g.startsWith("EXECUTE")).map((g) => /public\.([a-z_]+)\(/.exec(g)![1]).sort()).toEqual([
+      "apply_coupon_to_purchase_trusted", "confirm_payment_attempt_trusted", "create_candy_purchase_trusted", "create_coupon_trusted",
+      "create_payment_attempt_trusted", "fail_payment_attempt_trusted", "record_payment_attempt_session_trusted", "update_coupon_trusted",
+      "validate_coupon_for_purchase_trusted",
+    ])
+    expect(purchase).not.toMatch(/\b(INSERT|UPDATE|DELETE|TRUNCATE)\b[^;]*\bON\b[^;]*\bTO\b/i)
+    expect(purchase).not.toMatch(/GRANT[^;]*complete_candy_purchase_trusted/i)
+    expect(grants).toContain("SELECT (id, purchase_id, status) ON public.payment_attempts TO cartoona_app")
   })
 
   it("4. never calls auth.uid() / auth.jwt() / auth.role()", () => {

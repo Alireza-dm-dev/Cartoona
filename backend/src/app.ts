@@ -13,6 +13,9 @@ import { registerParentAccountRoutes } from "./routes/parent-account"
 import { registerParentConsentRoutes } from "./routes/parent-consent"
 import { registerParentOrdersRoutes } from "./routes/parent-orders"
 import { registerParentRequestRoutes } from "./routes/parent-requests"
+import { registerCandyPurchaseRoutes } from "./routes/candy-purchases"
+import { registerPaymentEventRoutes } from "./routes/payment-events"
+import { registerAdminCouponRoutes } from "./routes/admin-coupons"
 
 /**
  * The backend HTTP app (V0.1.40), built WITHOUT listening: tests call
@@ -81,6 +84,9 @@ export function buildBackendApp(overrides: Partial<BackendDeps> = {}): FastifyIn
   registerParentAccountRoutes(app, deps)
   registerParentConsentRoutes(app, deps)
   registerParentRequestRoutes(app, deps)
+  registerCandyPurchaseRoutes(app, deps)
+  registerPaymentEventRoutes(app, deps)
+  registerAdminCouponRoutes(app, deps)
 
   app.addHook("onClose", async () => {
     await deps.closeDb()

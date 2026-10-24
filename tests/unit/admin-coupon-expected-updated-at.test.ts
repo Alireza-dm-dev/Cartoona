@@ -35,7 +35,6 @@ describe("parseExpectedUpdatedAt", () => {
   });
 });
 
-const rpc = vi.fn();
 const updateSpy = vi.fn();
 
 vi.mock("@/lib/admin/coupons/service", async () => {
@@ -44,7 +43,7 @@ vi.mock("@/lib/admin/coupons/service", async () => {
   );
   return {
     ...actual,
-    requireAdminCouponsAuth: async () => ({ ok: true, supabase: {}, adminUserId: "admin-1" }),
+    requireAdminCouponsAuth: async () => ({ ok: true, context: { identity: { provider: "supabase", subject: "admin-1" }, authenticatedAt: 1 } }),
     updateCouponViaTrustedRpc: async (...args: unknown[]) => {
       updateSpy(...args);
       return { ok: false, code: "COUPON_CONFLICT", message: "x", status: 409 };
@@ -66,7 +65,7 @@ async function patch(body: unknown) {
   return PATCH(
     new Request("http://x/api/admin/coupons/" + ID, {
       method: "PATCH",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: "http://localhost:3000" },
       body: JSON.stringify(body),
     }),
     { params: Promise.resolve({ id: ID }) },
@@ -89,21 +88,20 @@ describe("PATCH /api/admin/coupons/[id] expectedUpdatedAt", () => {
   });
 });
 
-describe("updateCouponViaTrustedRpc", () => {
-  test("passes p_expected_updated_at to the RPC unchanged", async () => {
+describe("updateCouponViaTrustedRpc (V0.1.51: through the backend)", () => {
+  test("sends expectedUpdatedAt to PATCH /v1/admin/coupons/:id unchanged, as a v3 admin write", async () => {
     vi.resetModules();
     vi.doUnmock("@/lib/admin/coupons/service");
-    vi.doMock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => ({ rpc }) }));
-    vi.doMock("@/lib/supabase/server", () => ({ createServerSupabaseClient: async () => ({}) }));
-    rpc.mockResolvedValue({ data: null, error: { message: "coupon_admin_conflict" } });
+    const write = vi.fn(async () => ({ data: { status: 409, body: { error: "coupon_admin_conflict" } } }));
+    vi.doMock("@/lib/backend/client", () => ({ backendWriteJson: write, backendGetJson: vi.fn() }));
+    vi.doMock("@/lib/observability/request-context", () => ({ currentRequestId: () => "req-1", log: vi.fn() }));
     const { updateCouponViaTrustedRpc } = await import("@/lib/admin/coupons/service");
-    const res = await updateCouponViaTrustedRpc("admin-1", ID, {
-      ...base, expectedUpdatedAt: DB_TS,
-    } as never);
-    expect(rpc).toHaveBeenCalledWith("update_coupon_trusted", expect.objectContaining({
-      p_expected_updated_at: DB_TS,
-    }));
+    const ctx = { identity: { provider: "supabase", subject: "admin-1" }, authenticatedAt: 1 } as never;
+    const res = await updateCouponViaTrustedRpc(ctx, ID, { ...base, expectedUpdatedAt: DB_TS } as never);
+    const call = (write.mock.calls[0] as unknown as [{ method: string; path: string; body: { expectedUpdatedAt: string } }])[0];
+    expect(call).toMatchObject({ method: "PATCH", path: `/v1/admin/coupons/${ID}` });
+    expect(call.body.expectedUpdatedAt).toBe(DB_TS);
     // a stale/mismatched token still surfaces as 409
-    expect(res).toMatchObject({ ok: false, status: 409 });
+    expect(res).toMatchObject({ ok: false, status: 409, code: "COUPON_CONFLICT" });
   });
 });

@@ -278,6 +278,31 @@ holds EXECUTE on the function and nothing that writes the request tables
 (migration 0016).
 
 
+## Candy purchases, payments and admin coupons (V0.1.51)
+
+| Route | Auth |
+|---|---|
+| `GET /v1/candy-packages` | public (catalog) |
+| `GET /v1/parent/candy-purchases` | v2 parent (history) |
+| `POST /v1/parent/candy-purchases` `{packageId}` | v3 parent |
+| `GET /v1/parent/candy-purchases/:id/coupon-validation?code=` | v2 parent |
+| `POST /v1/parent/candy-purchases/:id/coupon` `{code, idempotencyKey}` | v3 parent |
+| `POST /v1/parent/candy-purchases/:id/payment-attempts` `{provider, idempotencyKey, checkoutExpiresAt}` | v3 parent |
+| `POST /v1/parent/candy-purchases/:id/payment-attempts/:attemptId/session` | v3 parent |
+| `POST /v1/payments/events` | service assertion s1 (`payments`) |
+| `GET /v1/admin/coupons`, `/packages`, `/:couponId`; `POST /v1/admin/coupons`; `PATCH /v1/admin/coupons/:couponId` | v2/v3 admin or super_admin |
+
+Every write is one trusted function (migration 0017); bodies are exact-key
+and carry no user, profile, wallet, price, candy amount or status. Function
+refusals answer `{ error: <token> }` (the BFF maps the Persian text); database
+failures `503 service_unavailable`. `POST /v1/payments/events` answers 200
+with `{ outcome }` for every handled case (`processed`, `duplicate_event`,
+`already_paid`, `amount_mismatch`, `currency_mismatch`, `transaction_reused`,
+`attempt_not_found`, `purchase_cancelled`) and 503 on a database failure (the
+provider retries; nothing was written). The backend never holds a provider
+secret.
+
+
 ## Local timings (informational)
 
 Warm, keep-alive, 200 sequential requests each, from the Mac to Docker

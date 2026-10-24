@@ -3,7 +3,7 @@ import { notFound } from "next/navigation"
 import { PageHeader } from "@/components/ui/page-header"
 import { Card } from "@/components/ui/card"
 import { CouponForm } from "@/components/admin/coupons/coupon-form"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { verifyParentCaller } from "@/lib/parent/backend-caller"
 import { queryAdminCouponDetail, queryAdminCouponPackages } from "@/lib/admin/coupons/queries"
 import { isUuid } from "@/lib/admin/coupons/validation"
 
@@ -21,11 +21,14 @@ export default async function AdminEditCouponPage({
     notFound()
   }
 
-  const supabase = await createServerSupabaseClient()
+  // V0.1.51: the backend decides the admin role on each read (null = not found / not allowed).
+  const caller = await verifyParentCaller()
+  if (!caller.ok) notFound()
+  const context = caller.context
 
   const [coupon, packages] = await Promise.all([
-    queryAdminCouponDetail(supabase, couponId),
-    queryAdminCouponPackages(supabase),
+    queryAdminCouponDetail(context, couponId),
+    queryAdminCouponPackages(context),
   ])
 
   if (coupon === null) {

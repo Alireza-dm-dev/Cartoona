@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf";
 import {
   requireAdminCouponsAuth,
   jsonError,
@@ -50,7 +51,7 @@ export async function GET(
   const { id } = await params;
   if (!isUuid(id)) return notFound();
 
-  const coupon = await queryAdminCouponDetail(auth.supabase, id);
+  const coupon = await queryAdminCouponDetail(auth.context, id);
   if (!coupon) return notFound();
 
   return NextResponse.json({ coupon }, { headers: JSON_HEADERS });
@@ -66,6 +67,8 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const rejected = rejectUnsafeBrowserWrite(request);
+  if (rejected) return rejected;
   const auth = await requireAdminCouponsAuth();
   if (!auth.ok) return auth.response;
 
@@ -107,7 +110,7 @@ export async function PATCH(
     );
   }
 
-  const result = await updateCouponViaTrustedRpc(auth.adminUserId, id, {
+  const result = await updateCouponViaTrustedRpc(auth.context, id, {
     ...validated.input,
     expectedUpdatedAt,
   });

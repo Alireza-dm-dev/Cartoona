@@ -571,3 +571,25 @@ with identical outcomes (tested). New facts for the production plan:
 - the local Supabase-shaped fixture proves logic, not production migration
   compatibility: the real `pg_dump` rehearsal blocker is unchanged, and so is
   the open `amr` check.
+
+### V0.1.51: purchases and payments, re-audit of 0017
+
+0017 adds functions and grants and replaces four function bodies; no table or
+column, so the mapping is unchanged and the pin lists it. What the copy must
+keep exactly (and does: ids, statuses, snapshots, ledger keys):
+`candy_purchases`, `payment_attempts`, `payment_webhook_events`,
+`coupon_redemptions`, `coupons`, `coupon_package_rules`, `candy_packages`,
+`candy_wallets`, `candy_transactions`. Proved after a copy:
+
+- a copied PAID purchase cannot be credited again by a later provider event
+  (`already_paid`; still one `purchase_credit:<id>` row);
+- a copied PENDING purchase with a reserved coupon is paid at the copied
+  discounted price and its redemption becomes `redeemed`;
+- copied and V0.1.49-provisioned parents both run purchase -> balance ->
+  request -> balance with exact ledger reconciliation.
+
+From the first PostgreSQL purchase the Supabase wallet, purchases and coupon
+redemptions are stale. The copy remains a one-time step; never rerun it into
+a target that holds PostgreSQL-only purchases or ledger rows, and never
+re-enable a Supabase financial writer (ROUTE_CUTOVER "V0.1.51 Rollback").
+The real `pg_dump` rehearsal and the `amr` check stay open.

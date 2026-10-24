@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf";
 import {
   requireAdminCouponsAuth,
   jsonError,
@@ -38,7 +39,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const params = parseAdminCouponListParams(url);
 
-  const result = await queryAdminCouponList(auth.supabase, params);
+  const result = await queryAdminCouponList(auth.context, params);
   if (!result) {
     return jsonError("دریافت لیست کدهای تخفیف انجام نشد.", 500);
   }
@@ -53,6 +54,8 @@ export async function GET(request: Request) {
  * to field-level Persian messages; duplicate codes return 409.
  */
 export async function POST(request: Request) {
+  const rejected = rejectUnsafeBrowserWrite(request);
+  if (rejected) return rejected;
   const auth = await requireAdminCouponsAuth();
   if (!auth.ok) return auth.response;
 
@@ -85,7 +88,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = await createCouponViaTrustedRpc(auth.adminUserId, validated.input);
+  const result = await createCouponViaTrustedRpc(auth.context, validated.input);
   if (!result.ok) {
     const errResp: AdminCouponErrorResponse = {
       error: result.message,

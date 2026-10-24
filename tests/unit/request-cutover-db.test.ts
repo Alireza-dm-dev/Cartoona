@@ -300,7 +300,7 @@ describe.skipIf(!enabled)("V0.1.50 request submission cutover (local Docker Post
       ["EXECUTE complete_candy_purchase_trusted", `select * from public.complete_candy_purchase_trusted('${randomUUID()}', '${COPIED_A.profile}', 'ref')`],
       ["EXECUTE update_order_status_trusted", `select * from public.update_order_status_trusted('${randomUUID()}', '${ADMIN}', 'delivered', now(), null, null)`],
       ["EXECUTE record_final_media_trusted", `select * from public.record_final_media_trusted('${ADMIN}', '${randomUUID()}', 'p', 'video/mp4', 1, 'f')`],
-      ["EXECUTE create_payment_attempt_trusted", `select * from public.create_payment_attempt_trusted('${randomUUID()}', '${COPIED_A.profile}', 'p', now(), 'k')`],
+      // create_payment_attempt_trusted is executable since V0.1.51 (0017); purchase-cutover-db.test.ts covers it.
     ])("the app role cannot %s -> 42501", async (_label, sql) => {
       expect(await sqlState(appPool.query(sql))).toBe("42501")
     })
@@ -316,7 +316,9 @@ describe.skipIf(!enabled)("V0.1.50 request submission cutover (local Docker Post
     it("the request function is the only financial EXECUTE the role holds beyond nonce + consent + provisioning", async () => {
       const rows = (await owner.query(`select p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and has_function_privilege($1, p.oid, 'execute') and p.prosecdef order by 1`, [ROLE])).rows.map((r) => r.proname)
-      expect(rows).toEqual(["consume_internal_write_nonce", "create_parent_request_trusted", "provision_supabase_parent_identity", "record_parent_consent_trusted"].sort())
+      // V0.1.51 adds the purchase/payment/coupon functions (asserted exactly in purchase-cutover-db.test.ts).
+      expect(rows).toEqual(expect.arrayContaining(["consume_internal_write_nonce", "create_parent_request_trusted", "provision_supabase_parent_identity", "record_parent_consent_trusted"]))
+      expect(rows).not.toContain("complete_candy_purchase_trusted")
     })
   })
 

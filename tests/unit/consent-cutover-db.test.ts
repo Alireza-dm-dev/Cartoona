@@ -612,7 +612,7 @@ describe.skipIf(!enabled)("V0.1.48 consent cutover: copied data -> Fastify -> Ne
       expect(await tgt("select has_table_privilege('cartoona_app', 'public.parent_profiles', 'UPDATE')")).toBe("f")
       expect(await tgt(`select string_agg(column_name, ',' order by column_name) from information_schema.column_privileges
         where grantee = 'cartoona_app' and table_name = 'parent_profiles' and privilege_type = 'UPDATE'`)).toBe("full_name,updated_at")
-      expect(await tgt("select string_agg(version, ',' order by version) from public.schema_migrations")).toMatch(/0014_parent_consent_write,0015_supabase_parent_provisioning,0016_parent_request_privileges$/)
+      expect(await tgt("select string_agg(version, ',' order by version) from public.schema_migrations")).toMatch(/0014_parent_consent_write,0015_supabase_parent_provisioning,0016_parent_request_privileges,0017_candy_purchase_payment$/)
     })
 
     it("a raw DbError from the app role never leaks through the backend", async () => {

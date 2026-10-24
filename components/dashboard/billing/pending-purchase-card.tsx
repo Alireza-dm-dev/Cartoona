@@ -12,6 +12,9 @@ import { Badge } from "@/components/ui/neu-badge"
 interface PendingPurchaseCardProps {
   purchase: ParentCandyPurchaseSummary
   onCouponApplied: () => Promise<void>
+  /** V0.1.51: start (or resume) paying through the provider. Absent = no pay button. */
+  onPay?: (purchaseId: string) => void
+  paying?: boolean
 }
 
 const inputClass =
@@ -21,7 +24,7 @@ function formatRial(amount: number): string {
   return `${amount.toLocaleString("fa-IR")} ریال`
 }
 
-export function PendingPurchaseCard({ purchase, onCouponApplied }: PendingPurchaseCardProps) {
+export function PendingPurchaseCard({ purchase, onCouponApplied, onPay, paying = false }: PendingPurchaseCardProps) {
   const [code, setCode] = useState("")
   const [isValidating, setIsValidating] = useState(false)
   const [isApplying, setIsApplying] = useState(false)
@@ -141,7 +144,7 @@ export function PendingPurchaseCard({ purchase, onCouponApplied }: PendingPurcha
             {purchase.candyAmount.toLocaleString("fa-IR")} آبنبات
           </p>
         </div>
-        <Badge variant="warning">در انتظار پرداخت</Badge>
+        <Badge variant="warning">{purchase.status === "failed" ? "پرداخت ناموفق" : "در انتظار پرداخت"}</Badge>
       </div>
 
       <div className="mt-4 rounded-lg bg-soft-border/30 p-4 text-sm">
@@ -281,6 +284,17 @@ export function PendingPurchaseCard({ purchase, onCouponApplied }: PendingPurcha
             )}
           </div>
         )
+      )}
+
+      {onPay && !(couponLocked && isZeroFinal) && (
+        <div className="mt-4">
+          {purchase.status === "failed" && (
+            <p className="mb-2 text-xs text-text-dark/60">پرداخت قبلی ناموفق بود. می‌توانید دوباره پرداخت کنید.</p>
+          )}
+          <Button type="button" variant="primary" size="md" className="w-full" disabled={paying} onClick={() => onPay(purchase.id)}>
+            {paying ? "در حال انتقال به درگاه پرداخت..." : "پرداخت"}
+          </Button>
+        </div>
       )}
     </Card>
   )

@@ -321,3 +321,131 @@ export function verifyAssertion(input: VerifyAssertionInput): VerifyResult {
     },
   }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Service assertions (V0.1.51)
+//
+// A provider-authenticated event (payment webhook, server-to-server payment
+// verification) has NO parent behind it, so it must never be expressed as an
+// identity assertion. The Next server, after verifying the PROVIDER (signature
+// or verify API), signs a service assertion naming the internal service:
+//
+//   s1.<base64url(JSON payload)>.<base64url(HMAC-SHA256)>
+//
+// Payload, exactly: v (1), svc ("payments"), iat, exp, rid, mth, pth, nce, bdg.
+// MAC context "cartoona-internal-auth\ns1\n" - distinct from v2/v3, so a
+// service token can never verify as an identity token or the reverse (and
+// verifyAssertion refuses the "s1" prefix before any MAC work). Writes only
+// (POST), body digest and single-use nonce exactly like v3. Same key
+// (CARTOONA_INTERNAL_AUTH_SECRET): domain separation is the MAC context.
+// ───────────────────────────────────────────────────────────────────────────
+
+export const SERVICE_ASSERTION_PREFIX = "s1"
+export const INTERNAL_SERVICES = ["payments"] as const
+export type InternalService = (typeof INTERNAL_SERVICES)[number]
+const SERVICE_MAC_CONTEXT = "cartoona-internal-auth\ns1\n"
+const SERVICE_PAYLOAD_KEYS = ["bdg", "exp", "iat", "mth", "nce", "pth", "rid", "svc", "v"]
+const SERVICE_METHODS = new Set(["POST"])
+
+export function isInternalService(value: unknown): value is InternalService {
+  return typeof value === "string" && (INTERNAL_SERVICES as readonly string[]).includes(value)
+}
+
+function serviceMac(secret: Buffer, encodedPayload: string): Buffer {
+  return createHmac("sha256", secret).update(SERVICE_MAC_CONTEXT).update(encodedPayload).digest()
+}
+
+export interface SignServiceAssertionInput {
+  service: InternalService
+  requestId: string
+  method: string
+  path: string
+  body: Uint8Array | string
+  secret: Buffer
+  now?: number
+  nonce?: string
+}
+
+export function signServiceAssertion(input: SignServiceAssertionInput): string {
+  if (!isInternalService(input.service)) throw new TypeError("assertion: invalid service")
+  if (!isSafeRequestId(input.requestId)) throw new TypeError("assertion: invalid request id")
+  if (!SERVICE_METHODS.has(input.method)) throw new TypeError("assertion: invalid method")
+  if (!PATH.test(input.path)) throw new TypeError("assertion: invalid path")
+  const nonce = input.nonce ?? newWriteNonce()
+  if (!NONCE_FORMAT.test(nonce)) throw new TypeError("assertion: invalid nonce")
+  const iat = Math.floor((input.now ?? Date.now()) / 1000)
+  const payload = {
+    v: 1, svc: input.service, iat, exp: iat + ASSERTION_LIFETIME_SECONDS, rid: input.requestId,
+    mth: input.method, pth: input.path, nce: nonce, bdg: bodyDigest(input.body),
+  }
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")
+  return `${SERVICE_ASSERTION_PREFIX}.${encoded}.${serviceMac(input.secret, encoded).toString("base64url")}`
+}
+
+export interface ServiceAssertionClaims {
+  service: InternalService
+  requestId: string
+  method: string
+  path: string
+  issuedAt: number
+  expiresAt: number
+  nonce: string
+  bodyDigest: string
+}
+
+export type VerifyServiceResult = { ok: true; claims: ServiceAssertionClaims } | { ok: false; reason: AssertionFailure }
+
+/** Same order as verifyAssertion: structure, MAC (constant time), then claims, time, binding, body digest. */
+export function verifyServiceAssertion(input: {
+  token: unknown
+  secret: Buffer
+  method: string
+  path: string
+  body: Uint8Array | string
+  now?: number
+}): VerifyServiceResult {
+  const fail = (reason: AssertionFailure): VerifyServiceResult => ({ ok: false, reason })
+  const token = input.token
+  if (typeof token !== "string" || token.length === 0 || token.length > ASSERTION_MAX_LENGTH) return fail("malformed")
+  const parts = token.split(".")
+  if (parts.length !== 3) return fail("malformed")
+  const [prefix, encoded, signature] = parts
+  if (prefix !== SERVICE_ASSERTION_PREFIX) return fail("unsupported_version")
+  if (!B64URL.test(encoded) || !B64URL.test(signature)) return fail("malformed")
+
+  const expected = serviceMac(input.secret, encoded)
+  const received = Buffer.from(signature, "base64url")
+  if (received.length !== expected.length || received.toString("base64url") !== signature) return fail("bad_signature")
+  if (!timingSafeEqual(received, expected)) return fail("bad_signature")
+
+  let payload: Record<string, unknown>
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"))
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return fail("invalid_claims")
+    payload = parsed as Record<string, unknown>
+  } catch {
+    return fail("malformed")
+  }
+  if (Object.keys(payload).sort().join(",") !== SERVICE_PAYLOAD_KEYS.join(",")) return fail("invalid_claims")
+  const { v, svc, iat, exp, rid, mth, pth, nce, bdg } = payload
+  if (v !== 1) return fail("unsupported_version")
+  if (!isInternalService(svc)) return fail("invalid_claims")
+  if (!Number.isSafeInteger(iat) || !Number.isSafeInteger(exp)) return fail("invalid_claims")
+  const issuedAt = iat as number
+  const expiresAt = exp as number
+  if (expiresAt <= issuedAt || expiresAt - issuedAt > ASSERTION_MAX_LIFETIME_SECONDS) return fail("invalid_claims")
+  if (!isSafeRequestId(rid)) return fail("invalid_claims")
+  if (typeof mth !== "string" || !SERVICE_METHODS.has(mth) || typeof pth !== "string" || !PATH.test(pth)) return fail("invalid_claims")
+  if (typeof nce !== "string" || !NONCE_FORMAT.test(nce) || typeof bdg !== "string" || !DIGEST_FORMAT.test(bdg)) return fail("invalid_claims")
+
+  const nowSeconds = Math.floor((input.now ?? Date.now()) / 1000)
+  if (issuedAt > nowSeconds + ASSERTION_CLOCK_SKEW_SECONDS) return fail("not_yet_valid")
+  if (nowSeconds >= expiresAt) return fail("expired")
+  if (mth !== input.method || pth !== input.path) return fail("binding_mismatch")
+
+  const got = Buffer.from(bodyDigest(input.body), "base64url")
+  const signed = Buffer.from(bdg, "base64url")
+  if (got.length !== signed.length || !timingSafeEqual(got, signed)) return fail("body_mismatch")
+
+  return { ok: true, claims: { service: svc, requestId: rid as string, method: mth, path: pth, issuedAt, expiresAt, nonce: nce, bodyDigest: bdg } }
+}

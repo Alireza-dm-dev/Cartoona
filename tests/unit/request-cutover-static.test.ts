@@ -193,11 +193,11 @@ describe("the browser contract and the client", () => {
 })
 
 describe("scope: what did NOT move", () => {
-  it("candy purchases, payment completion and coupons still write to Supabase and never reach the backend", () => {
+  it("V0.1.51 moved purchases; the request route does not call purchase code, and purchases do not call request code", () => {
     for (const f of ["app/api/candy-purchases/route.ts", ...walk("app/api/coupons")]) {
-      expect(code(f), f).not.toMatch(/@\/lib\/backend|backend-caller|createRequestViaBackend/)
+      expect(code(f), f).not.toMatch(/createRequestViaBackend/)
     }
-    expect(code("app/api/candy-purchases/route.ts")).toMatch(/createServerSupabaseClient|createAdminSupabaseClient/)
+    expect(code(ROUTE)).not.toMatch(/candy-purchases|backend-purchases/)
   })
 
   it("the order DETAIL page and final media still read Supabase (documented V0.1.51 blocker)", () => {

@@ -173,7 +173,16 @@ describe("the consent write: CSRF -> session -> v3 -> parent-only backend route"
       "app/api/parent/password/route.ts",
       "app/api/referrals/bind/route.ts",
       "app/api/requests/route.ts", // V0.1.50: the multipart variant of the same guard
-    ])
+      // V0.1.51: purchase, coupon, coupon-validation, pay and admin coupon writes.
+      "app/api/admin/coupons/[id]/route.ts",
+      "app/api/admin/coupons/route.ts",
+      "app/api/candy-purchases/[id]/coupon/route.ts",
+      "app/api/candy-purchases/[id]/pay/route.ts",
+      "app/api/candy-purchases/route.ts",
+      "app/api/coupons/validate/route.ts",
+      // the payment return route reads only the configured origin (no guard: it is not a browser write)
+      "app/api/payments/return/[provider]/route.ts",
+    ].sort())
   })
 
   it("the CSRF origin comes from configuration, never from Host or forwarded headers", () => {
@@ -192,11 +201,16 @@ describe("scope: only consent moved", () => {
     expect(requests).not.toMatch(/\.rpc\(|create_parent_request_trusted|createAdminSupabaseClient/)
   })
 
-  it("the backend has exactly four writes (V0.1.47 proof + consent + V0.1.49 provisioning + V0.1.50 requests) and no purchase, media, coupon or Storage code", () => {
+  it("the backend writes are proof + consent + provisioning + requests + (V0.1.51) purchases/coupons/payments, and no media or Storage code", () => {
     const writes = backendRuntime.flatMap((f) => [...code(f).matchAll(/app\.(post|put|patch|delete)\(\s*([A-Z_]+|"[^"]+")/g)].map((m) => `${m[1]} ${m[2]}`))
-    expect(writes.sort()).toEqual(["patch PROFILE_PATH", "post CONSENT_PATH", "post PROVISION_PATH", "post REQUESTS_PATH"])
+    expect(writes.sort()).toEqual([
+      'patch "/v1/admin/coupons/:couponId"', "patch PROFILE_PATH", 'post "/v1/admin/coupons"', 'post "/v1/parent/candy-purchases"',
+      'post "/v1/parent/candy-purchases/:purchaseId/coupon"', 'post "/v1/parent/candy-purchases/:purchaseId/payment-attempts"',
+      'post "/v1/parent/candy-purchases/:purchaseId/payment-attempts/:attemptId/session"', "post CONSENT_PATH", "post PAYMENT_EVENTS_PATH",
+      "post PROVISION_PATH", "post REQUESTS_PATH",
+    ].sort())
     for (const f of backendRuntime) {
-      expect(code(f), f).not.toMatch(/candy_purchases|payment_attempts|coupon|record_final_media|storage\.|\.rpc\(/i)
+      expect(code(f), f).not.toMatch(/record_final_media|media_assets|storage\.|\.rpc\(/i)
     }
   })
 

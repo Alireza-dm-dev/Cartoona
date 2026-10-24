@@ -15,10 +15,18 @@ import type {
   CandyPackageSummary,
   ParentCandyBillingResponse,
   CandyPurchaseCreateResponse,
-  CandyPurchaseCompleteResponse,
   CandyBillingDashboardPhase,
 } from "@/lib/candy-purchases/types"
 import { loadBilling, refreshBillingData } from "@/lib/candy-purchases/billing-client"
+import { mintSubmissionKey } from "@/lib/requests/submission-attempt"
+
+/** Display hint the payment return route adds; the shown state is always re-read from the server. */
+const PAYMENT_HINTS: Record<string, { tone: "ok" | "error" | "info"; text: string }> = {
+  paid: { tone: "ok", text: "پرداخت با موفقیت انجام شد و آبنبات‌ها به کیف پول اضافه شدند." },
+  failed: { tone: "error", text: "پرداخت ناموفق بود. می‌توانید دوباره تلاش کنید." },
+  pending: { tone: "info", text: "در انتظار تأیید پرداخت. وضعیت چند لحظه بعد به‌روز می‌شود." },
+  unknown: { tone: "info", text: "وضعیت پرداخت هنوز مشخص نیست. لطفاً چند لحظه بعد صفحه را بررسی کنید." },
+}
 
 function LoadingSkeleton() {
   return (
@@ -33,21 +41,6 @@ function LoadingSkeleton() {
   )
 }
 
-function DevNotice() {
-  return (
-    <Card variant="admin" className="mb-6 border-sunshine-yellow/40 bg-sunshine-yellow/10">
-      <div className="flex items-start gap-3">
-        <span className="text-xl" aria-hidden="true">🧪</span>
-        <div>
-          <p className="text-sm text-text-dark/70">
-            پرداخت آزمایشی فقط برای محیط توسعه فعال است و پرداخت واقعی محسوب نمی‌شود.
-          </p>
-        </div>
-      </div>
-    </Card>
-  )
-}
-
 function ErrorCard({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="neu-raised flex flex-col items-center gap-4 rounded-[24px] p-12 text-center">
@@ -57,11 +50,7 @@ function ErrorCard({ onRetry }: { onRetry: () => void }) {
   )
 }
 
-interface CandyBillingDashboardProps {
-  enableDevPaymentSimulation: boolean
-}
-
-export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBillingDashboardProps) {
+export function CandyBillingDashboard() {
   const [phase, setPhase] = useState<CandyBillingDashboardPhase>("loading")
   const [packages, setPackages] = useState<CandyPackageSummary[]>([])
   const [billingData, setBillingData] = useState<ParentCandyBillingResponse | null>(null)
@@ -69,15 +58,34 @@ export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBilli
   const [purchaseError, setPurchaseError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
-  const [completingId, setCompletingId] = useState<string | null>(null)
-  const [completionConfirmId, setCompletionConfirmId] = useState<string | null>(null)
+  const [payingId, setPayingId] = useState<string | null>(null)
+  const [paymentNotice, setPaymentNotice] = useState<{ tone: "ok" | "error" | "info"; text: string } | null>(null)
+  /** One idempotency key per purchase's pay action, reused on a retry: never a second attempt by accident. */
+  const payKeys = useRef(new Map<string, string>())
   const initRef = useRef(false)
   const creatingRef = useRef(false)
 
   useEffect(() => {
     if (initRef.current) return
     initRef.current = true
-    loadAll()
+    const hint = new URLSearchParams(window.location.search).get("payment")
+    if (hint && PAYMENT_HINTS[hint]) {
+      window.history.replaceState(null, "", window.location.pathname)
+      // Deferred like loadAll's own state updates (no synchronous setState in the effect).
+      window.setTimeout(() => setPaymentNotice(PAYMENT_HINTS[hint]), 0)
+    }
+    loadAll().then(() => {
+      // A provider confirmation may land a moment after the browser returns: re-read a few times.
+      if (hint === "pending" || hint === "unknown") {
+        let tries = 0
+        const timer = window.setInterval(async () => {
+          tries += 1
+          const refreshed = await refreshBillingData()
+          if (refreshed) setBillingData(refreshed)
+          if (tries >= 5) window.clearInterval(timer)
+        }, 2000)
+      }
+    })
   }, [])
 
   async function loadAll() {
@@ -167,56 +175,45 @@ export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBilli
     }
   }
 
-  async function handleCompletePurchase(purchaseId: string) {
-    setCompletionConfirmId(null)
-    setCompletingId(purchaseId)
-    setSuccessMessage(null)
+  async function handlePay(purchaseId: string) {
+    if (payingId) return
+    setPayingId(purchaseId)
     setPurchaseError(null)
-
+    setSuccessMessage(null)
+    let key = payKeys.current.get(purchaseId)
+    if (!key) {
+      key = mintSubmissionKey()
+      payKeys.current.set(purchaseId, key)
+    }
     try {
-      const resp = await fetch(`/api/candy-purchases/${purchaseId}/complete`, {
+      const resp = await fetch(`/api/candy-purchases/${purchaseId}/pay`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idempotency_key: key }),
       })
-
       if (resp.status === 401) {
         window.location.href = "/login?reason=session_expired&from=/dashboard/billing"
         return
       }
-      if (resp.status === 403) {
-        const errBody = await resp.json().catch(() => ({}))
-        if (errBody.error) {
-          setPurchaseError(errBody.error)
-        } else {
-          setPurchaseError("شما اجازه استفاده از این بخش را ندارید.")
-        }
+      const body = await resp.json().catch(() => ({}))
+      if (resp.ok && typeof body.checkoutUrl === "string") {
+        window.location.assign(body.checkoutUrl)
         return
       }
-
-      if (!resp.ok) {
-        const errBody = await resp.json().catch(() => ({}))
-        if (resp.status === 409) {
-          setPurchaseError("این سفارش قبلاً پرداخت شده است.")
-        } else if (resp.status === 429) {
-          setPurchaseError(RATE_LIMITED_MESSAGE)
-        } else {
-          setPurchaseError(errBody.error || "تکمیل پرداخت آزمایشی انجام نشد.")
-        }
-        return
-      }
-
-      const data: CandyPurchaseCompleteResponse = await resp.json()
-      setSuccessMessage("پرداخت آزمایشی تکمیل شد و آبنبات‌ها به کیف پول اضافه شدند.")
-
+      setPurchaseError(
+        resp.status === 429
+          ? RATE_LIMITED_MESSAGE
+          : typeof body?.error?.message === "string" ? body.error.message : "شروع پرداخت انجام نشد. لطفاً دوباره تلاش کنید.",
+      )
+      setPayingId(null)
       await refreshBilling()
     } catch {
-      setPurchaseError("تکمیل پرداخت آزمایشی انجام نشد.")
-    } finally {
-      setCompletingId(null)
+      setPurchaseError("شروع پرداخت انجام نشد. لطفاً دوباره تلاش کنید.")
+      setPayingId(null)
     }
   }
 
-  const pendingPurchases = billingData?.purchases.filter((p) => p.status === "pending") || []
+  const pendingPurchases = billingData?.purchases.filter((p) => p.status === "pending" || p.status === "failed") || []
 
   return (
     <div>
@@ -225,7 +222,15 @@ export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBilli
         description="موجودی آبنبات خود را ببینید و بسته مناسب را برای ساخت تصویر و ویدیو انتخاب کنید."
       />
 
-      {enableDevPaymentSimulation && <DevNotice />}
+      {paymentNotice && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`mb-4 rounded-lg px-4 py-3 text-sm ${paymentNotice.tone === "ok" ? "bg-mint-green/15 text-mint-green" : paymentNotice.tone === "error" ? "bg-coral/10 text-coral" : "bg-sky-blue/10 text-text-dark/70"}`}
+        >
+          {paymentNotice.text}
+        </div>
+      )}
 
       {phase === "loading" && <LoadingSkeleton />}
 
@@ -278,6 +283,8 @@ export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBilli
                       setSuccessMessage("کد تخفیف با موفقیت اعمال شد.")
                       await refreshBilling()
                     }}
+                    onPay={handlePay}
+                    paying={payingId === p.id}
                   />
                 ))}
               </div>
@@ -296,35 +303,6 @@ export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBilli
             </div>
           )}
 
-          {enableDevPaymentSimulation && pendingPurchases.length > 0 && (
-            <Card className="mb-6 border-sunshine-yellow/30">
-              <h3 className="mb-3 text-sm font-semibold text-text-dark/60">تکمیل آزمایشی پرداخت</h3>
-              <div className="space-y-3">
-                {pendingPurchases.map((p) => (
-                  <div key={p.id} className="neu-recessed flex items-center justify-between rounded-lg p-3">
-                    <div>
-                      <p className="text-sm font-medium text-text-dark">{p.packageName}</p>
-                      <p className="text-xs text-text-dark/50">
-                        {p.candyAmount.toLocaleString("fa-IR")} آبنبات — {p.finalPriceAmount.toLocaleString("fa-IR")} ریال
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="rounded bg-sunshine-yellow/30 px-1.5 py-0.5 text-xs font-medium text-parent-navy">آزمایشی</span>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={completingId === p.id}
-                        onClick={() => setCompletionConfirmId(p.id)}
-                      >
-                        {completingId === p.id ? "در حال تکمیل..." : "تکمیل آزمایشی پرداخت"}
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-
           <CandyPurchaseHistory purchases={billingData.purchases} />
         </>
       )}
@@ -337,42 +315,6 @@ export function CandyBillingDashboard({ enableDevPaymentSimulation }: CandyBilli
         />
       )}
 
-      {completionConfirmId && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="dev-complete-title"
-        >
-          <div className="neu-raised w-full max-w-md rounded-xl p-6">
-            <h3 id="dev-complete-title" className="text-lg font-semibold text-text-dark">
-              تکمیل آزمایشی پرداخت
-            </h3>
-            <p className="mt-2 text-sm text-text-dark/60">
-              این عملیات فقط برای تست توسعه است و پرداخت واقعی انجام نمی‌دهد.
-            </p>
-            <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-              <Button
-                variant="secondary"
-                size="md"
-                onClick={() => setCompletionConfirmId(null)}
-                disabled={completingId !== null}
-                autoFocus
-              >
-                انصراف
-              </Button>
-              <Button
-                variant="primary"
-                size="md"
-                onClick={() => handleCompletePurchase(completionConfirmId)}
-                disabled={completingId !== null}
-              >
-                {completingId !== null ? "در حال تکمیل..." : "تأیید و تکمیل"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

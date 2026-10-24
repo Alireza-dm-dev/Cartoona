@@ -1,7 +1,7 @@
 /**
  * Canonical Supabase -> plain PostgreSQL data mapping (V0.1.44).
  *
- * The plain schema (database/migrations 0001-0016) is column-identical to the
+ * The plain schema (database/migrations 0001-0017) is column-identical to the
  * migrated Supabase `public` schema for every domain table (proven by the
  * parity suite in tests/unit/plain-postgres-db.test.ts), except:
  *   - users.sessions_not_before   target-only (V0.1.43), always NULL on copy
@@ -13,6 +13,13 @@
  * EXECUTE grant: no table or column, so nothing here changed. Consent
  * (parent_profiles.consent_granted / consent_granted_at) was already copied
  * verbatim and stays so: copied values are never regenerated.
+ *
+ * 0017 (V0.1.51) adds functions (purchase creation, provider-verified
+ * confirm/fail), replaces four function bodies (#variable_conflict fix, payable
+ * amount, coupon row lock) and grants: no table or column, so nothing here
+ * changed. Copied purchases, attempts, webhook events, coupons and redemptions
+ * keep their ids and states; a copied PAID purchase can never be credited again
+ * (confirm_payment_attempt_trusted refuses status = 'paid').
  *
  * 0016 (V0.1.50) adds only privileges (EXECUTE on create_parent_request_trusted,
  * SELECT on characters): no table, column or function, so nothing here changed.
@@ -222,6 +229,7 @@ export const EXPECTED_TARGET_MIGRATIONS = [
   "0014_parent_consent_write",
   "0015_supabase_parent_provisioning",
   "0016_parent_request_privileges",
+  "0017_candy_purchase_payment",
 ]
 
 export const IDENTITY_PROVIDER = "supabase"

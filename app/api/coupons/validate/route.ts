@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server"
 import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { withObservability } from "@/lib/observability/request-context"
-import { logAuthLookup } from "@/lib/observability/auth-events"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { createAdminSupabaseClient } from "@/lib/supabase/admin"
-import { isParentRole } from "@/lib/auth/parent-access"
-import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
-import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
+import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf"
+import { verifyParentCaller } from "@/lib/parent/backend-caller"
+import { validateCoupon } from "@/lib/candy-purchases/backend-purchases"
+import { backendFailure, callerFailure, errorJson, NO_STORE, readJsonBody } from "@/lib/candy-purchases/route-helpers"
 import { isValidRawCouponCode, normalizeCouponCode } from "@/lib/coupons/rules"
 import { toCouponValidationResult } from "@/lib/coupons/types"
 import { mapCouponRpcError } from "@/lib/coupons/errors"
@@ -17,132 +15,50 @@ export const runtime = "nodejs"
 const MAX_BODY_BYTES = 1024
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-function jsonError(code: string, message: string, status: number): NextResponse {
-  return NextResponse.json(
-    { error: { code, message } },
-    { status, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } },
-  )
-}
-
 /**
- * POST /api/coupons/validate
- * Authenticated parent only. Read-only — never mutates data.
- * Body: { purchase_id, code }.
- * The server resolves the parent profile and calls the trusted service-role
- * validation RPC. The browser never supplies a parent ID, package, or amount.
+ * POST /api/coupons/validate - read-only preview of a coupon on a pending
+ * purchase (V0.1.51: PostgreSQL, validate_coupon_for_purchase_trusted through
+ * a v2 read). Body { purchase_id, code }; same response and error contract.
+ * The browser never supplies a parent id, package or amount.
  */
 export const POST = withObservability("POST /api/coupons/validate", handlePost)
 
 async function handlePost(request: Request) {
-  const contentType = request.headers.get("content-type") || ""
-  if (!contentType.startsWith("application/json")) {
-    return jsonError("INVALID_FORMAT", "فرمت درخواست باید JSON باشد.", 415)
-  }
+  const rejected = rejectUnsafeBrowserWrite(request)
+  if (rejected) return rejected
 
-  const contentLength = request.headers.get("content-length")
-  if (contentLength !== null) {
-    const len = parseInt(contentLength, 10)
-    if (isNaN(len) || len < 0) return jsonError("INVALID_REQUEST", "درخواست نامعتبر است.", 400)
-    if (len > MAX_BODY_BYTES) return jsonError("REQUEST_TOO_LARGE", "حجم درخواست بیش از حد مجاز است.", 413)
-  }
+  const caller = await verifyParentCaller()
+  if (!caller.ok) return callerFailure("coded", caller.reason)
 
-  let supabase
-  try {
-    supabase = await createServerSupabaseClient()
-  } catch {
-    return jsonError("AUTH_ERROR", "خطای احراز هویت رخ داد.", 500)
-  }
-
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-  if (authError || !user) {
-    logAuthLookup(authError)
-    return jsonError("UNAUTHENTICATED", "لطفاً ابتدا وارد حساب خود شوید.", 401)
-  }
-
-  // Per parent, before the validation RPC. Also bounds coupon-code guessing.
-  const limited = await enforceRateLimit(user.id, RATE_LIMIT_POLICIES.couponValidate)
+  // Per parent, before the validation read. Also bounds coupon-code guessing.
+  const limited = await enforceRateLimit(caller.context.identity.subject, RATE_LIMIT_POLICIES.couponValidate)
   if (limited) return limited
 
-  const { data: userRow, error: roleError } = await supabase
-    .from("users")
-    .select("role")
-    .eq("id", user.id)
-    .maybeSingle()
-
-  if (roleError || !userRow || !isParentRole(userRow.role)) {
-    return jsonError("FORBIDDEN", "شما مجوز انجام این عملیات را ندارید.", 403)
-  }
-
-  const lifetime = await checkParentSessionLifetime(supabase, user.id)
-  if (!lifetime.valid) {
-    return createParentSessionFailureResponse(supabase, lifetime)
-  }
-
-  // Parse and validate body
-  let body: Record<string, unknown>
-  try {
-    const text = await request.text()
-    if (text.length > MAX_BODY_BYTES) {
-      return jsonError("REQUEST_TOO_LARGE", "حجم درخواست بیش از حد مجاز است.", 413)
-    }
-    body = JSON.parse(text)
-  } catch {
-    return jsonError("INVALID_JSON", "فرمت JSON نامعتبر است.", 400)
-  }
-
+  const body = await readJsonBody(request, MAX_BODY_BYTES, "coded")
+  if (body instanceof NextResponse) return body
   const keys = Object.keys(body).sort()
   if (keys.length !== 2 || keys[0] !== "code" || keys[1] !== "purchase_id") {
-    return jsonError("UNKNOWN_FIELDS", "فیلدهای ناشناخته در درخواست وجود دارد.", 400)
+    return errorJson("coded", "UNKNOWN_FIELDS", "فیلدهای ناشناخته در درخواست وجود دارد.", 400)
   }
-
   const purchaseId: unknown = body.purchase_id
   if (typeof purchaseId !== "string" || !UUID_REGEX.test(purchaseId.trim())) {
-    return jsonError("INVALID_PURCHASE_ID", "شناسه خرید نامعتبر است.", 400)
+    return errorJson("coded", "INVALID_PURCHASE_ID", "شناسه خرید نامعتبر است.", 400)
   }
-
   const code: unknown = body.code
   if (typeof code !== "string" || !isValidRawCouponCode(code)) {
-    return jsonError("INVALID_CODE", "فرمت کد تخفیف نامعتبر است.", 400)
-  }
-  const normalizedCode = normalizeCouponCode(code)
-
-  // Resolve parent profile server-side
-  const { data: parentProfile } = await supabase
-    .from("parent_profiles")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
-
-  if (!parentProfile) {
-    return jsonError("PARENT_PROFILE_NOT_FOUND", "پروفایل والد یافت نشد.", 400)
+    return errorJson("coded", "INVALID_CODE", "فرمت کد تخفیف نامعتبر است.", 400)
   }
 
-  let admin
-  try {
-    admin = createAdminSupabaseClient()
-  } catch {
-    return jsonError("SERVER_CONFIG_ERROR", "خطای پیکربندی سرور.", 500)
+  const result = await validateCoupon(caller.context, purchaseId.trim().toLowerCase(), normalizeCouponCode(code))
+  if (result.ok) {
+    return NextResponse.json(
+      { coupon: toCouponValidationResult(result.coupon as unknown as Parameters<typeof toCouponValidationResult>[0]) },
+      { headers: NO_STORE },
+    )
   }
-
-  const { data: rpcData, error: rpcError } = await admin
-    .rpc("validate_coupon_for_purchase_trusted", {
-      p_parent_profile_id: parentProfile.id,
-      p_purchase_id: purchaseId.trim(),
-      p_coupon_code: normalizedCode,
-    })
-
-  if (rpcError) {
-    const mapped = mapCouponRpcError(rpcError.message)
-    return jsonError(mapped.code, mapped.message, mapped.status)
+  if (result.kind === "refused") {
+    const mapped = mapCouponRpcError(result.error)
+    return errorJson("coded", mapped.code, mapped.message, mapped.status)
   }
-
-  const row = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as Record<string, unknown> | null
-  if (!row) {
-    return jsonError("VALIDATION_FAILED", "بررسی کد تخفیف انجام نشد.", 500)
-  }
-
-  return NextResponse.json(
-    { coupon: toCouponValidationResult(row as unknown as Parameters<typeof toCouponValidationResult>[0]) },
-    { headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } },
-  )
+  return backendFailure("coded", result)
 }

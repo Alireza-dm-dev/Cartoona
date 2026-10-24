@@ -7,7 +7,9 @@ import {
   InternalAuthConfigError,
   readInternalAuthSecret,
   signAssertion,
+  signServiceAssertion,
   signWriteAssertion,
+  type InternalService,
 } from "@/lib/identity/assertion"
 import type { VerifiedIdentity } from "@/lib/identity/types"
 import { BackendConfigError, readBackendClientConfig } from "./config"
@@ -183,6 +185,47 @@ export async function backendWriteJson<T>(
   )
 }
 
+export interface BackendServiceWriteRequest<T> {
+  operation: string
+  /** Absolute backend path, a constant. */
+  path: string
+  body: unknown
+  requestId?: string
+  parse: (json: unknown, status: number) => T
+  acceptStatuses?: readonly number[]
+  /** The internal service the caller acts as AFTER verifying an external party (V0.1.51: "payments"). */
+  service: InternalService
+}
+
+/**
+ * One SERVICE write (V0.1.51): an s1 assertion (body digest + nonce) naming an
+ * internal service, for calls that have no parent behind them - a payment
+ * provider event the caller has already verified. POST only, one attempt,
+ * never retried (same outcomeUnknown rules as backendWriteJson).
+ */
+export async function backendServiceWriteJson<T>(
+  request: BackendServiceWriteRequest<T>,
+  deps: BackendClientDeps = {},
+): Promise<BackendResponse<T>> {
+  if (!PATH.test(request.path)) throw new TypeError("backend client: invalid path")
+  const body = JSON.stringify(request.body)
+  if (typeof body !== "string") throw new TypeError("backend client: body is not JSON-serializable")
+  return send(
+    {
+      operation: request.operation,
+      method: "POST",
+      path: request.path,
+      search: "",
+      body: new TextEncoder().encode(body),
+      requestId: request.requestId,
+      parse: request.parse,
+      acceptStatuses: request.acceptStatuses,
+      service: request.service,
+    },
+    deps,
+  )
+}
+
 interface SendRequest<T> {
   operation: string
   method: "GET" | BackendWriteMethod
@@ -194,6 +237,8 @@ interface SendRequest<T> {
   parse: (json: unknown, status: number) => T
   acceptStatuses?: readonly number[]
   auth?: { identity: VerifiedIdentity; authenticatedAt: number }
+  /** Service write (s1); exclusive with `auth`. */
+  service?: InternalService
 }
 
 async function send<T>(request: SendRequest<T>, deps: BackendClientDeps): Promise<BackendResponse<T>> {
@@ -212,7 +257,23 @@ async function send<T>(request: SendRequest<T>, deps: BackendClientDeps): Promis
   }
 
   const headers: Record<string, string> = { accept: "application/json", [REQUEST_ID_HEADER]: requestId }
-  if (request.auth) {
+  if (request.service) {
+    try {
+      const secret = readInternalAuthSecret(deps.env)
+      headers[INTERNAL_AUTH_HEADER] = signServiceAssertion({
+        service: request.service,
+        requestId,
+        method: request.method,
+        path: request.path,
+        body: request.body!,
+        secret,
+      })
+    } catch (error) {
+      if (!(error instanceof InternalAuthConfigError)) throw error
+      logEvent("error", "BACKEND_NOT_CONFIGURED", { ...base, errorCode: "INTERNAL_AUTH_NOT_CONFIGURED" })
+      throw new BackendClientError("not_configured")
+    }
+  } else if (request.auth) {
     try {
       const secret = readInternalAuthSecret(deps.env)
       const claims = {
