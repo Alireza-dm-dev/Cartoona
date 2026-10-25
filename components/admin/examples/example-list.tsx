@@ -61,6 +61,8 @@ export function ExampleList({ initialExamples }: ExampleListProps) {
     try {
       const res = await fetch(`/api/admin/examples/${example.id}`, {
         method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
       })
       if (!res.ok) throw new Error()
       setExamples((prev) => prev.filter((e) => e.id !== example.id))

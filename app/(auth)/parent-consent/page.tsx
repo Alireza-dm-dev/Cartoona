@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { Card } from "@/components/ui/card";
 import { loadParentConsent } from "@/lib/parent/consent/backend-consent";
+import { gateParentPage } from "@/lib/auth/page-gates";
 import ParentConsentForm from "./parent-consent-form";
 import AccountSetupRetry from "../account-setup-retry";
 import { ACCOUNT_SETUP_INCOMPLETE } from "@/lib/parent/account-setup/messages";
@@ -8,8 +9,8 @@ import { ACCOUNT_SETUP_INCOMPLETE } from "@/lib/parent/account-setup/messages";
 /**
  * /parent-consent (V0.1.48): consent is read from PostgreSQL (session verified
  * by the provider -> v2 assertion -> Fastify -> PostgreSQL), never from
- * Supabase. Middleware still runs first (signed in, role, admins -> /admin,
- * 30-day lifetime).
+ * Supabase. The Edge middleware only checks that a session exists (V0.1.53);
+ * the role / 30-day gate is gateParentPage() above.
  *
  *   granted       the form component continues at once, to the same place a
  *                 successful submit goes (a pending draft -> /complete-request,
@@ -48,6 +49,17 @@ function SetupIncomplete() {
 }
 
 export default async function ParentConsentPage() {
+  // V0.1.53: the Edge middleware no longer reads a role. Admins go to /admin and
+  // an expired session to /login from PostgreSQL's role; an unlinked identity
+  // stays here (this page runs the account bootstrap).
+  const gate = await gateParentPage("/parent-consent", { adminTo: "/admin", allowUnlinked: true });
+  if (!gate.ok) {
+    return (
+      <Notice title="بررسی نشست">
+        بررسی نشست موقتاً ممکن نیست. لطفاً چند لحظه بعد دوباره تلاش کنید.
+      </Notice>
+    );
+  }
   const consent = await loadParentConsent();
 
   if (consent.ok) {

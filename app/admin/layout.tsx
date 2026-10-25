@@ -1,7 +1,5 @@
 import Link from "next/link"
-import { redirect } from "next/navigation"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { isAdminRole } from "@/lib/auth/admin-role"
+import { gateAdminPage } from "@/lib/auth/page-gates"
 import { ADMIN_BRAND_HREF, ADMIN_BRAND_LABEL, ADMIN_NAV_ITEMS } from "@/lib/admin/navigation/admin-nav"
 import { AppBackground } from "@/components/ui/app-background"
 
@@ -16,28 +14,17 @@ export default async function AdminLayout({
 }: {
   children: React.ReactNode
 }) {
-  const supabase = await createServerSupabaseClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) {
-    redirect("/admin-login?from=/admin")
-  }
-
-  try {
-    const { data: roleRow } = await supabase
-      .from("users")
-      .select("role")
-      .eq("id", user.id)
-      .maybeSingle()
-
-    if (!roleRow || !isAdminRole(roleRow.role)) {
-      redirect("/dashboard")
-    }
-  } catch {
-    redirect("/dashboard")
+  // Authoritative role gate (V0.1.53): verified identity -> backend -> PostgreSQL
+  // role. No Supabase table is read; the Edge middleware only checks that a
+  // session exists.
+  const gate = await gateAdminPage("/admin")
+  if (!gate.ok) {
+    return (
+      <div role="alert" className="mx-auto max-w-[560px] py-12 text-center">
+        <p className="mb-4 text-text-dark/80">بررسی دسترسی موقتاً ممکن نیست. لطفاً چند لحظه بعد دوباره تلاش کنید.</p>
+        <a href="/admin" className="font-semibold text-candy-pink">تلاش دوباره</a>
+      </div>
+    )
   }
 
   return (

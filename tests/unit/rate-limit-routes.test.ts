@@ -291,7 +291,7 @@ describe("wiring: every protected route limits after identity and before expensi
     ["app/api/candy-purchases/[id]/coupon/route.ts", /verifyParentCaller\(\)/, [/applyCoupon\(/]],
     ["app/api/candy-purchases/[id]/pay/route.ts", /verifyParentCaller\(\)/, [/startPayment\(/]],
     ["app/api/candy-purchases/route.ts", /verifyParentCaller\(\)/, [/createPurchase\(/]],
-    ["app/api/parent/password/route.ts", /auth\.getUser\(\)/, [/updateUser|updateUserById|\.auth\.admin/]],
+    ["app/api/parent/password/route.ts", /resolveCallerRole\(\)/, [/updateUser|updateUserById|\.auth\.admin/]],
     ["app/api/parent/orders/[orderId]/final-media/route.ts", /verifyParentCaller\(\)/, [/signFinalDeliverable\(/, /recordFinalMediaAccess\(/]],
   ]
   it.each(cases)("%s", (file, identity, expensive) => {

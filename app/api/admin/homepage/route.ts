@@ -1,11 +1,13 @@
 import {
+  adminHomepageContentFromData,
   homepageJson,
   homepageJsonError,
   putBodyErrorResponse,
-  queryAdminHomepageContent,
   requireAdminHomepageAuth,
-  updateHomepageViaTrustedRpc,
+  updateHomepageViaBackend,
 } from "@/lib/admin/homepage/service";
+import { fetchHomepageData } from "@/lib/homepage/backend-homepage";
+import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf";
 import { parseAdminHomepagePutBody } from "@/lib/admin/homepage/put-validation";
 import type { AdminHomepageConflict } from "@/lib/admin/homepage/types";
 
@@ -25,7 +27,7 @@ export async function GET() {
   const auth = await requireAdminHomepageAuth();
   if (!auth.ok) return auth.response;
 
-  const result = await queryAdminHomepageContent(auth.supabase);
+  const result = adminHomepageContentFromData(await fetchHomepageData());
   return homepageJson(result);
 }
 
@@ -37,13 +39,11 @@ export async function GET() {
  * server snapshot on revision conflict.
  */
 export async function PUT(request: Request) {
+  const csrf = rejectUnsafeBrowserWrite(request);
+  if (csrf) return csrf;
+
   const auth = await requireAdminHomepageAuth();
   if (!auth.ok) return auth.response;
-
-  const contentType = request.headers.get("content-type") || "";
-  if (!contentType.startsWith("application/json")) {
-    return homepageJsonError("فرمت درخواست باید JSON باشد.", 415);
-  }
 
   const contentLength = request.headers.get("content-length");
   if (contentLength !== null) {
@@ -74,8 +74,8 @@ export async function PUT(request: Request) {
     return homepageJsonError("نسخه مورد انتظار نامعتبر است. صفحه را دوباره بارگذاری کنید.", 400);
   }
 
-  const result = await updateHomepageViaTrustedRpc(
-    auth.adminUserId,
+  const result = await updateHomepageViaBackend(
+    auth.context,
     parsed.content,
     parsed.expectedRevision,
   );
@@ -83,7 +83,7 @@ export async function PUT(request: Request) {
   if (!result.ok) {
     if (result.code === "HOMEPAGE_CONFLICT") {
       // Re-read the current snapshot so the editor can reload-on-conflict.
-      const current = await queryAdminHomepageContent(auth.supabase);
+      const current = adminHomepageContentFromData(await fetchHomepageData());
       const conflict: AdminHomepageConflict = {
         error: result.message,
         code: "HOMEPAGE_CONFLICT",

@@ -224,55 +224,14 @@ describe("middleware", () => {
     expect(res.headers.get("location")).toBeNull()
   })
 
-  test("expired -> signOut + login redirect with session_expired (existing UX)", async () => {
+  test("V0.1.53: the middleware no longer reads the session lifetime or a role - those are the page gates' (backend) job", async () => {
     const c = fakeSupabase({ sessions: ["expired"] })
     const { middleware } = await import("@/middleware")
     const res = await middleware(req("/dashboard/orders"))
-    expect(res.status).toBe(307)
-    const loc = new URL(res.headers.get("location")!)
-    expect(loc.pathname).toBe("/login")
-    expect(loc.searchParams.get("reason")).toBe("session_expired")
-    expect(c.auth.signOut).toHaveBeenCalledWith({ scope: "local" })
-  })
-
-  test("missing_session -> login redirect (unauthenticated behaviour kept)", async () => {
-    const c = fakeSupabase({ sessions: ["missing"] })
-    const { middleware } = await import("@/middleware")
-    const res = await middleware(req("/dashboard"))
-    expect(res.status).toBe(307)
-    expect(new URL(res.headers.get("location")!).pathname).toBe("/login")
-    expect(c.auth.signOut).toHaveBeenCalledTimes(1)
-  })
-
-  test("lookup_failed -> 503, signOut NOT called, no content, no redirect, no cookie clearing", async () => {
-    const c = fakeSupabase({ sessions: ["transient"] })
-    const { middleware } = await import("@/middleware")
-    const res = await middleware(req("/dashboard/orders"))
-    expect(res.status).toBe(503)
-    expect(res.headers.get("location")).toBeNull() // no redirect, so no loop
-    expect(res.headers.get("x-middleware-next")).toBeNull() // request is NOT passed through
-    expect(res.headers.get("Retry-After")).toBeTruthy()
+    expect(res.status).toBe(200) // a session exists; the 30-day decision is made by gateParentPage() against PostgreSQL
+    expect(c.auth.getSession).not.toHaveBeenCalled()
     expect(c.auth.signOut).not.toHaveBeenCalled()
-    expect(res.cookies.getAll().filter((x) => x.value === "" || x.maxAge === 0)).toHaveLength(0)
-    expect(await res.text()).not.toMatch(/fetch failed|rpc/i)
-  })
-
-  test("lookup_failed then healthy backend: same session passes with no re-login", async () => {
-    const c = fakeSupabase({ sessions: ["transient", "valid"] })
-    const { middleware } = await import("@/middleware")
-    expect((await middleware(req("/dashboard/orders"))).status).toBe(503)
-    const retry = await middleware(req("/dashboard/orders")) // identical cookie
-    expect(retry.status).toBe(200)
-    expect(retry.headers.get("location")).toBeNull()
-    expect(c.auth.signOut).not.toHaveBeenCalled()
-  })
-
-  test("lookup_failed also protects /complete-request", async () => {
-    const c = fakeSupabase({ sessions: ["transient"] })
-    const { middleware } = await import("@/middleware")
-    const res = await middleware(req("/complete-request"))
-    expect(res.status).toBe(503)
-    expect(c.auth.signOut).not.toHaveBeenCalled()
+    expect(c.from).not.toHaveBeenCalled()
   })
 
   test("definite unauthenticated (no user) -> login redirect, not 503", async () => {
@@ -300,12 +259,12 @@ describe("middleware", () => {
     expect(c.auth.signOut).not.toHaveBeenCalled()
   })
 
-  test("admin route unaffected: no parent lifetime check, admin passes", async () => {
-    const c = fakeSupabase({ role: "admin", sessions: ["transient"] })
+  test("admin route: a signed-in caller passes the Edge with no lookup (the layout gate decides the role)", async () => {
+    const c = fakeSupabase({ role: "parent", sessions: ["transient"] })
     const { middleware } = await import("@/middleware")
     const res = await middleware(req("/admin/requests"))
     expect(res.status).toBe(200)
-    expect(c.rpc).not.toHaveBeenCalled()
+    expect(c.from).not.toHaveBeenCalled()
     expect(c.auth.getSession).not.toHaveBeenCalled()
     expect(c.auth.signOut).not.toHaveBeenCalled()
   })

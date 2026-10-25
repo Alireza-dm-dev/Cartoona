@@ -424,7 +424,19 @@ to the trust model; it reuses it:
   carries a file (same Origin and Sec-Fetch-Site rules).
 - cross-parent: a key, order id or file path belonging to another parent
   resolves to nothing (`found: false`, `400` for a foreign folder); keys are
-  unique per `(parent_id, submission_key)`, so two parents can use the same key.
+  unique per `(parent_id, submission_key)`, so two parents can use the same key.## Role gates after V0.1.53 (no Supabase `users` read)
+
+Supabase Auth proves WHO. The ROLE is PostgreSQL's, resolved by `lib/auth/backend-role.ts`
+(verified identity -> v2 assertion -> `GET /v1/auth/me`). The Edge middleware is authentication-only
+(no role, no table, no lifetime: it has neither `node:crypto` nor the internal secret). The
+authoritative gates are server-side and run before any privileged markup or data exists:
+`gateAdminPage()` (admin layout), `gateParentPage()` (dashboard layout, /complete-request,
+/parent-consent), and every admin API route is refused by the backend (403). Deleted -> denied;
+unlinked -> the account-bootstrap page; expired / `sessions_not_before` -> the session is ended and sent to
+login; backend or provider outage -> a retry message (never access, never a sign-out). The dev parent-auth
+route resolves the role the same way for the session it creates. See ROUTE_CUTOVER "V0.1.53".
+
+
 ## Admin and media authorization (V0.1.52)
 
 - **Who is an admin** is decided in one place per layer: the backend
@@ -434,7 +446,7 @@ to the trust model; it reuses it:
   `users.role` for them, and sends no actor id: the acting admin is the subject
   of the v3 assertion. A parent session therefore gets `403` on every admin
   route; an `X-Role`/`X-User-Id` header is not read anywhere. The Edge middleware and admin
-  layout role gate (a Supabase `users.role` read) remains as a *navigation* gate only.
+  layout role gates no longer read Supabase (V0.1.53): see below.
 - **Admin writes** carry v3 (body digest + single-use nonce), the shared CSRF
   guard first (JSON, or multipart for the upload), and are bound to method, path
   and the exact body bytes. A read assertion cannot be used as a write; a write

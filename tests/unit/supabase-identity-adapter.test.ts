@@ -8,7 +8,6 @@ import { createServerClient } from "@supabase/ssr"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { AUTH_VERIFY_DEADLINE_MS, verifySupabaseIdentity } from "@/lib/auth/supabase-identity-adapter"
 import { getPublicHeaderAccount, PUBLIC_HEADER_AUTH_DEADLINE_MS } from "@/lib/auth/public-header-account"
-import { disablePostgrestRetries } from "@/lib/supabase/postgrest-retry"
 import { supabaseTimeoutFetch } from "@/lib/supabase/timeout-fetch"
 import { cookieJar, sessionCookie, startStubAuth, type StubAuth } from "../helpers/stub-supabase-auth"
 import { accessToken, DAY_MS } from "../helpers/supabase-jwt"
@@ -30,15 +29,13 @@ afterEach(async () => {
 
 type Jar = ReturnType<typeof cookieJar>
 
-/** The production client shape (createServerClient + disabled PostgREST retries) over `url` and a test jar. */
+/** The production client shape (createServerClient) over `url` and a test jar. */
 function clientFactory(url: string, jar: Jar) {
   return async (fetchImpl: typeof fetch) =>
-    disablePostgrestRetries(
-      createServerClient(url, "anon-key", {
-        global: { fetch: fetchImpl },
-        cookies: { getAll: jar.getAll, setAll: jar.setAll },
-      }),
-    ) as unknown as SupabaseClient
+    createServerClient(url, "anon-key", {
+      global: { fetch: fetchImpl },
+      cookies: { getAll: jar.getAll, setAll: jar.setAll },
+    }) as unknown as SupabaseClient
 }
 
 async function closedPortUrl(): Promise<string> {

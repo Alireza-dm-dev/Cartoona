@@ -325,6 +325,24 @@ trusted function. Function refusals answer `{ error: <token> }` with the HTTP
 status of `mapFulfilmentRpcError`; a stale-token retry of a committed transition
 answers 200 `replayed: true`. Details: ROUTE_CUTOVER "V0.1.52".
 
+## Referrals, homepage CMS, examples CMS (V0.1.53)
+
+| Route | Auth |
+|---|---|
+| `GET /v1/parent/referrals` | v2 parent |
+| `POST /v1/parent/referrals/bind` `{code}` | v3 parent |
+| `GET /v1/admin/referrals?search&page&pageSize` | v2 admin or super_admin |
+| `PATCH /v1/admin/referrals/settings` `{isEnabled, rewardBasisPoints, expectedUpdatedAt}` | v3 admin or super_admin |
+| `GET /v1/public/homepage`, `GET /v1/public/examples` | **none** (public content: object keys and layout, nothing private) |
+| `GET /v1/admin/cms/gate` | v2 admin (asked before any CMS byte is stored; writes nothing) |
+| `PUT /v1/admin/homepage`, `POST /v1/admin/homepage/media`, `DELETE /v1/admin/homepage/media` `{slot}`, `PUT /v1/admin/homepage/hero-layout` | v3 admin or super_admin |
+| `GET /v1/admin/examples`, `/:id`; `POST /v1/admin/examples`; `PATCH /:id`; `PUT /:id/media`; `DELETE /:id` | v2 / v3 admin or super_admin |
+| `GET /v1/auth/me` | v2 (returns the role: the ONLY source of a role for Next's page gates) |
+
+Same rules as the earlier routes: the caller is the principal only, exact-key bodies with a
+`bodyLimit`, function refusals as `{ error: <token> }`, database failures 503 with a
+category-only log, `Cache-Control: no-store`. The backend holds no Storage client or credential.
+
 
 ## Local timings (informational)
 
@@ -355,6 +373,8 @@ Desktop. These are **not production estimates**.
 | `tests/unit/backend-auth-provision.test.ts` | always (fake DB) | `POST /v1/auth/provision` (V0.1.49): unlinked subject allowed, forged body/headers/query ignored or refused, tampered body, cross-path, wrong method, expired, v2-as-write, replay, deleted/admin, conflict mapping, database outages |
 | `tests/unit/order-fulfilment-cutover-db.test.ts` | opt-in `CARTOONA_PLAIN_PG=docker` | V0.1.52: privileges, parent detail/gallery/final-media ownership and signing, admin role isolation and v3 binding, the fulfilment state machine, history idempotency and races, the final-media write boundary, Storage outage, copied and PG-only orders end to end, timings |
 | `tests/unit/order-fulfilment-cutover-static.test.ts` | none | V0.1.52 guards: no Supabase business access, signing only after PostgreSQL authorization, no browser-supplied key/actor/role, CSRF and gate order, migration 0018 shape |
+| `tests/unit/supabase-db-removal-db.test.ts` | opt-in `CARTOONA_PLAIN_PG=docker` | V0.1.53: global privilege audit, role resolution and page gates (parent/admin/deleted/unlinked/expired/outage), referrals (binding, abuse, 14-way concurrency, settings races), homepage + examples CMS, new/copied/admin users with zero Supabase database requests, timings |
+| `tests/unit/zero-supabase-db-static.test.ts`, `referral-cms-cutover-static.test.ts`, `page-gates.test.ts`, `backend-role.test.ts` | none | V0.1.53: runtime zero-database scan (schema table names read from the migrations), Storage-only credential, route auth/CSRF/limits, gate and role-resolver behaviour |
 | `tests/unit/provisioning-db.test.ts` | opt-in `CARTOONA_PLAIN_PG=docker` | the provisioning function as the login role (created/existing/backfill/conflicts/rollback), 20-way same-subject races (SQL, Fastify, Next), privileges, copied-vs-provisioned row shape, new-user end to end through Next, partial failures, timings |
 
 ## Before the first authenticated route cuts over

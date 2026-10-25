@@ -217,7 +217,7 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
         DATABASE_URL: `postgresql://cartoona@postgres:5432/${DB}`,
       },
     }))
-    expect(stdout).toMatch(/done - 18 applied/)
+    expect(stdout).toMatch(/done - 19 applied/)
 
     // The Supabase reference: real historical chain over the stub.
     await psql("", { db: REF, file: path.join(root, "tests/helpers/supabase-stub.sql") })
@@ -385,7 +385,8 @@ describe.skipIf(!enabled)("plain PostgreSQL baseline (real SQL, local Docker Pos
         // provision_supabase_parent_identity: target-only account provisioning (V0.1.49, 0015).
         // confirm/fail_payment_attempt_trusted, create_candy_purchase_trusted: target-only purchase/payment functions (V0.1.51, 0017).
         // record_final_media_access_audit_trusted: target-only audit write that replaced an admin-client INSERT (V0.1.52, 0018).
-        [...Object.values(renamed), ...modified, "append_only_guard", "confirm_payment_attempt_trusted", "consume_internal_write_nonce", "create_candy_purchase_trusted", "fail_payment_attempt_trusted", "provision_supabase_parent_identity", "record_final_media_access_audit_trusted", "record_parent_consent_trusted"].sort(),
+        // create/update/replace_media/delete_example_trusted: target-only examples CMS writes that replaced direct RLS writes (V0.1.53, 0019).
+        [...Object.values(renamed), ...modified, "append_only_guard", "confirm_payment_attempt_trusted", "consume_internal_write_nonce", "create_candy_purchase_trusted", "create_example_trusted", "delete_example_trusted", "fail_payment_attempt_trusted", "provision_supabase_parent_identity", "record_final_media_access_audit_trusted", "record_parent_consent_trusted", "replace_example_media_trusted", "update_example_trusted"].sort(),
       )
       // Every other function body is byte-identical (same md5 of prosrc).
       const unchanged = ref.filter((r) => !d.onlyInSupabase.includes(r))

@@ -39,7 +39,7 @@ import { DAY_MS } from "../helpers/supabase-jwt"
  * V0.1.52 order detail / gallery / final media / admin fulfilment cutover on
  * REAL local services (opt-in: CARTOONA_PLAIN_PG=docker):
  *
- *   Supabase-shaped source -> V0.1.44 copy -> plain PostgreSQL 17 (0001-0018)
+ *   Supabase-shaped source -> V0.1.44 copy -> plain PostgreSQL 17 (0001-0019)
  *   stub Supabase Auth + in-memory Storage (real @supabase/ssr, supabase-js)
  *   -> Next route handlers / loaders -> Fastify (listening, RESTRICTED login
  *   role) -> SELECTs + the existing trusted fulfilment functions.

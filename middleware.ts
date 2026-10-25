@@ -2,10 +2,6 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import { isAuthRetryableFetchError, type UserResponse } from '@supabase/supabase-js'
 import { getSupabaseEnv } from './lib/supabase/env'
-import { disablePostgrestRetries } from './lib/supabase/postgrest-retry'
-import { isAdminRole } from './lib/auth/admin-role'
-import { isParentRole } from './lib/auth/parent-access'
-import { checkParentSessionLifetime } from './lib/auth/parent-session-lifetime'
 import { logEvent } from './lib/observability/logger'
 import { REQUEST_ID_HEADER, resolveRequestId } from './lib/observability/request-id'
 import { categorizeError } from './lib/observability/errors'
@@ -18,7 +14,7 @@ import { createAuthDeadlineFetch, withDeadline } from './lib/auth/auth-deadline'
  * ~26-30 s before its 503. Now every Auth call of this request (verification
  * and any refresh) shares one 5 s budget, and nothing is sent after it.
  * Past the deadline the request is a transient auth failure: the same
- * retryable 503, never a sign-out. PostgREST reads keep their own bound.
+ * retryable 503, never a sign-out. (No PostgREST read is made here any more.)
  *
  * Why 5 s and not lower: a refresh that completes after we stopped waiting
  * cannot write its rotated cookies into this response. Supabase's
@@ -78,7 +74,7 @@ export async function middleware(request: NextRequest) {
 
   try {
     const env = getSupabaseEnv()
-    supabase = disablePostgrestRetries(createServerClient(
+    supabase = createServerClient(
       env.NEXT_PUBLIC_SUPABASE_URL,
       env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
       {
@@ -98,7 +94,7 @@ export async function middleware(request: NextRequest) {
           },
         },
       },
-    ))
+    )
 
     const {
       data: { user: verifiedUser },
@@ -139,145 +135,35 @@ export async function middleware(request: NextRequest) {
   const isParentProtectedPage =
     isDashboardPath || isCompleteRequestPath || isParentConsentPath
 
-  // ── Admin block (unchanged) ─────────────────────────────────────────────
+  // V0.1.53: AUTHENTICATION-ONLY routing. This Edge runtime reads no role and no
+  // database: a Supabase `users.role` read used to live here. Who may see what
+  // is decided by the server pages / routes themselves, from the role
+  // PostgreSQL holds (lib/auth/page-gates.ts -> backend GET /v1/auth/me, and the
+  // backend's own role checks on every data route), before any privileged
+  // markup or data exists. The 30-day session lifetime and sessions_not_before
+  // are enforced there too (the backend applies them to every assertion).
+  // The Edge cannot do it: no node:crypto, no internal secret.
   if (isAdminPath) {
     if (!user && authTransientFailure) {
       return sessionCheckUnavailable(supabaseResponse, requestId)
     }
-
     if (!user) {
       const loginUrl = new URL('/admin-login', request.url)
       loginUrl.searchParams.set('from', pathname + search)
       return redirectCookies(loginUrl, supabaseResponse)
     }
-
-    if (!supabase) {
-      return redirectCookies(new URL('/dashboard', request.url), supabaseResponse)
-    }
-
-    try {
-      const { data: roleRow, error } = await supabase
-        .from('users')
-        .select('role')
-        .eq('id', user.id)
-        .maybeSingle()
-
-      if (error || !roleRow || !isAdminRole(roleRow.role)) {
-        return redirectCookies(new URL('/dashboard', request.url), supabaseResponse)
-      }
-    } catch {
-      return redirectCookies(new URL('/dashboard', request.url), supabaseResponse)
-    }
-  }
-
-  // ── Parent-protected pages ──────────────────────────────────────────────
-  // Covers /dashboard, /dashboard/*, /complete-request, /parent-consent
-
-  async function redirectExpiredParentSession(): Promise<NextResponse> {
-    try {
-      await supabase!.auth.signOut({ scope: "local" })
-    } catch {
-      // Fail closed — continue redirecting
-    }
-    logEvent('info', 'SESSION_EXPIRED', {
-      requestId,
-      method: request.method,
-      operation: 'middleware',
-      subsystem: 'auth',
-    })
-    const loginUrl = new URL('/login', request.url)
-    loginUrl.searchParams.set('reason', 'session_expired')
-    loginUrl.searchParams.set('from', pathname)
-    return redirectCookies(loginUrl, supabaseResponse)
+    return supabaseResponse
   }
 
   if (isParentProtectedPage) {
-    // 1. Authentication check
     if (!user && authTransientFailure) {
       return sessionCheckUnavailable(supabaseResponse, requestId)
     }
-
     if (!user) {
       const loginUrl = new URL('/login', request.url)
       loginUrl.searchParams.set('from', pathname + search)
       return redirectCookies(loginUrl, supabaseResponse)
     }
-
-    if (!supabase) {
-      const loginUrl = new URL('/login', request.url)
-      loginUrl.searchParams.set('from', pathname + search)
-      return redirectCookies(loginUrl, supabaseResponse)
-    }
-
-    // 2. Role lookup
-    let roleRow: { role: string } | null = null
-    try {
-      const { data: row, error: roleError } = await supabase
-        .from('users')
-        .select('role')
-        .eq('id', user.id)
-        .maybeSingle()
-
-      if (roleError || !row) {
-        const loginUrl = new URL('/login', request.url)
-        loginUrl.searchParams.set('from', pathname + search)
-        return redirectCookies(loginUrl, supabaseResponse)
-      }
-      roleRow = row
-    } catch {
-      const loginUrl = new URL('/login', request.url)
-      loginUrl.searchParams.set('from', pathname + search)
-      return redirectCookies(loginUrl, supabaseResponse)
-    }
-
-    if (!roleRow) {
-      const loginUrl = new URL('/login', request.url)
-      loginUrl.searchParams.set('from', pathname + search)
-      return redirectCookies(loginUrl, supabaseResponse)
-    }
-
-    // 3. Admin / super_admin on parent pages
-    if (isAdminRole(roleRow.role)) {
-      if (isCompleteRequestPath || isParentConsentPath) {
-        return redirectCookies(new URL('/admin', request.url), supabaseResponse)
-      }
-      // /dashboard allows admin through (existing behaviour)
-      return supabaseResponse
-    }
-
-    // 4. Non-parent, non-admin → reject
-    if (!isParentRole(roleRow.role)) {
-      const loginUrl = new URL('/login', request.url)
-      loginUrl.searchParams.set('from', pathname + search)
-      return redirectCookies(loginUrl, supabaseResponse)
-    }
-
-    // 5. Parent session lifetime check
-    const lifetime = await checkParentSessionLifetime(supabase, user.id)
-
-    if (!lifetime.valid) {
-      // A lookup that could not complete is not an expiry: fail closed with a
-      // retryable response and keep the session. Only a definite expiry /
-      // missing session signs the user out.
-      if (lifetime.reason === 'lookup_failed') {
-        logEvent('warn', 'SESSION_LOOKUP_FAILED', {
-          requestId,
-          method: request.method,
-          operation: 'middleware',
-          subsystem: 'auth',
-          errorCode: 'AUTH_UNAVAILABLE',
-          reason: lifetime.reason,
-        })
-        return sessionCheckUnavailable(supabaseResponse, requestId)
-      }
-      return redirectExpiredParentSession()
-    }
-
-    // 6. Allow. Consent is NOT checked here (V0.1.48): it lives in PostgreSQL
-    //    and is read through the backend with a signed assertion (node:crypto,
-    //    the internal secret); this middleware runs in the Edge runtime and
-    //    must hold neither. The /complete-request page (Node runtime) is the
-    //    gate, as it already was in addition to the old check here.
     return supabaseResponse
   }
 

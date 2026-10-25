@@ -119,8 +119,8 @@ describe("Supabase Auth remains the identity provider", () => {
     expect(code("app/(auth)/signup/page.tsx")).toMatch(/supabase\.auth\.signInWithOtp\(/)
     expect(code("app/(auth)/signup/page.tsx")).toMatch(/supabase\.auth\.verifyOtp\(/)
     expect(code("app/(auth)/login/page.tsx")).toMatch(/supabase\.auth\.signInWithPassword\(/)
-    // The Supabase-side profile step of signup is unchanged (request/purchase writes still need it).
-    expect(code("app/api/parent/complete-signup/route.ts")).toMatch(/ensureParentProfile\(supabase,/)
+    // V0.1.53: the Supabase-side profile step of signup is GONE; only the PostgreSQL bootstrap remains.
+    expect(code("app/(auth)/signup/page.tsx")).toMatch(/ensureParentAccountSetup\(\)/)
   })
 
   it("every successful sign-in and signup runs the bootstrap before continuing", () => {
@@ -167,7 +167,9 @@ describe("legacy browser writes use the shared CSRF guard (V0.1.49)", () => {
   it.each(LEGACY)("%s: rejectUnsafeBrowserWrite first, no ad-hoc Origin logic left", (f) => {
     const src = code(f)
     expect(src).toMatch(/const rejected = rejectUnsafeBrowserWrite\(request\)\s+if \(rejected\) return rejected/)
-    expect(src.indexOf("rejectUnsafeBrowserWrite(request)")).toBeLessThan(src.indexOf("createServerSupabaseClient()"))
+    // V0.1.53: CSRF precedes every session / role / backend step.
+    const firstWork = Math.min(...["createServerSupabaseClient()", "verifiedCaller()", "resolveCallerRole()"].map((t) => src.indexOf(t)).filter((i) => i >= 0))
+    expect(src.indexOf("rejectUnsafeBrowserWrite(request)")).toBeLessThan(firstWork)
     expect(src).not.toMatch(/validateOrigin|isLocalhostOrigin|getAllowedOrigins|NEXT_PUBLIC_SITE_URL|headers\.get\("origin"\)/)
   })
 
@@ -175,9 +177,13 @@ describe("legacy browser writes use the shared CSRF guard (V0.1.49)", () => {
     for (const f of walk("app/api")) expect(code(f), f).not.toMatch(/headers\.get\(["']origin["']\)/i)
   })
 
-  it("referral writes stay on Supabase (their business logic did not move)", () => {
-    expect(code("app/api/referrals/bind/route.ts")).toMatch(/\.rpc\("bind_current_parent_referral_code"/)
-    for (const f of LEGACY) expect(code(f), f).not.toMatch(/@\/lib\/backend|backend-caller/)
+  it("V0.1.53: referral writes are PostgreSQL through the backend (the browser guard is unchanged); the password stays Supabase Auth only", () => {
+    expect(code("app/api/referrals/bind/route.ts")).toMatch(/bindReferralCode\(/)
+    expect(code("app/api/referrals/bind/route.ts")).not.toMatch(/\.rpc\(/)
+    expect(code("app/api/admin/referrals/settings/route.ts")).toMatch(/updateReferralSettings\(/)
+    // the password mutation is Supabase Auth; no password reaches the backend
+    expect(code("app/api/parent/password/route.ts")).toMatch(/supabase\.auth\.updateUser\(/)
+    expect(code("app/api/parent/password/route.ts")).not.toMatch(/callWrite|backendWriteJson|callGet\(/)
   })
 })
 

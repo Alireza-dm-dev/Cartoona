@@ -6,6 +6,7 @@ import {
   replaceHomepageMedia,
   requireAdminHomepageAuth,
 } from "@/lib/admin/homepage/media-service";
+import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -29,6 +30,9 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ slot: string }> },
 ) {
+  const csrf = rejectUnsafeBrowserWrite(request, process.env, "multipart");
+  if (csrf) return csrf;
+
   const { slot: rawSlot } = await params;
   const slot = checkSlot(decodeURIComponent(rawSlot));
   if (!slot) {
@@ -88,7 +92,7 @@ export async function POST(
   }
 
   const result = await replaceHomepageMedia({
-    adminUserId: auth.adminUserId,
+    context: auth.context,
     slot,
     fileBytes: bytes,
     fileName: file.name,
@@ -123,9 +127,12 @@ export async function POST(
  * committed local assets until Phase 4.
  */
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ slot: string }> },
 ) {
+  const csrf = rejectUnsafeBrowserWrite(request);
+  if (csrf) return csrf;
+
   const { slot: rawSlot } = await params;
   const slot = checkSlot(decodeURIComponent(rawSlot));
   if (!slot) {
@@ -135,7 +142,7 @@ export async function DELETE(
   const auth = await requireAdminHomepageAuth();
   if (!auth.ok) return auth.response;
 
-  const result = await deleteHomepageMedia(auth.adminUserId, slot);
+  const result = await deleteHomepageMedia(auth.context, slot);
   if (!result.ok) {
     return mediaJsonError(result.message, result.status);
   }

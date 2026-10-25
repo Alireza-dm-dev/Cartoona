@@ -50,8 +50,8 @@ describe("19/20. no Supabase business read or write remains in the migrated surf
 
   it("the service credential is used for Storage bytes only on these paths (one module), never for a table", () => {
     const users = [...walk("app"), ...walk("lib"), ...walk("components")].filter((f) => /createAdminSupabaseClient/.test(code(f)) && !f.startsWith("lib/supabase/"))
-    // Remaining, documented non-order users: the dev parent-auth route and the homepage CMS.
-    expect(users.sort()).toEqual(["app/api/dev/parent-auth/route.ts", "lib/admin/homepage/media-service.ts", "lib/admin/homepage/service.ts", "lib/storage/final-deliverables.ts"])
+    // V0.1.53: the three Storage modules only (the dev route and the homepage CMS no longer use it).
+    expect(users.sort()).toEqual(["lib/storage/example-media.ts", "lib/storage/final-deliverables.ts", "lib/storage/homepage-media.ts"])
     const storage = code("lib/storage/final-deliverables.ts")
     expect([...storage.matchAll(/admin\.(\w+)/g)].map((m) => m[1]).every((m) => m === "storage")).toBe(true)
     expect(storage).not.toMatch(/\.rpc\(|admin\.from\(/)
@@ -147,7 +147,7 @@ describe("12/28. migration 0018 changes no state machine and pins the data copy"
     expect(sql).toMatch(/pg_catalog\.jsonb_build_object\('orderId', p_order_id\)/)
   })
 
-  it("the data-copy mapping is pinned to the 18 migrations", () => {
+  it("the data-copy mapping is pinned to the 19 migrations", () => {
     expect(read("scripts/db/data-copy/mapping.ts")).toContain('"0018_order_fulfilment_media"')
   })
 })

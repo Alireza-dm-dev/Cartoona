@@ -2,15 +2,13 @@
  * Pure homepage resolution core.
  *
  * Deliberately free of `server-only` and of Next.js request APIs so the whole
- * read/compose path is unit-testable with an injected Supabase client.
- * `lib/homepage/resolver.ts` is the thin server wrapper that supplies the real
- * client; everything that decides *what the page renders* lives here.
+ * read/compose path is unit-testable with plain data (V0.1.53: the rows come
+ * from the backend, PostgreSQL; there is no Supabase client here any more).
+ * `lib/homepage/resolver.ts` is the thin server wrapper that fetches the data;
+ * everything that decides *what the page renders* lives here.
  */
 
-import type { SupabaseClient } from "@supabase/supabase-js";
-
 import type { HomepageContent } from "@/lib/homepage/types";
-import { HOMEPAGE_SINGLETON_KEY } from "@/lib/homepage/types";
 import type { HeroTvRect } from "@/lib/homepage/hero-layout";
 import { DEFAULT_TV_RECT, validateHeroTvRect } from "@/lib/homepage/hero-layout";
 import {
@@ -24,9 +22,10 @@ import {
   type HomepageMediaSlot,
 } from "@/lib/homepage/media-slots";
 import {
-  queryAdminHomepageMedia,
+  buildMediaOverview,
   type AdminMediaOverview,
-} from "@/lib/admin/homepage/media-service";
+  type HomepageMediaWireRow,
+} from "@/lib/admin/homepage/media-overview";
 
 /** Every canonical dot-keyed slot resolves to exactly one safe URL. */
 export type ResolvedHomepageMedia = Record<HomepageMediaSlot, string>;
@@ -129,50 +128,28 @@ export function composeHeroLayout(overview: AdminMediaOverview): {
   return { heroLayout: DEFAULT_TV_RECT, source: "default" };
 }
 
-/**
- * Reads the single content row. A missing table or a missing row and a
- * transport failure are reported distinctly, so the caller can tell a fresh
- * environment from a broken one.
- */
-export async function readHomepageContentRow(supabase: SupabaseClient): Promise<{
-  row: HomepageContentRow | null;
-  readFailed: boolean;
-}> {
-  try {
-    const { data, error } = await supabase
-      .from("homepage_content")
-      .select("content_json, revision")
-      .eq("singleton_key", HOMEPAGE_SINGLETON_KEY)
-      .maybeSingle();
-
-    if (error) return { row: null, readFailed: true };
-    if (!data) return { row: null, readFailed: false };
-
-    return {
-      row: { content_json: data.content_json, revision: data.revision },
-      readFailed: false,
-    };
-  } catch {
-    // Transport-level failure only: `error` above already covers a missing table.
-    return { row: null, readFailed: true };
-  }
+/** The rows the backend returned for the public homepage (see GET /v1/public/homepage). */
+export interface HomepageSourceData {
+  content: { contentJson: unknown; revision: number } | null
+  media: HomepageMediaWireRow[]
+  heroLayout: { tvRect: unknown; revision: number } | null
 }
 
 /**
- * Resolves the full homepage from a live client. Three bounded reads:
- * `homepage_content`, `homepage_media_assets`, `homepage_hero_layout`.
- * They are independent and run concurrently, so an unreachable backend costs
- * one request timeout rather than three in a row.
- * Never throws - every failure degrades to the committed defaults.
+ * Resolves the full homepage from one backend payload. `data === null` means the
+ * backend could not answer at all: every piece degrades to the committed
+ * defaults (the same fallback as before, reported as a failed content read).
+ * Never throws.
  */
-export async function resolveHomepageWith(
-  supabase: SupabaseClient,
-): Promise<ResolvedHomepage> {
-  const [{ row, readFailed }, overview] = await Promise.all([
-    readHomepageContentRow(supabase),
-    queryAdminHomepageMedia(supabase).catch(() => EMPTY_MEDIA_OVERVIEW),
-  ]);
-  const contentResult = resolveHomepageContent({ row, readFailed });
+export function resolveHomepageFromData(
+  data: HomepageSourceData | null,
+  publicUrl: (storagePath: string) => string,
+): ResolvedHomepage {
+  const contentResult = resolveHomepageContent({
+    row: data?.content ? { content_json: data.content.contentJson, revision: data.content.revision } : null,
+    readFailed: data === null,
+  });
+  const overview = data ? buildMediaOverview(data.media, data.heroLayout, publicUrl) : EMPTY_MEDIA_OVERVIEW;
 
   const { media, mediaPerSlot } = composeMedia(overview);
   const { heroLayout, source: heroLayoutSource } = composeHeroLayout(overview);
@@ -188,3 +165,5 @@ export async function resolveHomepageWith(
     },
   };
 }
+
+export type { HomepageContentRow };

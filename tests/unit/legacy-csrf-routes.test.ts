@@ -11,7 +11,10 @@ vi.mock("@/lib/supabase/server", () => ({
     }
   },
 }))
-vi.mock("@/lib/observability/request-context", () => ({ log: () => {} }))
+vi.mock("@/lib/observability/request-context", async (orig) => ({ ...(await orig<typeof import("@/lib/observability/request-context")>()), log: () => {} }))
+// V0.1.53: the caller is verified by the shared helpers (Supabase Auth + the backend role); signed out here.
+vi.mock("@/lib/parent/backend-caller", () => ({ verifyParentCaller: async () => (supabase.created++, { ok: false, reason: "unauthenticated" }) }))
+vi.mock("@/lib/auth/backend-role", () => ({ resolveCallerRole: async () => (supabase.created++, { ok: false, reason: "unauthenticated" }) }))
 
 import { POST as passwordPOST } from "@/app/api/parent/password/route"
 import { POST as bindPOST } from "@/app/api/referrals/bind/route"
@@ -23,7 +26,7 @@ import { PATCH as settingsPATCH } from "@/app/api/admin/referrals/settings/route
  * accepted a MISSING Origin, any localhost port (also in production) and
  * whatever NEXT_PUBLIC_SITE_URL said. Their auth, role, body and business
  * logic (Supabase Auth for the password, Supabase RPC for referrals) are
- * untouched; a refused request never creates a Supabase client.
+ * untouched; a refused request never verifies a session.
  */
 
 const ORIGIN = "http://localhost:3000"

@@ -1,6 +1,6 @@
 import { HomepageAdminTabs } from "@/components/admin/homepage/homepage-admin-tabs";
-import { queryAdminHomepageContent } from "@/lib/admin/homepage/service";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { adminHomepageContentFromData } from "@/lib/admin/homepage/service";
+import { fetchHomepageData } from "@/lib/homepage/backend-homepage";
 
 /**
  * /admin/homepage — Phase 2 copy editor + Phase 3 media manager.
@@ -17,8 +17,8 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 export const dynamic = "force-dynamic";
 
 export default async function AdminHomepagePage() {
-  const supabase = await createServerSupabaseClient();
-  const initial = await queryAdminHomepageContent(supabase);
+  // Content comes from PostgreSQL through the backend (V0.1.53); the admin gate is the layout's.
+  const initial = adminHomepageContentFromData(await fetchHomepageData());
 
   return (
     <HomepageAdminTabs

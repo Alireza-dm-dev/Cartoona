@@ -41,7 +41,7 @@ import { DAY_MS } from "../helpers/supabase-jwt"
  * V0.1.51 candy purchase / payment cutover on REAL local services
  * (opt-in: CARTOONA_PLAIN_PG=docker):
  *
- *   Supabase-shaped source -> V0.1.44 copy -> plain PostgreSQL 17 (0001-0018)
+ *   Supabase-shaped source -> V0.1.44 copy -> plain PostgreSQL 17 (0001-0019)
  *   stub Supabase Auth (real @supabase/ssr) -> Next purchase/coupon/pay routes
  *   -> Fastify (listening, RESTRICTED login role) -> trusted functions;
  *   stub payment provider (signed webhooks, verify API) -> Next webhook/return
@@ -269,6 +269,11 @@ describe.skipIf(!enabled)("V0.1.51 candy purchase / payment cutover (local Docke
         // V0.1.52 (0018): fulfilment + final media + the access audit.
         "approve_final_media_trusted", "get_order_status_history_admin_trusted", "record_final_media_access_audit_trusted",
         "record_final_media_trusted", "supersede_final_media_trusted", "update_order_status_trusted",
+        // V0.1.53 (0019): referrals, homepage CMS, examples CMS.
+        "bind_parent_referral_code_trusted", "create_example_trusted", "delete_example_trusted", "delete_homepage_media_trusted",
+        "get_admin_referral_overview_trusted", "get_admin_referral_relationships_trusted", "get_parent_referral_summary_trusted",
+        "record_homepage_media_replacement_trusted", "replace_example_media_trusted", "update_admin_referral_program_settings_trusted",
+        "update_example_trusted", "update_homepage_content_trusted", "update_homepage_hero_layout_trusted",
       ].sort())
       for (const fn of ["create_candy_purchase_trusted", "confirm_payment_attempt_trusted", "fail_payment_attempt_trusted"]) {
         expect((await q(`select has_function_privilege('public', p.oid, 'execute') pub from pg_proc p where proname = $1`, [fn]))[0]).toEqual({ pub: false })

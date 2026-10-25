@@ -4,7 +4,7 @@ import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/neu-button"
 import { EmptyState } from "@/components/ui/empty-state"
 import { ExampleList } from "@/components/admin/examples/example-list"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { loadAdminExamples } from "@/lib/examples/backend-examples"
 
 // Per-request, auth-gated page: it reads the session on every request and must
 // never be prerendered. Without this, `next build` would try to render it and
@@ -13,13 +13,9 @@ import { createServerSupabaseClient } from "@/lib/supabase/server"
 export const dynamic = "force-dynamic";
 
 export default async function AdminExamplesPage() {
-  const supabase = await createServerSupabaseClient()
-
-  const { data: examples, error } = await supabase
-    .from("examples")
-    .select("*")
-    .order("sort_order", { ascending: true })
-    .order("created_at", { ascending: false })
+  // PostgreSQL through the backend (V0.1.53); the admin gate is the layout's and the backend's.
+  const examples = await loadAdminExamples()
+  const error = examples === null
 
   return (
     <div>
@@ -44,7 +40,7 @@ export default async function AdminExamplesPage() {
             </Link>
           </div>
         </Card>
-      ) : examples.length === 0 ? (
+      ) : examples!.length === 0 ? (
         <EmptyState
           title="هنوز نمونه‌ای اضافه نشده است"
           description="اولین نمونه نمایشی را برای صفحه عمومی کارتونا اضافه کنید."
@@ -55,7 +51,7 @@ export default async function AdminExamplesPage() {
           }
         />
       ) : (
-        <ExampleList initialExamples={examples} />
+        <ExampleList initialExamples={examples!} />
       )}
     </div>
   )

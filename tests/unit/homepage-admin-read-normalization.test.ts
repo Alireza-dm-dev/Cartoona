@@ -7,24 +7,29 @@
  * deadlock: only a save can add `navigation`, and the missing `navigation` is
  * what disables save.
  *
- * These tests drive the real `queryAdminHomepageContent` against a fake client,
+ * These tests drive the real `adminHomepageContentFromData` over the backend payload,
  * so they exercise the actual admin code path rather than restating it.
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { HomepageWireData } from "@/lib/homepage/backend-homepage";
 
-import { queryAdminHomepageContent } from "@/lib/admin/homepage/service";
+import { adminHomepageContentFromData } from "@/lib/admin/homepage/service";
 import { DEFAULT_HOMEPAGE_CONTENT } from "@/lib/homepage/default-content";
 
-/** Minimal client stub shaped like the one query the admin read performs. */
-function fakeClient(result: { data: unknown; error?: unknown }): SupabaseClient {
-  const chain = {
-    select: () => chain,
-    eq: () => chain,
-    maybeSingle: async () => result,
+/**
+ * V0.1.53: the admin read now starts from the backend payload (PostgreSQL), not a
+ * Supabase client. The row-shaped fixtures below are adapted to that payload;
+ * an error / unreachable backend is `null` (no answer at all).
+ */
+function fakeClient(result: { data: unknown; error?: unknown }): HomepageWireData | null {
+  if (result.error) return null;
+  const row = result.data as { content_json: unknown; revision: unknown } | null;
+  return {
+    content: row ? { contentJson: row.content_json, revision: row.revision as number } : null,
+    media: [],
+    heroLayout: null,
   };
-  return { from: () => chain } as unknown as SupabaseClient;
 }
 
 /** The production seed shape: every section except `navigation`. */
@@ -44,14 +49,14 @@ afterEach(() => {
 
 describe("admin read: row missing only the newer navigation section", () => {
   it("resolves database content instead of degrading to defaults", async () => {
-    const res = await queryAdminHomepageContent(fakeClient({ data: seededRowWithoutNavigation() }));
+    const res = await adminHomepageContentFromData(fakeClient({ data: seededRowWithoutNavigation() }));
 
     expect(res.source).toBe("database");
     expect(res.isDefault).toBe(false);
   });
 
   it("keeps the real stored revision so save stays enabled", async () => {
-    const res = await queryAdminHomepageContent(fakeClient({ data: seededRowWithoutNavigation() }));
+    const res = await adminHomepageContentFromData(fakeClient({ data: seededRowWithoutNavigation() }));
 
     // `revision: null` is what disabled save in production.
     expect(res.revision).toBe(1);
@@ -61,7 +66,7 @@ describe("admin read: row missing only the newer navigation section", () => {
   });
 
   it("supplies normalized navigation defaults", async () => {
-    const res = await queryAdminHomepageContent(fakeClient({ data: seededRowWithoutNavigation() }));
+    const res = await adminHomepageContentFromData(fakeClient({ data: seededRowWithoutNavigation() }));
 
     expect(res.content.navigation).toBeDefined();
     expect(res.content.navigation.signupLabel).toBe("شروع کنید");
@@ -76,7 +81,7 @@ describe("admin read: row missing only the newer navigation section", () => {
       eyebrow: "متن ذخیره‌شده",
     };
 
-    const res = await queryAdminHomepageContent(fakeClient({ data: row }));
+    const res = await adminHomepageContentFromData(fakeClient({ data: row }));
 
     expect(res.content.hero.eyebrow).toBe("متن ذخیره‌شده");
     expect(res.source).toBe("database");
@@ -86,14 +91,14 @@ describe("admin read: row missing only the newer navigation section", () => {
     const row = seededRowWithoutNavigation();
     const before = JSON.parse(JSON.stringify(row.content_json));
 
-    await queryAdminHomepageContent(fakeClient({ data: row }));
+    await adminHomepageContentFromData(fakeClient({ data: row }));
 
     expect(row.content_json).toEqual(before);
     expect((row.content_json as Record<string, unknown>).navigation).toBeUndefined();
   });
 
   it("logs nothing for a merely-older row", async () => {
-    await queryAdminHomepageContent(fakeClient({ data: seededRowWithoutNavigation() }));
+    await adminHomepageContentFromData(fakeClient({ data: seededRowWithoutNavigation() }));
     expect(warn).not.toHaveBeenCalled();
   });
 });
@@ -101,7 +106,7 @@ describe("admin read: row missing only the newer navigation section", () => {
 describe("admin read: normalization does not paper over real corruption", () => {
   it("still degrades when an existing section is malformed", async () => {
     const content = { ...DEFAULT_HOMEPAGE_CONTENT, pricing: "not-an-object" };
-    const res = await queryAdminHomepageContent(
+    const res = await adminHomepageContentFromData(
       fakeClient({ data: { content_json: content, revision: 4 } }),
     );
 
@@ -114,7 +119,7 @@ describe("admin read: normalization does not paper over real corruption", () => 
   it("still degrades when a required section is absent entirely", async () => {
     const content = { ...DEFAULT_HOMEPAGE_CONTENT } as Record<string, unknown>;
     delete content.hero;
-    const res = await queryAdminHomepageContent(
+    const res = await adminHomepageContentFromData(
       fakeClient({ data: { content_json: content, revision: 2 } }),
     );
 
@@ -124,7 +129,7 @@ describe("admin read: normalization does not paper over real corruption", () => 
 
   it("logs field paths only - never stored values - when content is invalid", async () => {
     const content = { ...DEFAULT_HOMEPAGE_CONTENT, pricing: "not-an-object" };
-    await queryAdminHomepageContent(fakeClient({ data: { content_json: content, revision: 4 } }));
+    await adminHomepageContentFromData(fakeClient({ data: { content_json: content, revision: 4 } }));
 
     expect(warn).toHaveBeenCalledOnce();
     const [message, detail] = warn.mock.calls[0] as [string, { fields: string[] }];
@@ -139,7 +144,7 @@ describe("admin read: normalization does not paper over real corruption", () => 
 
 describe("admin read: absent row and failed read still degrade", () => {
   it("returns defaults when the row is missing", async () => {
-    const res = await queryAdminHomepageContent(fakeClient({ data: null }));
+    const res = await adminHomepageContentFromData(fakeClient({ data: null }));
 
     expect(res.source).toBe("default");
     expect(res.isDefault).toBe(true);
@@ -148,7 +153,7 @@ describe("admin read: absent row and failed read still degrade", () => {
   });
 
   it("returns defaults when the table is absent", async () => {
-    const res = await queryAdminHomepageContent(
+    const res = await adminHomepageContentFromData(
       fakeClient({ data: null, error: { code: "42P01", message: "relation does not exist" } }),
     );
 
@@ -156,14 +161,8 @@ describe("admin read: absent row and failed read still degrade", () => {
     expect(res.revision).toBeNull();
   });
 
-  it("returns defaults when the read throws", async () => {
-    const throwing = {
-      from: () => {
-        throw new Error("transport failure");
-      },
-    } as unknown as SupabaseClient;
-
-    const res = await queryAdminHomepageContent(throwing);
+  it("returns defaults when the backend could not answer at all", async () => {
+    const res = await adminHomepageContentFromData(null);
 
     expect(res.source).toBe("default");
     expect(res.revision).toBeNull();
@@ -171,7 +170,7 @@ describe("admin read: absent row and failed read still degrade", () => {
 
   it("degrades when revision is not a number", async () => {
     const row = seededRowWithoutNavigation();
-    const res = await queryAdminHomepageContent(
+    const res = await adminHomepageContentFromData(
       fakeClient({ data: { ...row, revision: "1" } }),
     );
 

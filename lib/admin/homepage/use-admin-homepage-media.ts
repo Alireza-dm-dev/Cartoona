@@ -77,6 +77,8 @@ export function useAdminHomepageMedia() {
     try {
       const res = await fetch(`/api/admin/homepage/media/${encodeURIComponent(slot)}`, {
         method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
       });
       const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
       if (!res.ok) {

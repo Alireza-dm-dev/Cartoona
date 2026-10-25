@@ -24,11 +24,10 @@ function client(over: { getUser?: unknown; rpc?: unknown; getSession?: unknown }
       signOut: vi.fn(async () => ({})),
     },
     rpc: over.rpc,
-    from: () => ({
-      select: () => ({
-        eq: () => ({ maybeSingle: async () => ({ data: { role: "parent" }, error: null }) }),
-      }),
-    }),
+    // V0.1.53: the Edge middleware reads NO table (no role lookup): any query is a bug.
+    from: () => {
+      throw new Error("the middleware must not query a Supabase table")
+    },
   }
 }
 
@@ -50,18 +49,28 @@ describe("middleware with timed-out Supabase calls", () => {
     expect(c.rpc).not.toHaveBeenCalled()
   })
 
-  it("session-lifetime read timeout (refresh) -> 503, signOut NOT called", async () => {
-    const c = client({
-      getUser: async () => ({ data: { user: { id: "u1" } }, error: null }),
-      getSession: vi.fn(async () => getSessionResult("transient", "u1")),
-      rpc: vi.fn(),
-    })
+  it("V0.1.53: authenticated-only routing - a signed-in caller passes /dashboard, /admin and the parent steps WITHOUT any role lookup", async () => {
+    const c = client({ getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), rpc: vi.fn() })
     m.client = c
     const { middleware } = await import("@/middleware")
-    const res = await middleware(new NextRequest("http://x/dashboard"))
-    expect(res.status).toBe(503)
-    expect(res.headers.get("location")).toBeNull()
+    for (const path of ["/dashboard", "/dashboard/orders", "/admin", "/admin/requests", "/complete-request", "/parent-consent"]) {
+      const res = await middleware(new NextRequest(`http://x${path}`))
+      expect(res.status, path).toBe(200)
+      expect(res.headers.get("location"), path).toBeNull()
+    }
     expect(c.auth.signOut).not.toHaveBeenCalled()
+    expect(c.auth.getSession).not.toHaveBeenCalled() // the 30-day lifetime is the backend's (page gates), not the Edge's
+  })
+
+  it("signed out -> /login for parent pages and /admin-login for admin pages, with the return path", async () => {
+    m.client = client({ getUser: async () => ({ data: { user: null }, error: null }), rpc: vi.fn() })
+    const { middleware } = await import("@/middleware")
+    const parent = await middleware(new NextRequest("http://x/dashboard/orders?x=1"))
+    expect(parent.status).toBe(307)
+    expect(new URL(parent.headers.get("location")!).pathname).toBe("/login")
+    expect(new URL(parent.headers.get("location")!).searchParams.get("from")).toBe("/dashboard/orders?x=1")
+    const admin = await middleware(new NextRequest("http://x/admin/requests"))
+    expect(new URL(admin.headers.get("location")!).pathname).toBe("/admin-login")
   })
 
   it("the middleware client is built with a bounded fetch (Auth calls share the deadline; others keep their bound)", async () => {
@@ -106,12 +115,11 @@ describe("middleware session-check deadline (V0.1.42)", () => {
 })
 
 describe("middleware observability", () => {
-  it("transient failures log safe warn events and the 503 carries X-Request-Id; no cookies/tokens logged", async () => {
+  it("a transient auth failure logs a safe warn event and the 503 carries X-Request-Id; no cookies/tokens logged", async () => {
     const records: LogRecord[] = []
     const restore = setLogSink((r) => records.push(r))
     m.client = client({
-      getUser: async () => ({ data: { user: { id: "u1" } }, error: null }),
-      getSession: vi.fn(async () => getSessionResult("transient", "u1")),
+      getUser: async () => ({ data: { user: null }, error: timeoutError }),
       rpc: vi.fn(),
     })
     const { middleware } = await import("@/middleware")
@@ -121,7 +129,7 @@ describe("middleware observability", () => {
     expect(res.status).toBe(503)
     expect(res.headers.get("X-Request-Id")).toBe("edge-req-00001")
     expect(records).toHaveLength(1)
-    expect(records[0]).toMatchObject({ level: "warn", event: "SESSION_LOOKUP_FAILED", requestId: "edge-req-00001", errorCode: "AUTH_UNAVAILABLE" })
+    expect(records[0]).toMatchObject({ level: "warn", event: "AUTH_USER_LOOKUP_FAILED", requestId: "edge-req-00001", errorCode: "REQUEST_TIMEOUT" })
     expect(JSON.stringify(records)).not.toMatch(/SECRETJWT|cookie|dashboard/)
   })
 })

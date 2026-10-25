@@ -1,26 +1,30 @@
 import "server-only";
 import { NextResponse } from "next/server";
-import type { SupabaseClient } from "@supabase/supabase-js";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { createAdminSupabaseClient } from "@/lib/supabase/admin";
-import {
-  HOMEPAGE_MEDIA_SLOT_SPECS,
-  HOMEPAGE_MEDIA_SLOT_VALUES,
-  type HomepageMediaSlot,
-} from "@/lib/homepage/media-slots";
+import type { VerifiedAuthContext } from "@/lib/auth/supabase-identity-adapter";
+import { type HomepageMediaSlot } from "@/lib/homepage/media-slots";
 import { validateHeroTvRect, type HeroTvRect } from "@/lib/homepage/hero-layout";
 import {
-  HOMEPAGE_MEDIA_BUCKET,
   buildMediaStoragePath,
   decideMediaRollback,
-  isSharedBackground,
   toSafeSlotRecord,
   validateUploadCandidate,
   type MediaRowSnapshot,
   type SafeSlotRecord,
 } from "@/lib/admin/homepage/media-validation";
+import { buildMediaOverview, type AdminMediaOverview } from "@/lib/admin/homepage/media-overview";
 import { mapAdminHomepageMediaRpcError } from "@/lib/admin/homepage/media-errors";
-import { requireAdminHomepageAuth } from "@/lib/admin/homepage/service";
+import { requireAdminHomepageAuth, requireCmsAdmin } from "@/lib/admin/homepage/service";
+import {
+  fetchHomepageData,
+  recordHomepageMedia,
+  revertHomepageMedia,
+  saveHeroLayout,
+  type HomepageWireData,
+  type WriteOutcome,
+} from "@/lib/homepage/backend-homepage";
+import { homepageMediaPublicUrl, removeHomepageMedia, uploadHomepageMedia } from "@/lib/storage/homepage-media";
+
+export type { AdminMediaOverview, AdminMediaSlotView } from "@/lib/admin/homepage/media-overview";
 
 const JSON_HEADERS = {
   "Cache-Control": "no-store",
@@ -35,110 +39,33 @@ export function mediaJsonError(message: string, status: number): NextResponse {
   return NextResponse.json({ error: message }, { status, headers: JSON_HEADERS });
 }
 
-export interface AdminMediaSlotView extends SafeSlotRecord {
-  label: string;
-  geometryCoupled: boolean;
-  currentPublicPath: string;
-}
-
-export interface AdminMediaOverview {
-  slots: AdminMediaSlotView[];
-  heroLayout: { rect: HeroTvRect; revision: number } | null;
-  sharedBackground: boolean;
-}
-
-function publicPreviewUrl(supabase: SupabaseClient, storagePath: string): string {
-  const { data } = supabase.storage.from(HOMEPAGE_MEDIA_BUCKET).getPublicUrl(storagePath);
-  return data.publicUrl;
-}
-
-function parseRow(row: Record<string, unknown>): MediaRowSnapshot {
-  return {
-    slot_key: String(row.slot_key ?? ""),
-    media_type: String(row.media_type ?? ""),
-    storage_path: String(row.storage_path ?? ""),
-    mime_type: String(row.mime_type ?? ""),
-    byte_size: Number(row.byte_size ?? 0),
-    width: typeof row.width === "number" ? row.width : null,
-    height: typeof row.height === "number" ? row.height : null,
-    duration_seconds:
-      typeof row.duration_seconds === "number" || typeof row.duration_seconds === "string"
-        ? row.duration_seconds
-        : null,
-    updated_at: typeof row.updated_at === "string" ? row.updated_at : new Date(0).toISOString(),
-  };
-}
-
-async function readMediaAssetRows(supabase: SupabaseClient): Promise<Record<string, unknown>[]> {
-  try {
-    const { data } = await supabase.from("homepage_media_assets").select("*");
-    return Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-async function readHeroLayout(
-  supabase: SupabaseClient,
-): Promise<{ rect: HeroTvRect; revision: number } | null> {
-  try {
-    const { data } = await supabase
-      .from("homepage_hero_layout")
-      .select("tv_rect, revision")
-      .eq("singleton_key", "hero")
-      .maybeSingle();
-    if (data && validateHeroTvRect(data.tv_rect).length === 0 && typeof data.revision === "number") {
-      return { rect: data.tv_rect as HeroTvRect, revision: data.revision };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Reads all media rows + hero layout for the admin manager. Never throws:
- * missing tables/rows degrade to local-asset fallback views (previewUrl =
- * committed /public path, metadata nulls). No browser fallback writes.
+ * The media overview for the admin manager, built from the backend payload
+ * (V0.1.53: PostgreSQL; null = the backend could not answer). Never throws:
+ * missing rows degrade to local-asset fallback views (previewUrl = committed
+ * /public path, metadata nulls). Storage is touched only to build public URLs.
  */
-export async function queryAdminHomepageMedia(
-  supabase: SupabaseClient,
-): Promise<AdminMediaOverview> {
-  // Independent reads, issued together so a slow backend costs one timeout,
-  // not two. Each still degrades on its own.
-  const [rows, layout] = await Promise.all([
-    readMediaAssetRows(supabase),
-    readHeroLayout(supabase),
-  ]);
+export function queryAdminHomepageMedia(data: HomepageWireData | null): AdminMediaOverview {
+  return buildMediaOverview(data?.media ?? [], data?.heroLayout ?? null, homepageMediaPublicUrl);
+}
 
-  const bySlot = new Map(rows.map((r) => [String(r.slot_key), parseRow(r)]));
-  const slots: AdminMediaSlotView[] = HOMEPAGE_MEDIA_SLOT_VALUES.map((slot) => {
-    const spec = HOMEPAGE_MEDIA_SLOT_SPECS[slot];
-    const row = bySlot.get(slot);
-    const previewUrl = row ? publicPreviewUrl(supabase, row.storage_path) : spec.currentPublicPath;
-    const base: SafeSlotRecord = row
-      ? toSafeSlotRecord(row, previewUrl)
-      : {
-          slotKey: slot,
-          mediaType: spec.mediaType,
-          previewUrl,
-          mimeType: "",
-          byteSize: 0,
-          width: null,
-          height: null,
-          durationSeconds: null,
-          updatedAt: "",
-        };
-    return { ...base, label: spec.label, geometryCoupled: spec.geometryCoupled, currentPublicPath: spec.currentPublicPath };
-  });
-
+/** A write that failed for a reason other than a business refusal. */
+function failureOf(out: Exclude<WriteOutcome<unknown>, { ok: true }>): { message: string; status: number; code: string; unknown: boolean } {
+  if ("refusal" in out) {
+    const mapped = mapAdminHomepageMediaRpcError(out.refusal.token);
+    return { message: mapped.message, status: mapped.code === "HOMEPAGE_LAYOUT_CONFLICT" ? 409 : mapped.status, code: mapped.code, unknown: false };
+  }
+  const f = out.failure;
+  if (f.kind === "auth") {
+    return f.reason === "session_expired" || f.reason === "session_invalidated"
+      ? { message: "برای ادامه دوباره وارد حساب خود شوید.", status: 401, code: "UNAUTHENTICATED", unknown: false }
+      : { message: "شما مجوز انجام این عملیات را ندارید.", status: 403, code: "HOMEPAGE_FORBIDDEN", unknown: false };
+  }
   return {
-    slots,
-    heroLayout: layout,
-    sharedBackground: isSharedBackground(
-      bySlot.get("hero.background")?.storage_path ?? null,
-      bySlot.get("sections.background")?.storage_path ?? null,
-    ),
+    message: f.outcomeUnknown ? "نتیجه عملیات مشخص نیست. صفحه را دوباره بارگذاری کنید." : "عملیات رسانه انجام نشد.",
+    status: 503,
+    code: "HOMEPAGE_UNKNOWN_ERROR",
+    unknown: f.outcomeUnknown,
   };
 }
 
@@ -147,7 +74,7 @@ export type ReplaceMediaResult =
   | { ok: false; message: string; status: number; code: string };
 
 interface ReplaceMediaInput {
-  adminUserId: string;
+  context: VerifiedAuthContext;
   slot: HomepageMediaSlot;
   fileBytes: Uint8Array;
   fileName: string;
@@ -209,77 +136,60 @@ export async function replaceHomepageMedia(input: ReplaceMediaInput): Promise<Re
   void input.fileName; // original filename never influences the storage path
   const { mediaType, mime, byteSize, width, height } = checked.validated;
 
-  let admin;
-  try {
-    admin = createAdminSupabaseClient();
-  } catch {
-    return fail("عملیات رسانه انجام نشد.", 500, "HOMEPAGE_UNKNOWN_ERROR");
+  // ── admin gate BEFORE any byte is stored (backend: 403 for a non-admin) ──
+  const denied = await requireCmsAdmin(input.context);
+  if (denied) {
+    const body = (await denied.json().catch(() => ({}))) as { error?: string };
+    return fail(body.error ?? "عملیات رسانه انجام نشد.", denied.status, denied.status === 403 ? "HOMEPAGE_FORBIDDEN" : "HOMEPAGE_UNKNOWN_ERROR");
   }
 
   // ── old snapshot (for post-success cleanup only) ──
+  const before = await fetchHomepageData();
+  if (before === null) return fail("عملیات رسانه انجام نشد.", 503, "HOMEPAGE_UNKNOWN_ERROR");
   let oldPrimaryPath: string | null = null;
   let oldSectionsPath: string | null = null;
-  try {
-    const { data } = await admin.from("homepage_media_assets").select("slot_key, storage_path");
-    if (Array.isArray(data)) {
-      for (const r of data as Record<string, unknown>[]) {
-        if (r.slot_key === input.slot && typeof r.storage_path === "string") oldPrimaryPath = r.storage_path;
-        if (input.applyToSections && r.slot_key === "sections.background" && typeof r.storage_path === "string") {
-          oldSectionsPath = r.storage_path;
-        }
-      }
-    }
-  } catch {
-    return fail("عملیات رسانه انجام نشد.", 500, "HOMEPAGE_UNKNOWN_ERROR");
+  for (const r of before.media) {
+    if (r.slotKey === input.slot) oldPrimaryPath = r.storagePath;
+    if (input.applyToSections && r.slotKey === "sections.background") oldSectionsPath = r.storagePath;
   }
 
   // ── upload new object (server-generated path) ──
   const storagePath = buildMediaStoragePath(
     input.slot, mime, Date.now(), crypto.randomUUID(),
   );
-  const uploadBytes = input.fileBytes.slice();
-  const { error: uploadError } = await admin.storage
-    .from(HOMEPAGE_MEDIA_BUCKET)
-    .upload(storagePath, uploadBytes, { contentType: mime, upsert: false });
-  if (uploadError) {
+  const uploaded = await uploadHomepageMedia(storagePath, input.fileBytes.slice(), mime);
+  if (!uploaded) {
     return fail("بارگذاری فایل انجام نشد.", 500, "HOMEPAGE_UNKNOWN_ERROR");
   }
 
-  // ── ONE atomic commit ──
-  const { data: rpcData, error: rpcError } = await admin.rpc(
-    "record_homepage_media_replacement_trusted",
-    {
-      p_admin_user_id: input.adminUserId,
-      p_primary_slot: input.slot,
-      p_media_type: mediaType,
-      p_storage_path: storagePath,
-      p_mime_type: mime,
-      p_byte_size: byteSize,
-      p_width: width,
-      p_height: height,
-      p_duration_seconds: null,
-      p_hero_tv_rect: input.slot === "hero.background" ? (input.tvRect as HeroTvRect) : null,
-      p_expected_layout_revision: input.expectedLayoutRevision,
-      p_apply_to_sections: input.applyToSections,
-    },
-  );
+  // ── ONE atomic commit (PostgreSQL, through the backend) ──
+  const out = await recordHomepageMedia(input.context, {
+    slot: input.slot,
+    mediaType,
+    storagePath,
+    mimeType: mime,
+    byteSize,
+    width,
+    height,
+    tvRect: input.slot === "hero.background" ? (input.tvRect as HeroTvRect) : null,
+    expectedLayoutRevision: input.expectedLayoutRevision,
+    applyToSections: input.applyToSections,
+  });
 
-  if (rpcError || !rpcData) {
-    // DB did not commit: previous state intact — remove the orphan object.
-    for (const action of decideMediaRollback({ newObjectUploaded: true, dbCommitted: false, oldObjectSuperseded: false })) {
-      if (action === "delete-new-object") {
-        await admin.storage.from(HOMEPAGE_MEDIA_BUCKET).remove([storagePath]).catch(() => {});
+  if (!out.ok) {
+    const f = failureOf(out);
+    // A definite refusal: previous state intact - remove the orphan object.
+    // An UNKNOWN outcome keeps it: the row may have committed and be live.
+    if (!f.unknown) {
+      for (const action of decideMediaRollback({ newObjectUploaded: true, dbCommitted: false, oldObjectSuperseded: false })) {
+        if (action === "delete-new-object") await removeHomepageMedia([storagePath]);
       }
     }
-    const mapped = mapAdminHomepageMediaRpcError(rpcError?.message);
-    if (mapped.code === "HOMEPAGE_LAYOUT_CONFLICT") {
-      return fail(mapped.message, 409, mapped.code);
-    }
-    return fail(mapped.message, mapped.status, mapped.code);
+    return fail(f.message, f.status, f.code);
   }
 
   // ── post-success cleanup: superseded objects only, best-effort ──
-  const committed = rpcData as { media: MediaRowSnapshot; sections: MediaRowSnapshot | null; layout: { tv_rect: HeroTvRect; revision: number } | null };
+  const committed = out.value as { media: MediaRowSnapshot; sections: MediaRowSnapshot | null; layout: { tv_rect: HeroTvRect; revision: number } | null };
   const remove: string[] = [];
   if (oldPrimaryPath && oldPrimaryPath !== storagePath) remove.push(oldPrimaryPath);
   if (oldSectionsPath && oldSectionsPath !== storagePath && !remove.includes(oldSectionsPath)) {
@@ -289,18 +199,14 @@ export async function replaceHomepageMedia(input: ReplaceMediaInput): Promise<Re
     newObjectUploaded: true, dbCommitted: true, oldObjectSuperseded: remove.length > 0,
   })) {
     if (action === "delete-old-object" && remove.length > 0) {
-      await admin.storage.from(HOMEPAGE_MEDIA_BUCKET).remove(remove).catch(() => {});
+      await removeHomepageMedia(remove);
     }
   }
 
-  const server = await createServerSupabaseClient().catch(() => null);
-  const preview = (p: string) =>
-    server ? publicPreviewUrl(server, p) : publicPreviewUrl(admin, p);
-
   return {
     ok: true,
-    record: toSafeSlotRecord(committed.media, preview(committed.media.storage_path)),
-    sectionsRecord: committed.sections ? toSafeSlotRecord(committed.sections, preview(committed.sections.storage_path)) : null,
+    record: toSafeSlotRecord(committed.media, homepageMediaPublicUrl(committed.media.storage_path)),
+    sectionsRecord: committed.sections ? toSafeSlotRecord(committed.sections, homepageMediaPublicUrl(committed.sections.storage_path)) : null,
     layout: committed.layout ? { rect: committed.layout.tv_rect, revision: committed.layout.revision } : null,
   };
 }
@@ -310,34 +216,23 @@ export type DeleteMediaResult =
   | { ok: false; message: string; status: number };
 
 /**
- * Revert-a-slot flow (Correction 2): trusted metadata-delete RPC first, then
- * best-effort storage cleanup. Never deletes the object before metadata
- * removal succeeds. Reverting is always safe: the public homepage renders
- * committed local assets until Phase 4.
+ * Revert-a-slot flow (Correction 2): the metadata delete (PostgreSQL, through the
+ * backend) first, then best-effort storage cleanup. Never deletes the object
+ * before metadata removal succeeds. Reverting is always safe: the public
+ * homepage falls back to the committed local assets.
  */
 export async function deleteHomepageMedia(
-  adminUserId: string,
+  context: VerifiedAuthContext,
   slot: HomepageMediaSlot,
 ): Promise<DeleteMediaResult> {
-  let admin;
-  try {
-    admin = createAdminSupabaseClient();
-  } catch {
-    return { ok: false, message: "عملیات رسانه انجام نشد.", status: 500 };
+  const out = await revertHomepageMedia(context, slot);
+  if (!out.ok) {
+    const f = failureOf(out);
+    return { ok: false, message: f.message, status: f.status };
   }
-
-  const { data, error } = await admin.rpc("delete_homepage_media_trusted", {
-    p_admin_user_id: adminUserId,
-    p_slot_key: slot,
-  });
-  if (error || !data) {
-    const mapped = mapAdminHomepageMediaRpcError(error?.message);
-    return { ok: false, message: mapped.message, status: mapped.status };
-  }
-
-  const prev = data as { storage_path?: unknown };
+  const prev = out.value;
   if (typeof prev.storage_path === "string" && prev.storage_path.length > 0) {
-    await admin.storage.from(HOMEPAGE_MEDIA_BUCKET).remove([prev.storage_path]).catch(() => {});
+    await removeHomepageMedia([prev.storage_path]);
   }
   return { ok: true };
 }
@@ -346,9 +241,9 @@ export type UpdateHeroLayoutResult =
   | { ok: true; rect: HeroTvRect; revision: number }
   | { ok: false; message: string; status: number; code: string };
 
-/** Standalone calibration edit (no media change): validate → trusted RPC. */
+/** Standalone calibration edit (no media change): validate -> backend (trusted function). */
 export async function updateHeroLayout(
-  adminUserId: string,
+  context: VerifiedAuthContext,
   rect: unknown,
   expectedRevision: unknown,
 ): Promise<UpdateHeroLayoutResult> {
@@ -359,27 +254,12 @@ export async function updateHeroLayout(
     return { ok: false, message: "نسخه مورد انتظار نامعتبر است.", status: 400, code: "HOMEPAGE_LAYOUT_CONFLICT" };
   }
 
-  let admin;
-  try {
-    admin = createAdminSupabaseClient();
-  } catch {
-    return { ok: false, message: "عملیات رسانه انجام نشد.", status: 500, code: "HOMEPAGE_UNKNOWN_ERROR" };
+  const out = await saveHeroLayout(context, rect, expectedRevision);
+  if (!out.ok) {
+    const f = failureOf(out);
+    return { ok: false, message: f.message, status: f.status, code: f.code };
   }
-
-  const { data, error } = await admin.rpc("update_homepage_hero_layout_trusted", {
-    p_admin_user_id: adminUserId,
-    p_tv_rect: rect as HeroTvRect,
-    p_expected_revision: expectedRevision,
-  });
-  if (error || !data) {
-    const mapped = mapAdminHomepageMediaRpcError(error?.message);
-    if (mapped.code === "HOMEPAGE_LAYOUT_CONFLICT") {
-      return { ok: false, message: mapped.message, status: 409, code: mapped.code };
-    }
-    return { ok: false, message: mapped.message, status: mapped.status, code: mapped.code };
-  }
-  const row = data as { tv_rect: HeroTvRect; revision: number };
-  return { ok: true, rect: row.tv_rect, revision: row.revision };
+  return { ok: true, rect: out.value.tv_rect as HeroTvRect, revision: out.value.revision };
 }
 
 export { requireAdminHomepageAuth };

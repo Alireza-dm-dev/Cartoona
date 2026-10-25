@@ -52,6 +52,13 @@ const BACKEND_CLIENT_USERS = [
   "lib/admin/requests/backend-requests.ts",
   "lib/parent/backend-media.ts",
   "lib/parent/orders/backend-order-detail.ts",
+  // V0.1.53: the generic call helper's users - the role resolver, referrals, homepage and examples CMS.
+  "lib/auth/backend-role.ts",
+  "lib/admin/homepage/service.ts",
+  "lib/examples/backend-examples.ts",
+  "lib/homepage/backend-homepage.ts",
+  "lib/http/backend-route-responses.ts",
+  "lib/referrals/backend-referrals.ts",
 ].sort()
 // V0.1.48: every consent decision goes through the consent loader.
 const CONSENT_SURFACES = [
@@ -121,8 +128,9 @@ describe("scope: creation pricing, the parent orders LIST and the parent account
   it("every other route (order detail, final media, gallery, billing, writes...) never reaches the backend", () => {
     const routes = walk("app/api").filter((f) => !BACKEND_ROUTES.includes(f) && !V0152_BACKEND_SURFACES.includes(f) && f !== "app/api/health/route.ts")
     expect(routes.length).toBeGreaterThan(10)
-    // Referral and legacy-signup routes stay on Supabase (documented; V0.1.52 audit):
-    for (const r of ["app/api/referrals/route.ts", "app/api/parent/password/route.ts", "app/api/parent/complete-signup/route.ts"]) {
+    // V0.1.53: referrals and the examples/homepage CMS routes reach the backend through the shared helpers
+    // (never the client directly); the password route reaches only Supabase Auth and the role resolver.
+    for (const r of ["app/api/parent/password/route.ts"]) {
       expect(routes, r).toContain(r)
     }
     for (const route of routes) expect(read(route), route).not.toMatch(/@\/lib\/backend|BACKEND_INTERNAL_URL|backend-orders|backend-account|backend-consent|backend-caller/)
@@ -148,6 +156,11 @@ describe("scope: creation pricing, the parent orders LIST and the parent account
       "GET /v1/parent/gallery", "GET /v1/parent/gallery/:assetId", "GET /v1/parent/orders/:orderId", "GET /v1/parent/orders/:orderId/final-media",
       "PATCH /v1/admin/requests/:requestId/final-media/:assetId", "PATCH /v1/admin/requests/:requestId/status",
       "POST /v1/admin/requests/:requestId/final-media", "POST /v1/parent/orders/:orderId/final-media/access",
+      // V0.1.53: public homepage + examples, referrals, the CMS admin gate, homepage and examples admin.
+      "DELETE /v1/admin/examples/:id", "DELETE /v1/admin/homepage/media", "GET /v1/admin/cms/gate", "GET /v1/admin/examples",
+      "GET /v1/admin/examples/:id", "GET /v1/admin/referrals", "GET /v1/parent/referrals", "GET /v1/public/examples", "GET /v1/public/homepage",
+      "PATCH /v1/admin/examples/:id", "PATCH /v1/admin/referrals/settings", "POST /v1/admin/examples", "POST /v1/admin/homepage/media",
+      "POST /v1/parent/referrals/bind", "PUT /v1/admin/examples/:id/media", "PUT /v1/admin/homepage", "PUT /v1/admin/homepage/hero-layout",
       "GET /v1/auth/me", "GET /v1/candy-packages", "GET /v1/creation-pricing", "GET /v1/parent/candy-purchases",
       "GET /v1/parent/candy-purchases/:purchaseId/coupon-validation", "GET /v1/parent/orders",
       // V0.1.51 writes registered with a literal path (the others use *_PATH constants)

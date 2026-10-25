@@ -496,7 +496,8 @@ describe.skipIf(!enabled)("V0.1.48 consent cutover: copied data -> Fastify -> Ne
       expect(await json(await browserPost())).toMatchObject({ status: 401, body: { code: "PARENT_SESSION_EXPIRED" } })
       expect(await consentIn(TGT, U.e)).toBe("false|-")
       await signIn(U.e, { authenticatedAt: Date.now() - 31 * DAY_MS })
-      expect(await consentPage()).toBe("redirect:/login?reason=session_expired&from=/parent-consent")
+      // V0.1.53: the page gate (PostgreSQL role + session policy) sends an expired session to login.
+      expect(await consentPage()).toBe("redirect:/login?reason=session_expired&from=%2Fparent-consent")
     })
 
     it("invalidated session (sessions_not_before after sign-in) -> 401 PARENT_SESSION_EXPIRED + sign-out, nothing written", async () => {
@@ -527,8 +528,9 @@ describe.skipIf(!enabled)("V0.1.48 consent cutover: copied data -> Fastify -> Ne
           await signIn(U.a) // consented
           expect(await json(await browserGet())).toMatchObject({ status: 503, body: { code: "service_unavailable" } })
           expect(await json(await browserPost())).toMatchObject({ status: 503, body: { code: "consent_outcome_unknown" } })
-          expect(await consentPage()).toBe("notice:بررسی رضایت موقتاً ممکن نیست")
-          expect(await completeRequestPage()).toBe("alert:consent")
+          // V0.1.53: the page gate cannot confirm the session/role either -> the retry notice (never access, never a redirect).
+          expect(await consentPage()).toBe("notice:بررسی نشست")
+          expect(await completeRequestPage()).toBe("alert:other")
           const gate = await requestGate()
           expect([gate.status, gate.body.code]).toEqual([503, "request_unavailable"])
           // /login: unknown routes like "not granted" - to /parent-consent, which re-reads and forwards.
@@ -612,7 +614,7 @@ describe.skipIf(!enabled)("V0.1.48 consent cutover: copied data -> Fastify -> Ne
       expect(await tgt("select has_table_privilege('cartoona_app', 'public.parent_profiles', 'UPDATE')")).toBe("f")
       expect(await tgt(`select string_agg(column_name, ',' order by column_name) from information_schema.column_privileges
         where grantee = 'cartoona_app' and table_name = 'parent_profiles' and privilege_type = 'UPDATE'`)).toBe("full_name,updated_at")
-      expect(await tgt("select string_agg(version, ',' order by version) from public.schema_migrations")).toMatch(/0014_parent_consent_write,0015_supabase_parent_provisioning,0016_parent_request_privileges,0017_candy_purchase_payment,0018_order_fulfilment_media$/)
+      expect(await tgt("select string_agg(version, ',' order by version) from public.schema_migrations")).toMatch(/0014_parent_consent_write,0015_supabase_parent_provisioning,0016_parent_request_privileges,0017_candy_purchase_payment,0018_order_fulfilment_media,0019_remove_supabase_db_dependencies$/)
     })
 
     it("a raw DbError from the app role never leaks through the backend", async () => {

@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { verifySupabaseIdentity } from "@/lib/auth/supabase-identity-adapter"
 import { fetchParentConsent } from "@/lib/parent/consent/backend-consent"
 import { getSupabaseEnv } from "@/lib/supabase/env"
-import { createAdminSupabaseClient } from "@/lib/supabase/admin"
+import { resolveRoleForContext } from "@/lib/auth/backend-role"
 import {
   toCanonicalIranPhone,
   deriveDevEmail,
@@ -135,6 +135,23 @@ async function consentDestination(supabase: SupabaseClient): Promise<"/dashboard
   return consent.ok && consent.status === "granted" ? "/dashboard" : "/parent-consent"
 }
 
+/**
+ * May this freshly created session be handed to the parent login? (V0.1.53: the
+ * role comes from PostgreSQL through the backend for THIS route's own session,
+ * not from a Supabase `users` table.) A parent, or a verified identity with no
+ * Cartoona account yet (the account bootstrap provisions it right after
+ * sign-in), is allowed; an admin, a deleted account or anything the backend
+ * cannot confirm is refused (fail closed). Dev route only: it is 404 unless
+ * isDevAuthEnabled().
+ */
+async function sessionIsParentCapable(supabase: SupabaseClient): Promise<boolean> {
+  const verification = await verifySupabaseIdentity({ createClient: async () => supabase })
+  if (!verification.ok) return false
+  const resolved = await resolveRoleForContext(verification.context)
+  if (resolved.ok) return resolved.role === "parent"
+  return resolved.reason === "identity_not_linked"
+}
+
 async function createSessionViaMagicLink(
   email: string,
   env: { NEXT_PUBLIC_SUPABASE_URL: string; NEXT_PUBLIC_SUPABASE_ANON_KEY: string },
@@ -170,14 +187,7 @@ async function createSessionViaMagicLink(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
 
-  const { data: roleRow } = await supabase
-    .from("users")
-    .select("role")
-    .eq("id", user.id)
-    .maybeSingle()
-  const role = roleRow?.role
-
-  if (role !== "parent") return null
+  if (!(await sessionIsParentCapable(supabase))) return null
 
   const next = await consentDestination(supabase)
 
@@ -223,14 +233,7 @@ async function createSessionViaPassword(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
 
-  const { data: roleRow } = await supabase
-    .from("users")
-    .select("role")
-    .eq("id", user.id)
-    .maybeSingle()
-  const role = roleRow?.role
-
-  if (role !== "parent") return null
+  if (!(await sessionIsParentCapable(supabase))) return null
 
   const next = await consentDestination(supabase)
 
@@ -341,20 +344,11 @@ async function handleSignupVerifyCode(
 
   const userId = createdUser.id
 
-  const admin = createAdminSupabaseClient()
-  // full_name is omitted, not blanked: signup never asks for a name, and the
-  // column is nullable precisely so no placeholder has to be invented here.
-  // Consent columns are left to their defaults (not consented); consent is
-  // granted on /parent-consent and stored in PostgreSQL (V0.1.48).
-  const { error: profileError } = await admin.from("parent_profiles").insert({
-    user_id: userId,
-  })
-
-  if (profileError) {
-    await apiDeleteUser(userId).catch(() => {})
-    return jsonError("ثبت‌نام انجام نشد. لطفاً دوباره تلاش کنید.", 500)
-  }
-
+  // V0.1.53: NO Supabase business profile is created here (it used to insert a
+  // `parent_profiles` row). The Cartoona account - user, identity, profile,
+  // wallet, welcome credits, referral code - is provisioned in PostgreSQL by the
+  // account bootstrap right after this sign-in. Consent is granted on
+  // /parent-consent and stored in PostgreSQL.
   const sessionResponse = await createSessionViaMagicLink(devEmail, env)
   if (!sessionResponse) {
     await apiDeleteUser(userId).catch(() => {})
@@ -416,16 +410,6 @@ async function handleLoginVerifyCode(
     return jsonError("برای این شماره حسابی ثبت نشده است. لطفاً ابتدا ثبت‌نام کنید.", 404)
   }
 
-  const admin = createAdminSupabaseClient()
-  const { data: roleRow } = await admin
-    .from("users")
-    .select("role")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!roleRow || roleRow.role !== "parent") {
-    return jsonError("این حساب دسترسی والدین ندارد.", 403)
-  }
-
   const actualEmail = user.email
   if (!actualEmail || !user.email_confirmed_at) {
     return jsonError("این حساب هنوز فعال نشده است.", 403)
@@ -464,16 +448,6 @@ async function handlePasswordLogin(
   const devEmail = deriveDevEmail(phone)
   const user = await findUserByPhone(phone, devEmail)
   if (!user) {
-    return jsonError(PASSWORD_LOGIN_FAILED_MESSAGE, 401)
-  }
-
-  const admin = createAdminSupabaseClient()
-  const { data: roleRow } = await admin
-    .from("users")
-    .select("role")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!roleRow || roleRow.role !== "parent") {
     return jsonError(PASSWORD_LOGIN_FAILED_MESSAGE, 401)
   }
 

@@ -58,7 +58,7 @@ describe("database/migrations — no Supabase dependency", () => {
     // function, 0015 (V0.1.49) EXECUTE on the provisioning function, 0016 (V0.1.50) EXECUTE on the request function and SELECT on characters. They may grant to `cartoona_app` and nothing else.
     // As statements (the candy ledger has a 'grant' transaction type).
     const APP_ROLE_FILE = "0009_application_role.sql"
-    const GRANT_FILES = [APP_ROLE_FILE, "0010_identity_read_grant.sql", "0012_internal_write_nonces.sql", "0013_parent_profile_name_update_grant.sql", "0014_parent_consent_write.sql", "0015_supabase_parent_provisioning.sql", "0016_parent_request_privileges.sql", "0017_candy_purchase_payment.sql", "0018_order_fulfilment_media.sql"]
+    const GRANT_FILES = [APP_ROLE_FILE, "0010_identity_read_grant.sql", "0012_internal_write_nonces.sql", "0013_parent_profile_name_update_grant.sql", "0014_parent_consent_write.sql", "0015_supabase_parent_provisioning.sql", "0016_parent_request_privileges.sql", "0017_candy_purchase_payment.sql", "0018_order_fulfilment_media.sql", "0019_remove_supabase_db_dependencies.sql"]
     const baseline = Object.entries(sql)
       .filter(([f]) => !GRANT_FILES.includes(f))
       .map(([, s]) => s.replace(/--.*$/gm, ""))
@@ -130,6 +130,24 @@ describe("database/migrations — no Supabase dependency", () => {
     expect(fGrants).toContain("SELECT ON public.media_assets, public.video_requests, public.drawing_animation_requests TO cartoona_app")
     expect(fulfilment).not.toMatch(/\b(INSERT|UPDATE|DELETE|TRUNCATE)\b[^;]*\bON\b[^;]*\bTO\b/i)
     expect(fulfilment.match(/CREATE\s+(OR\s+REPLACE\s+)?FUNCTION/gi)).toHaveLength(1)
+
+    // 0019 (V0.1.53): EXECUTE on nine existing referral/homepage trusted functions and four NEW narrow
+    // examples functions, SELECT on the four CMS tables. No table write; every new function re-checks the admin role.
+    const cms = sql["0019_remove_supabase_db_dependencies.sql"].replace(/--.*$/gm, "")
+    const cGrants = [...cms.matchAll(/^\s*GRANT\s+([^;]+);/gim)].map((m) => m[1].replace(/\s+/g, " "))
+    expect(cGrants.filter((g) => g.startsWith("EXECUTE")).map((g) => /public\.([a-z_]+)\(/.exec(g)![1]).sort()).toEqual([
+      "bind_parent_referral_code_trusted", "create_example_trusted", "delete_example_trusted", "delete_homepage_media_trusted",
+      "get_admin_referral_overview_trusted", "get_admin_referral_relationships_trusted", "get_parent_referral_summary_trusted",
+      "record_homepage_media_replacement_trusted", "replace_example_media_trusted", "update_admin_referral_program_settings_trusted",
+      "update_example_trusted", "update_homepage_content_trusted", "update_homepage_hero_layout_trusted",
+    ])
+    expect(cGrants).toContain("SELECT ON public.homepage_content, public.homepage_media_assets, public.homepage_hero_layout, public.examples TO cartoona_app")
+    expect(cms).not.toMatch(/\b(INSERT|UPDATE|DELETE|TRUNCATE)\b[^;]*\bON\b[^;]*\bTO\b/i)
+    expect([...cms.matchAll(/CREATE\s+FUNCTION\s+([\w.]+)/g)].map((m) => m[1]).sort()).toEqual([
+      "public.create_example_trusted", "public.delete_example_trusted", "public.replace_example_media_trusted", "public.update_example_trusted",
+    ])
+    expect((cms.match(/public\.is_admin_user_id\(p_admin_user_id\)/g) ?? []).length).toBe(4)
+    for (const m of cms.matchAll(/\bGRANT\b[\s\S]*?\bTO\s+(\w+)/gi)) expect(m[1]).toBe("cartoona_app")
   })
 
   it("4. never calls auth.uid() / auth.jwt() / auth.role()", () => {

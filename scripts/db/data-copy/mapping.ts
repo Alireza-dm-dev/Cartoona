@@ -1,7 +1,7 @@
 /**
  * Canonical Supabase -> plain PostgreSQL data mapping (V0.1.44).
  *
- * The plain schema (database/migrations 0001-0018) is column-identical to the
+ * The plain schema (database/migrations 0001-0019) is column-identical to the
  * migrated Supabase `public` schema for every domain table (proven by the
  * parity suite in tests/unit/plain-postgres-db.test.ts), except:
  *   - users.sessions_not_before   target-only (V0.1.43), always NULL on copy
@@ -231,6 +231,7 @@ export const EXPECTED_TARGET_MIGRATIONS = [
   "0016_parent_request_privileges",
   "0017_candy_purchase_payment",
   "0018_order_fulfilment_media",
+  "0019_remove_supabase_db_dependencies",
 ]
 
 export const IDENTITY_PROVIDER = "supabase"

@@ -293,6 +293,22 @@ parameters; ownership is `o.parent_id = $profile` inside the statement and no
 function accepts a parent id from a request. Timestamps are rendered as
 microsecond UTC text so `updatedAt` round-trips byte for byte.
 
+### Referral and CMS grants (V0.1.53)
+
+Migration 0019: EXECUTE on `bind_parent_referral_code_trusted`, `get_parent_referral_summary_trusted`,
+`get_admin_referral_overview_trusted`, `get_admin_referral_relationships_trusted`,
+`update_admin_referral_program_settings_trusted`, `update_homepage_content_trusted`,
+`record_homepage_media_replacement_trusted`, `delete_homepage_media_trusted`,
+`update_homepage_hero_layout_trusted` (all from 0005, bodies untouched) and the four NEW narrow functions
+`create_example_trusted`, `update_example_trusted`, `replace_example_media_trusted`,
+`delete_example_trusted` (admin role re-checked, field rules, object key must be `examples/<id>/...`);
+SELECT on `homepage_content`, `homepage_media_assets`, `homepage_hero_layout`, `examples`. No
+INSERT/UPDATE/DELETE anywhere. **Global audit** (pinned by `supabase-db-removal-db.test.ts`): no table has
+INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER for the role (the single column-level UPDATE is
+`parent_profiles(full_name, updated_at)`), the nonce table is not even readable, and the role executes 32
+SECURITY DEFINER functions, none to PUBLIC. Repositories: `referrals.ts`, `homepage.ts`, `examples.ts`
+(constant SQL, bind parameters, microsecond UTC text for tokens).
+
 
 ## Tests
 

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { isAdminRole } from "@/lib/auth/admin-role"
+import { callFailureResponse, verifiedCaller } from "@/lib/http/backend-route-responses"
+import { updateReferralSettings } from "@/lib/referrals/backend-referrals"
 import type {
   AdminReferralSettingsUpdateRequest,
   AdminReferralSettingsUpdateResponse,
@@ -39,27 +39,10 @@ export async function PATCH(request: Request) {
     }
   }
 
-  let supabase
-  try {
-    supabase = await createServerSupabaseClient()
-  } catch {
-    return jsonError("خطای احراز هویت رخ داد.", 500)
-  }
-
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-  if (authError || !user) {
-    return jsonError("لطفاً ابتدا وارد حساب خود شوید.", 401)
-  }
-
-  const { data: roleRow, error: roleError } = await supabase
-    .from("users")
-    .select("role")
-    .eq("id", user.id)
-    .maybeSingle()
-
-  if (roleError || !roleRow || !isAdminRole(roleRow.role)) {
-    return jsonError("شما مجوز انجام این عملیات را ندارید.", 403)
-  }
+  // Admin role: enforced by the backend (403 for a parent) and inside the
+  // trusted function; the verified session is the only caller identity.
+  const caller = await verifiedCaller()
+  if (!caller.ok) return caller.response
 
   let body: Record<string, unknown>
   try {
@@ -109,23 +92,21 @@ export async function PATCH(request: Request) {
     return jsonError("فرمت درخواست نامعتبر است.", 400)
   }
 
-  const { data: rpcData, error: rpcError } = await supabase
-    .rpc("update_admin_referral_program_settings", {
-      p_is_enabled: req.isEnabled,
-      p_reward_basis_points: req.rewardBasisPoints,
-      p_expected_updated_at: req.expectedUpdatedAt,
-    })
-
-  if (rpcError) {
-    return jsonError("خطا در به‌روزرسانی تنظیمات.", 500)
+  const result = await updateReferralSettings(caller.context, {
+    isEnabled: req.isEnabled,
+    rewardBasisPoints: req.rewardBasisPoints,
+    expectedUpdatedAt: req.expectedUpdatedAt,
+  })
+  if (!result.ok) {
+    if (result.kind === "refused") return jsonError("خطا در به‌روزرسانی تنظیمات.", 500)
+    return callFailureResponse(result, "خطا در به‌روزرسانی تنظیمات.")
   }
-
-  const row = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as Record<string, unknown> | null
-  if (!row || typeof row.status !== "string") {
-    return jsonError("خطا در به‌روزرسانی تنظیمات.", 500)
+  const status = result.status
+  const row = {
+    is_enabled: result.settings.isEnabled,
+    reward_basis_points: result.settings.rewardBasisPoints,
+    updated_at: result.settings.updatedAt,
   }
-
-  const status = row.status
 
   if (status === "conflict") {
     const errResp: AdminReferralErrorResponse = {

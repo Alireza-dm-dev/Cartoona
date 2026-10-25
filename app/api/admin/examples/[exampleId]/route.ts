@@ -1,147 +1,72 @@
 import { NextResponse } from "next/server"
-import { requireExamplesAdmin, AdminAuthError } from "@/lib/examples/example-auth"
+import { verifiedCaller } from "@/lib/http/backend-route-responses"
+import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf"
 import { validateExampleId, validateUpdateExampleJson } from "@/lib/examples/example-validation"
-import { deleteImage } from "@/lib/examples/example-storage"
+import { removeExampleImage } from "@/lib/storage/example-media"
+import {
+  deleteExampleRow,
+  exampleFailureResponse,
+  exampleOf,
+  loadAdminExample,
+  updateExampleRow,
+} from "@/lib/examples/backend-examples"
 
-async function fetchExample(supabase: Awaited<ReturnType<typeof requireExamplesAdmin>>["supabase"], id: string) {
-  const { data, error } = await supabase
-    .from("examples")
-    .select("*")
-    .eq("id", id)
-    .maybeSingle()
+export const dynamic = "force-dynamic"
 
-  if (error) {
-    return { error: "Failed to fetch example" as const, status: 500 }
-  }
+const json = (body: unknown, status: number) => NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } })
 
-  if (!data) {
-    return { error: "Example not found" as const, status: 404 }
-  }
+export async function GET(_request: Request, { params }: { params: Promise<{ exampleId: string }> }) {
+  const caller = await verifiedCaller()
+  if (!caller.ok) return caller.response
+  const { exampleId } = await params
+  const idError = validateExampleId(exampleId)
+  if (idError) return json({ error: idError }, 400)
 
-  return { data }
+  const example = await loadAdminExample(exampleId)
+  if (example === "missing") return json({ error: "Example not found" }, 404)
+  if (example === null) return json({ error: "Failed to fetch example" }, 500)
+  return json({ data: example }, 200)
 }
 
-export async function GET(
-  _request: Request,
-  { params }: { params: Promise<{ exampleId: string }> },
-) {
+export async function PATCH(request: Request, { params }: { params: Promise<{ exampleId: string }> }) {
+  const csrf = rejectUnsafeBrowserWrite(request)
+  if (csrf) return csrf
+  const caller = await verifiedCaller()
+  if (!caller.ok) return caller.response
+  const { exampleId } = await params
+  const idError = validateExampleId(exampleId)
+  if (idError) return json({ error: idError }, 400)
+
+  let body: Record<string, unknown>
   try {
-    const { supabase } = await requireExamplesAdmin()
-    const { exampleId } = await params
-
-    const idError = validateExampleId(exampleId)
-    if (idError) {
-      return NextResponse.json({ error: idError }, { status: 400 })
-    }
-
-    const result = await fetchExample(supabase, exampleId)
-    if ("error" in result) {
-      return NextResponse.json({ error: result.error }, { status: result.status })
-    }
-
-    return NextResponse.json({ data: result.data })
-  } catch (e) {
-    if (e instanceof AdminAuthError) {
-      return NextResponse.json({ error: e.message }, { status: e.statusCode })
-    }
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    body = await request.json()
+  } catch {
+    return json({ error: "Invalid JSON body" }, 400)
   }
+  const { data: input, errors } = validateUpdateExampleJson(body)
+  if (errors.length > 0) return json({ error: "Validation failed", errors }, 422)
+  if (!input || Object.keys(input).length === 0) return json({ error: "No valid fields to update" }, 400)
+
+  const result = await updateExampleRow(caller.context, exampleId, input as Record<string, unknown>)
+  const example = exampleOf(result)
+  if (!result.ok) return exampleFailureResponse(result, json)
+  if (!example) return json({ error: "Failed to update example" }, 500)
+  return json({ data: example }, 200)
 }
 
-export async function PATCH(
-  request: Request,
-  { params }: { params: Promise<{ exampleId: string }> },
-) {
-  try {
-    const { supabase } = await requireExamplesAdmin()
-    const { exampleId } = await params
+export async function DELETE(request: Request, { params }: { params: Promise<{ exampleId: string }> }) {
+  const csrf = rejectUnsafeBrowserWrite(request)
+  if (csrf) return csrf
+  const caller = await verifiedCaller()
+  if (!caller.ok) return caller.response
+  const { exampleId } = await params
+  const idError = validateExampleId(exampleId)
+  if (idError) return json({ error: idError }, 400)
 
-    const idError = validateExampleId(exampleId)
-    if (idError) {
-      return NextResponse.json({ error: idError }, { status: 400 })
-    }
-
-    const exists = await fetchExample(supabase, exampleId)
-    if ("error" in exists) {
-      return NextResponse.json({ error: exists.error }, { status: exists.status })
-    }
-
-    let body: Record<string, unknown>
-    try {
-      body = await request.json()
-    } catch {
-      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
-    }
-
-    const { data: input, errors } = validateUpdateExampleJson(body)
-    if (errors.length > 0) {
-      return NextResponse.json({ error: "Validation failed", errors }, { status: 422 })
-    }
-
-    if (!input || Object.keys(input).length === 0) {
-      return NextResponse.json({ error: "No valid fields to update" }, { status: 400 })
-    }
-
-    const { data: updated, error: updateError } = await supabase
-      .from("examples")
-      .update(input)
-      .eq("id", exampleId)
-      .select()
-      .maybeSingle()
-
-    if (updateError || !updated) {
-      return NextResponse.json({ error: "Failed to update example" }, { status: 500 })
-    }
-
-    return NextResponse.json({ data: updated })
-  } catch (e) {
-    if (e instanceof AdminAuthError) {
-      return NextResponse.json({ error: e.message }, { status: e.statusCode })
-    }
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
-  }
-}
-
-export async function DELETE(
-  _request: Request,
-  { params }: { params: Promise<{ exampleId: string }> },
-) {
-  try {
-    const { supabase } = await requireExamplesAdmin()
-    const { exampleId } = await params
-
-    const idError = validateExampleId(exampleId)
-    if (idError) {
-      return NextResponse.json({ error: idError }, { status: 400 })
-    }
-
-    const existing = await fetchExample(supabase, exampleId)
-    if ("error" in existing) {
-      return NextResponse.json({ error: existing.error }, { status: existing.status })
-    }
-
-    const { error: deleteError } = await supabase
-      .from("examples")
-      .delete()
-      .eq("id", exampleId)
-
-    if (deleteError) {
-      return NextResponse.json({ error: "Failed to delete example" }, { status: 500 })
-    }
-
-    if (existing.data.media_url) {
-      try {
-        await deleteImage(supabase, existing.data.media_url)
-      } catch {
-        // Row already deleted — storage cleanup failure does not revert it.
-      }
-    }
-
-    return NextResponse.json({ data: existing.data })
-  } catch (e) {
-    if (e instanceof AdminAuthError) {
-      return NextResponse.json({ error: e.message }, { status: e.statusCode })
-    }
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
-  }
+  const result = await deleteExampleRow(caller.context, exampleId)
+  if (!result.ok) return exampleFailureResponse(result, json)
+  const example = exampleOf(result)
+  // Row already deleted - a storage cleanup failure does not revert it.
+  if (example?.media_url) await removeExampleImage(example.media_url)
+  return json({ data: example }, 200)
 }

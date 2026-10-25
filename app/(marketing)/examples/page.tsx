@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/neu-badge"
 import { Button } from "@/components/ui/neu-button"
 import { SafetyNotice } from "@/components/ui/safety-notice"
 import { EmptyState } from "@/components/ui/empty-state"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { loadPublicExamples } from "@/lib/examples/backend-examples"
+import { exampleMediaPublicUrl } from "@/lib/storage/example-media"
 import { AppBackground } from "@/components/ui/app-background"
 
 export const dynamic = "force-dynamic"
@@ -23,14 +24,10 @@ const KIND_GRADIENTS: Record<string, string> = {
 }
 
 export default async function ExamplesPage() {
-  const supabase = await createServerSupabaseClient()
-
-  const { data: examples, error } = await supabase
-    .from("examples")
-    .select("*")
-    .eq("is_published", true)
-    .order("sort_order", { ascending: true })
-    .order("created_at", { ascending: false })
+  // Published examples from PostgreSQL through the backend, anonymous (V0.1.53).
+  // null = the backend could not answer: the existing "unavailable" card.
+  const examples = await loadPublicExamples()
+  const error = examples === null
 
   return (
     <>
@@ -53,7 +50,7 @@ export default async function ExamplesPage() {
             </div>
           </div>
         </Card>
-      ) : examples.length === 0 ? (
+      ) : examples!.length === 0 ? (
         <EmptyState
           title="هنوز نمونه‌ای منتشر نشده است"
           description="نمونه‌های جدید کارتونا به‌زودی در این بخش نمایش داده می‌شوند."
@@ -65,14 +62,11 @@ export default async function ExamplesPage() {
         />
       ) : (
         <div className="grid gap-6 sm:grid-cols-2">
-          {examples.map((example) => {
+          {examples!.map((example) => {
             const gradient = KIND_GRADIENTS[example.kind] || "from-soft-border/50 to-cream"
             let imageUrl: string | null = null
             if (example.media_url) {
-              const { data } = supabase.storage
-                .from("example-media")
-                .getPublicUrl(example.media_url)
-              imageUrl = data.publicUrl
+              imageUrl = exampleMediaPublicUrl(example.media_url) || null
             }
 
             return (

@@ -58,9 +58,10 @@ describe("runtime Supabase consent DB access is zero", () => {
     expect(code("middleware.ts")).not.toMatch(/parent_profiles|consent_granted/)
   })
 
-  it("signup and the dev route create profiles without consent columns", () => {
-    expect(code("lib/parent/ensure-parent-profile.ts")).not.toMatch(/consent/i)
-    expect(code("app/api/parent/complete-signup/route.ts")).not.toMatch(/consent:/)
+  it("V0.1.53: signup and the dev route create NO Supabase profile at all (the PostgreSQL account is provisioned instead)", () => {
+    expect(fs.existsSync(path.join(root, "lib/parent/ensure-parent-profile.ts"))).toBe(false)
+    expect(fs.existsSync(path.join(root, "app/api/parent/complete-signup/route.ts"))).toBe(false)
+    expect(code("app/(auth)/signup/page.tsx")).not.toMatch(/complete-signup/)
   })
 })
 
@@ -185,6 +186,14 @@ describe("the consent write: CSRF -> session -> v3 -> parent-only backend route"
       "app/api/admin/requests/[requestId]/final-media/route.ts",
       "app/api/admin/requests/[requestId]/status/route.ts",
       "app/api/parent/orders/[orderId]/final-media/route.ts",
+      // V0.1.53: the homepage CMS and examples CMS admin writes use the shared guard (they had none).
+      "app/api/admin/homepage/hero-layout/route.ts",
+      "app/api/admin/homepage/media/[slot]/route.ts",
+      "app/api/admin/homepage/route.ts",
+      "app/api/admin/examples/[exampleId]/media/route.ts",
+      "app/api/admin/examples/[exampleId]/publish/route.ts",
+      "app/api/admin/examples/[exampleId]/route.ts",
+      "app/api/admin/examples/route.ts",
       // the payment return route reads only the configured origin (no guard: it is not a browser write)
       "app/api/payments/return/[provider]/route.ts",
     ].sort())
@@ -213,6 +222,11 @@ describe("scope: only consent moved", () => {
       'post "/v1/parent/candy-purchases/:purchaseId/coupon"', 'post "/v1/parent/candy-purchases/:purchaseId/payment-attempts"',
       'post "/v1/parent/candy-purchases/:purchaseId/payment-attempts/:attemptId/session"', "post CONSENT_PATH", "post PAYMENT_EVENTS_PATH",
       "post PROVISION_PATH", "post REQUESTS_PATH",
+      // V0.1.53: referrals, homepage CMS, examples CMS.
+      'delete "/v1/admin/examples/:id"', 'delete "/v1/admin/homepage/media"',
+      'patch "/v1/admin/examples/:id"', 'patch "/v1/admin/referrals/settings"',
+      'post "/v1/admin/examples"', 'post "/v1/admin/homepage/media"', 'post "/v1/parent/referrals/bind"',
+      'put "/v1/admin/examples/:id/media"', 'put "/v1/admin/homepage"', 'put "/v1/admin/homepage/hero-layout"',
       // V0.1.52: fulfilment (admin) and the final-media access audit (parent).
       'patch "/v1/admin/requests/:requestId/final-media/:assetId"', 'patch "/v1/admin/requests/:requestId/status"',
       'post "/v1/admin/requests/:requestId/final-media"', 'post "/v1/parent/orders/:orderId/final-media/access"',

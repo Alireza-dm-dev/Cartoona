@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js"
+import type { SupabaseStorageServiceClient } from "@/lib/supabase/types"
 import { log } from "@/lib/observability/request-context"
 import { categorizeError } from "@/lib/observability/errors"
 
@@ -10,7 +10,7 @@ export const PRIVATE_UPLOADS_BUCKET = "parent-uploads"
 export const PRIVATE_MEDIA_SIGNED_URL_TTL_SECONDS = 300
 
 export async function createPrivateSignedUrl(
-  supabase: SupabaseClient,
+  supabase: SupabaseStorageServiceClient,
   path: string,
   ttlSeconds: number = PRIVATE_MEDIA_SIGNED_URL_TTL_SECONDS,
   bucket: string = PRIVATE_UPLOADS_BUCKET,
@@ -49,7 +49,7 @@ export async function createPrivateSignedUrl(
  * Duplicate paths are signed once.
  */
 export async function createPrivateSignedUrls(
-  supabase: SupabaseClient,
+  supabase: SupabaseStorageServiceClient,
   paths: string[],
   ttlSeconds: number = PRIVATE_MEDIA_SIGNED_URL_TTL_SECONDS,
   bucket: string = PRIVATE_UPLOADS_BUCKET,

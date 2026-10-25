@@ -604,3 +604,13 @@ new path unchanged (see `order-fulfilment-cutover-db.test.ts`). **Object bytes a
 a media row carries the Storage key; the same bucket keys keep resolving as long as Storage is
 unchanged. After the copy, no Supabase `orders`, `media_assets` or `order_status_history` row may be
 written again (ROUTE_CUTOVER "V0.1.52 Rollback").
+
+### V0.1.53: the last consumers, and the cutover boundary
+
+The target is pinned to 19 migrations (`0019_remove_supabase_db_dependencies`). 0019 adds four examples functions
+and grants; no table or copy mapping changed. After V0.1.53 nothing at runtime reads or writes a Supabase table,
+so the V0.1.44 copy is the ONLY bridge: freeze writes, copy once, start the new stack. The Supabase
+`parent_profiles`, `users` (role), wallet, credit, referral, CMS, order and purchase rows then become
+history; they are neither read nor deleted by this release. Admin accounts must carry their role in
+PostgreSQL `users.role` (the copy does) because no Supabase role is read any more. Stub-fixture proof is not a
+production rehearsal: the real `pg_dump`/export rehearsal remains open.

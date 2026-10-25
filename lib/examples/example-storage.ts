@@ -1,5 +1,3 @@
-import type { SupabaseClient } from "@supabase/supabase-js"
-
 export const EXAMPLE_MEDIA_BUCKET = "example-media"
 
 const ALLOWED_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const
@@ -30,32 +28,4 @@ export function buildStoragePath(exampleId: string, file: File): string {
   return `examples/${exampleId}/${uuid}.${ext}`
 }
 
-export async function uploadImage(
-  supabase: SupabaseClient,
-  path: string,
-  file: File,
-): Promise<void> {
-  const { error } = await supabase.storage
-    .from(EXAMPLE_MEDIA_BUCKET)
-    .upload(path, file, {
-      contentType: file.type,
-      upsert: false,
-    })
-
-  if (error) {
-    throw new Error("Failed to upload image")
-  }
-}
-
-export async function deleteImage(
-  supabase: SupabaseClient,
-  path: string,
-): Promise<void> {
-  const { error } = await supabase.storage
-    .from(EXAMPLE_MEDIA_BUCKET)
-    .remove([path])
-
-  if (error) {
-    throw new Error("Failed to delete image")
-  }
-}
+// Bytes live in lib/storage/example-media.ts (Storage only, service credential, after PostgreSQL authorization).

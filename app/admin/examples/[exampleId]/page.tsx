@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation"
 import { PageHeader } from "@/components/ui/page-header"
 import { ExampleForm } from "@/components/admin/examples/example-form"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { loadAdminExample } from "@/lib/examples/backend-examples"
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -22,15 +22,9 @@ export default async function EditExamplePage({
     notFound()
   }
 
-  const supabase = await createServerSupabaseClient()
+  const example = await loadAdminExample(exampleId)
 
-  const { data: example, error } = await supabase
-    .from("examples")
-    .select("*")
-    .eq("id", exampleId)
-    .maybeSingle()
-
-  if (error || !example) {
+  if (example === "missing" || example === null) {
     notFound()
   }
 

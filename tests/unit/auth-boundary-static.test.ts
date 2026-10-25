@@ -198,7 +198,9 @@ describe("V0.1.43: no runtime dependency on Supabase session internals", () => {
     // 8 since V0.1.51: the purchase, coupon and coupon-validation routes verify through verifyParentCaller.
     // 5 since V0.1.52: the gallery API and the final-media route verify through verifyParentCaller,
     // and the (unused) Supabase ParentRequestContext was deleted.
-    expect(callers.length).toBe(5)
+    // 0 since V0.1.53: the password, referral and page gates take the session + role from the
+    // backend (PostgreSQL) and the Edge middleware no longer checks a lifetime.
+    expect(callers.length).toBe(0)
     for (const file of callers) {
       expect(code(file), file).toMatch(/checkParentSessionLifetime\(supabase, (user\.id|ownership\.userId)\)/)
     }

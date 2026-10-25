@@ -4,6 +4,7 @@ import {
   requireAdminHomepageAuth,
   updateHeroLayout,
 } from "@/lib/admin/homepage/media-service";
+import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,13 +17,11 @@ const MAX_BODY_BYTES = 4 * 1024;
  * Normalized fractions only; optimistic concurrency required.
  */
 export async function PUT(request: Request) {
+  const csrf = rejectUnsafeBrowserWrite(request);
+  if (csrf) return csrf;
+
   const auth = await requireAdminHomepageAuth();
   if (!auth.ok) return auth.response;
-
-  const contentType = request.headers.get("content-type") || "";
-  if (!contentType.startsWith("application/json")) {
-    return mediaJsonError("فرمت درخواست باید JSON باشد.", 415);
-  }
 
   let body: unknown;
   try {
@@ -40,7 +39,7 @@ export async function PUT(request: Request) {
   }
   const { x, y, width, height, expectedRevision } = body as Record<string, unknown>;
 
-  const result = await updateHeroLayout(auth.adminUserId, { x, y, width, height }, expectedRevision);
+  const result = await updateHeroLayout(auth.context, { x, y, width, height }, expectedRevision);
   if (!result.ok) {
     if (result.code === "HOMEPAGE_LAYOUT_CONFLICT") {
       return mediaJson({ error: result.message, code: result.code }, 409);

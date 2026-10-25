@@ -233,16 +233,9 @@ export default function SignupPage() {
         return;
       }
 
-      // The parent profile is created server-side against the new session.
-      // Without this the account would reach the dashboard with no profile row,
-      // so a failure here keeps the parent on this step rather than continuing.
-      const completion = await fetch("/api/parent/complete-signup", { method: "POST" });
-      if (!completion.ok) {
-        const body = await completion.json().catch(() => ({}));
-        setError(body.error || "تکمیل ثبت‌نام انجام نشد. لطفاً دوباره تلاش کنید.");
-        return;
-      }
-
+      // V0.1.53: no Supabase business profile is created any more. The Cartoona
+      // account (user, identity, profile, wallet, welcome credits, referral code)
+      // is provisioned in PostgreSQL by continueAfterSignup() -> account-setup.
       await continueAfterSignup();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "خطای غیرمنتظره‌ای رخ داد.";

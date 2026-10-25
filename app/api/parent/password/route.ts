@@ -2,8 +2,8 @@ import { NextResponse } from "next/server"
 import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf"
 import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
 import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
-import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
+import { resolveCallerRole } from "@/lib/auth/backend-role"
+import { endParentSession } from "@/lib/auth/end-parent-session"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -36,35 +36,40 @@ export async function POST(request: Request) {
     }
   }
 
+  // Who is calling, and may they use this route: Supabase Auth verifies the
+  // session; the ROLE and the 30-day / sessions_not_before policy come from
+  // PostgreSQL through the backend (V0.1.53; was a Supabase `users` read). The
+  // password itself is only ever handled by Supabase Auth below: nothing about
+  // it is sent to the backend or stored in PostgreSQL.
+  const resolved = await resolveCallerRole()
+  if (!resolved.ok) {
+    switch (resolved.reason) {
+      case "unauthenticated":
+        return jsonError("لطفاً ابتدا وارد حساب خود شوید.", 401)
+      case "session_expired":
+        await endParentSession()
+        return jsonError("برای ادامه دوباره وارد حساب خود شوید.", 401)
+      case "identity_not_linked":
+      case "forbidden":
+        return jsonError("شما مجوز انجام این عملیات را ندارید.", 403)
+      default:
+        return jsonError("بررسی نشست موقتاً ممکن نیست. لطفاً چند لحظه بعد دوباره تلاش کنید.", 503)
+    }
+  }
+
+  // Per parent, before the (expensive) password update.
+  const limited = await enforceRateLimit(resolved.context.identity.subject, RATE_LIMIT_POLICIES.passwordChange)
+  if (limited) return limited
+
+  if (resolved.role !== "parent") {
+    return jsonError("شما مجوز انجام این عملیات را ندارید.", 403)
+  }
+
   let supabase
   try {
     supabase = await createServerSupabaseClient()
   } catch {
     return jsonError("خطای احراز هویت رخ داد.", 500)
-  }
-
-  const { data: { user }, error: userError } = await supabase.auth.getUser()
-  if (userError || !user) {
-    return jsonError("لطفاً ابتدا وارد حساب خود شوید.", 401)
-  }
-
-  // Per parent, before the (expensive) password update.
-  const limited = await enforceRateLimit(user.id, RATE_LIMIT_POLICIES.passwordChange)
-  if (limited) return limited
-
-  const { data: roleRow, error: roleError } = await supabase
-    .from("users")
-    .select("role")
-    .eq("id", user.id)
-    .maybeSingle()
-
-  if (roleError || !roleRow || roleRow.role !== "parent") {
-    return jsonError("شما مجوز انجام این عملیات را ندارید.", 403)
-  }
-
-  const lifetime = await checkParentSessionLifetime(supabase, user.id)
-  if (!lifetime.valid) {
-    return createParentSessionFailureResponse(supabase, lifetime)
   }
 
   let body: Record<string, unknown>

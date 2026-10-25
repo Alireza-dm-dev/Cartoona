@@ -2035,9 +2035,240 @@ Supabase tokens; a real `pg_dump` rehearsal; backend deployment; Storage still S
 service credential now also signs final deliverables); migration 0018 ships with the app. New: the
 Edge/admin-layout role gate still reads Supabase `users.role`; no refund policy for rejected/cancelled.
 
+## V0.1.53: no Supabase database at runtime
+
+After V0.1.53 Supabase is **Auth and Storage bytes only**. Every business row is
+in PostgreSQL behind the backend; Next is the BFF, the UI, the Auth adapter and
+the Storage signing boundary. A static guard scans the whole runtime tree for any
+Supabase database call and the clients' TYPES no longer expose `.from()` /
+`.rpc()`.
+
+### Runtime audit (before any change)
+
+| file | route / function | Supabase DB use | R/W | purpose | replacement |
+|---|---|---|---|---|---|
+| `middleware.ts` | Edge gate for /dashboard, /admin, /complete-request, /parent-consent | `users.role` read (twice) + the 30-day lifetime | R | role routing | **auth-only Edge**; role = server page gates (PostgreSQL via `/v1/auth/me`) |
+| `app/admin/layout.tsx` | admin shell | `users.role` | R | admin gate | `gateAdminPage()` |
+| `app/(auth)/complete-request/page.tsx` | step page | `users.role` + local lifetime | R | role/session gate | `gateParentPage()` |
+| `lib/auth/require-admin.ts`, `lib/examples/example-auth.ts` | admin helpers | `users.role` | R | admin gate | deleted; the backend decides (403) |
+| `app/api/referrals`, `/bind`, `/api/admin/referrals`, `/settings` | referrals | `users.role` + 5 `.rpc()` | R/W | referral summary, binding, admin overview + settings | backend `/v1/parent/referrals*`, `/v1/admin/referrals*` |
+| `lib/homepage/{resolver,service,resolve-core}.ts` | public homepage | `homepage_content`, `homepage_media_assets`, `homepage_hero_layout` | R | CMS read | one anonymous `GET /v1/public/homepage` |
+| `lib/admin/homepage/{service,media-service}.ts`, 4 admin routes | homepage CMS | `users`, the 3 tables, 4 `.rpc()` | R/W | CMS edit | backend `PUT /v1/admin/homepage`, media record/delete, hero layout |
+| `app/(marketing)/examples`, `app/admin/examples/*`, 5 admin routes | examples CMS | `examples` (direct INSERT/UPDATE/DELETE via RLS) | R/W | examples CMS | backend `/v1/public/examples`, `/v1/admin/examples*` + 4 new trusted functions |
+| `lib/parent/ensure-parent-profile.ts`, `app/api/parent/complete-signup` | signup | `parent_profiles` read + INSERT | R/W | duplicate Supabase business profile | **deleted** (PostgreSQL provisioning only) |
+| `app/api/dev/parent-auth` | dev login/signup | `users.role` x4, `parent_profiles` INSERT | R/W | dev convenience | role via the backend; no profile insert |
+| `app/api/parent/password` | password change | `users.role` | R | parent-only gate | role via the backend; the password is Supabase Auth only |
+| `app/api/dev/supabase-check`, `lib/requests/resolve-character.ts`, `lib/auth/{admin-role,parent-access}.ts` | diagnostics / dead helpers | `characters` read / none | R | - | deleted (no caller) |
+
+Supabase Auth usage is untouched; Storage usage is isolated in `lib/storage/*`.
+
+### Role gates (item 3-6)
+
+- **Edge middleware is authentication-only.** It verifies the session with the
+  provider (bounded 5 s deadline, a 503 retry on an outage, never a sign-out) and
+  redirects a signed-out visitor to `/login` or `/admin-login`. It reads no
+  role, no table and no lifetime: the Edge has neither `node:crypto` nor the
+  internal secret, so it cannot ask the backend, and it must not read Supabase.
+- **Authoritative gates are server-side and run before any privileged markup or
+  data exists**: `gateAdminPage()` in `app/admin/layout.tsx`, `gateParentPage()`
+  in `app/(dashboard)/layout.tsx`, `/complete-request` and `/parent-consent`
+  (`lib/auth/page-gates.ts`). They call `resolveCallerRole()`: Supabase Auth
+  verifies who, then `GET /v1/auth/me` returns the role from `user_identities` +
+  `users` in PostgreSQL, with the 30-day / `sessions_not_before` policy applied by
+  the backend. `redirect()` throws, so nothing below a failed gate renders.
+- Outcomes: admin/super_admin keep their semantics (a parent is sent to
+  `/dashboard`; an admin may open `/dashboard` but is sent to `/admin` from the
+  parent-only steps); a **deleted** account and an **unlinked** identity are denied
+  (an unlinked one goes to `/parent-consent`, the page that runs the account
+  bootstrap, instead of loading anything); an **expired / invalidated** session is
+  ended and sent to the matching login; a **backend or provider outage** is neither
+  access nor a sign-out (the page renders a retry message). Data routes never relied
+  on the Edge: the backend refuses a non-admin on every admin route (403).
+- Because layouts are cached across soft navigations, the gate is a UX/privilege
+  gate; every data request is authorized again by the backend.
+
+### Signup and the duplicate business state (item 7-8, 23)
+
+Signup is: Supabase Auth user -> `POST /api/parent/account-setup` -> PostgreSQL
+user, identity, profile, wallet, welcome credits and referral code
+(`provision_supabase_parent_identity`). `complete-signup` and
+`ensureParentProfile` (which inserted a second Supabase profile) are deleted, the
+dev route no longer inserts a profile, and no wallet or credit row is created in
+Supabase. Proven: a brand-new user goes through provisioning, role, consent,
+referral, purchase creation, request, order detail and gallery with **zero**
+`/rest/v1` requests. Existing production rows are not touched or deleted.
+
+### Referrals (item 9-12)
+
+There is **no referral reward in the schema**: a referral is a one-time binding
+(`referral_relationships`) plus a program setting (`is_enabled`,
+`reward_basis_points`, with an immutable history). No function credits a wallet, so
+nothing financial moves; the basis points are admin-set configuration only.
+Migration 0019 grants EXECUTE on the five existing trusted functions; the backend
+routes are `GET /v1/parent/referrals` (v2 parent), `POST /v1/parent/referrals/bind`
+(v3 parent, exact body `{ code }`), `GET /v1/admin/referrals` and
+`PATCH /v1/admin/referrals/settings` (admin). Proven on real PostgreSQL: self,
+unknown and malformed codes are `invalid_code`; the same parent cannot bind twice
+(**14 parallel binds -> exactly one `bound`**, 13 `already_bound_same`; two referrers
+racing -> one relationship); the 5-per-minute limit; a disabled program refuses binds;
+extra body keys, ids, amounts and balances are 400; an admin cannot bind; settings
+need the admin, have optimistic concurrency (**6 concurrent writers with one token ->
+one `updated`, five `conflict`**) and write one history row; ledger and wallets are
+unchanged by any bind. The shared CSRF guard is unchanged.
+
+### Homepage and examples CMS (item 13-16)
+
+- **Public homepage**: one anonymous `GET /v1/public/homepage` (content row, media
+  rows with object KEYS, hero layout), resolved by the same pure code as before; Storage is
+  touched only to build the public URL. A backend outage renders the committed defaults
+  (never blank, never throws).
+- **Admin writes**: `PUT /v1/admin/homepage` (revision-checked), media record /
+  revert, hero layout - v3 assertion, admin role, the existing trusted functions.
+  Bytes: Next asks `GET /v1/admin/cms/gate` first (a parent stores nothing), uploads, then
+  records the metadata; a definite refusal removes the object, an unknown outcome keeps it.
+  The slot is sent in the body (slot keys contain dots and backend paths are dot-free).
+- **Examples**: migration 0019 adds `create/update/replace_media/delete_example_trusted`
+  (admin role re-checked, field rules, the object key must be `examples/<this id>/...`);
+  the application role still has no INSERT/UPDATE/DELETE on `examples`. Public list =
+  published only; image bytes use the service credential in `lib/storage/example-media.ts`
+  after PostgreSQL authorizes the admin (the bucket policy used to read the Supabase
+  `users` table).
+- The homepage / examples admin writes had **no CSRF guard**; they now use the shared one.
+
+### Dev route, password route, client split (item 17-19, 28)
+
+The dev parent-auth route asks the backend for the role of the session it just created
+(admin, deleted or unconfirmed = refused; an unlinked parent = allowed, the bootstrap
+provisions it); it is 404 unless dev auth is explicitly enabled and uses the Supabase Auth
+Admin API only. The password route keeps the password inside Supabase Auth (no
+Fastify/PostgreSQL handling); only the parent-only and session checks come from the backend.
+`createServerSupabaseClient()` / `createBrowserSupabaseClient()` return
+`Pick<SupabaseClient, "auth" | "storage">` and `createAdminSupabaseClient()` returns
+`Pick<SupabaseClient, "storage">`: a database call does not compile. `SUPABASE_SECRET_KEY`
+is read by exactly two modules (the Storage client, and the dev-only Auth Admin helper that
+talks to `/auth/v1` only). `postgrest-retry.ts` (dead) is removed.
+
+### Supabase RPC inventory (item 21)
+
+Runtime `.rpc()` calls: **0** (at V0.1.51: 14; V0.1.52 removed 6; V0.1.53 removed the last 8).
+Now unreferenced by any runtime code and kept only as history in `supabase/migrations`:
+`bind_current_parent_referral_code`, `get_current_parent_referral_summary`,
+`get_admin_referral_overview`, `get_admin_referral_relationships`,
+`update_admin_referral_program_settings`, `update_homepage_content_trusted`,
+`record_homepage_media_replacement_trusted`, `delete_homepage_media_trusted`,
+`update_homepage_hero_layout_trusted`, `update_order_status_trusted`,
+`record_final_media_trusted`, `approve_final_media_trusted`,
+`supersede_final_media_trusted`, `get_order_status_history_admin`,
+`get_parent_order_status_history`, `create_parent_request_trusted`,
+`complete_candy_purchase_trusted` and the coupon/payment functions. Historical migrations
+are not edited.
+
+### Dependency report (item 31)
+
+| | count | where |
+|---|---|---|
+| Supabase **Database** (table/RPC/PostgREST) at runtime | **0** | - |
+| Supabase **Auth** call sites | 20 (12 files) | login/signup/admin-login/settings pages, logout, password, dev route, `supabase-identity-adapter`, `end-parent-session`, session-lifetime helpers, middleware `getUser` |
+| Supabase **Storage** references | 16 (7 files) | `lib/storage/{final-deliverables,homepage-media,example-media,private-signed-url}`, `app/api/requests`, two browser public-URL builders |
+
+### Global privilege matrix of `cartoona_app` (item 37)
+
+SELECT-only tables (21): `candy_packages`, `candy_purchases`, `candy_wallets`, `characters`,
+`coupon_package_rules`, `coupon_redemptions`, `coupons`, `creation_pricing`,
+`drawing_animation_requests`, `examples`, `homepage_content`, `homepage_hero_layout`,
+`homepage_media_assets`, `media_assets`, `order_status_history`, `orders`, `parent_profiles`,
+`parent_welcome_credits`, `user_identities`, `users`, `video_requests` (+ column-level SELECT
+`(id, purchase_id, status)` on `payment_attempts`). **No** INSERT / UPDATE / DELETE / TRUNCATE /
+REFERENCES / TRIGGER on any of the 33 tables; the one column-level UPDATE is
+`parent_profiles(full_name, updated_at)`. `internal_write_nonces`, `audit_logs`,
+`referral_relationships`, `referral_program_settings(_history)`, `payment_*`, `candy_transactions`
+are not directly writable (and the nonce table not even readable). EXECUTE on 32 of the 45
+SECURITY DEFINER functions, all `*_trusted` or provisioning/nonce functions, none to PUBLIC:
+financial (purchase/payment/coupon/request), fulfilment (status, final media, audit), referral
+(summary, bind, admin overview/list/settings), CMS (homepage content/media/layout, examples) and the
+identity ones (provision, consent, nonce). Pinned by `supabase-db-removal-db.test.ts`.
+
+### Rejected / cancelled orders do not refund candies (item 29)
+
+Unchanged and not fixed here. `update_order_status_trusted` has no financial effect: a request
+that is rejected or cancelled after it was paid with candies keeps the debit (welcome credits
+likewise). Business impact: a parent can lose candies on a request the team refuses. **Decision
+required before any change**: refund on `rejected` only or also `cancelled`; who may cancel; full or
+partial refund; welcome credits restored or not; one idempotent ledger credit (key
+`order_refund:<id>`) inside the same transition. No balance was changed by this release.
+
+### Rollback (HARD rule, item 30)
+
+PostgreSQL is the source of truth for every business row. **Never roll back by re-enabling a
+Supabase business writer** (request, purchase, referral, CMS, profile, fulfilment): the Supabase
+copies are stale. Allowed: an older frontend only if it still talks to PostgreSQL-compatible
+APIs, or a write freeze plus forward recovery. The Edge middleware of builds before V0.1.53 reads
+Supabase `users`; do not run them against production data.
+
+### Final cutover boundary (item 22)
+
+Production cutover is: freeze writes -> V0.1.44 copy (Supabase -> PostgreSQL, pinned to the 19
+migrations) -> verify -> start the new frontend/backend. After that every write is PostgreSQL's;
+there is no dual write, no reverse sync and no continuing copy. Supabase keeps Auth and Storage
+(bytes are not migrated; media rows carry the same keys).
+
+### Verified locally (2026-10-25)
+
+**Totals** (`CARTOONA_PLAIN_PG=docker`, run alone): 115 files (112 passed, 3 skipped files), **3303 passed**, 34
+skipped (the opt-in suites that need a disposable Supabase project), 0 failed (V0.1.52: 3224 / 34).
+`npm run lint`: 0 errors (29 pre-existing warnings; the one this release added was fixed). `next build`, `npm run backend:typecheck`,
+`npm run backend:build` and `git diff --check`: clean. Repo-wide `tsc` reports only the known test-only errors; no runtime file has one.
+
+| suite | tests | proves |
+|---|---|---|
+| `supabase-db-removal-db.test.ts` (real PostgreSQL 17, copy, restricted role, listening Fastify, Next handlers + page gates, stub Auth/Storage) | 36 | global privilege audit (no table writable; 32 audited EXECUTEs; nothing to PUBLIC; functions refuse a wrong role); role resolution for parent/admin/super_admin **ignoring a stub that claims admin**, deleted -> denied, unlinked -> bootstrap page, `sessions_not_before` -> session ended, outage -> unavailable; referrals (summary, bind idempotency, self/unknown/malformed, forged bodies, **14-way bind race -> one `bound`**, two-referrer race, 5/min limit, settings: parent 403, **6-way race -> one `updated`**, history, disabled program refuses binds, no wallet or ledger change); homepage (public anonymous read, revision races, structure, Next CSRF/409/422/403, media bytes+metadata+replace+revert, parents store nothing, hero layout, outage -> defaults); examples (parent stores nothing, create/publish/order/update/media swap/delete with Storage cleanup, key-namespace refusals, backend and function validation); brand-new user end to end and copied user and admin with **zero `/rest/v1` requests**; timings |
+| `zero-supabase-db-static.test.ts` | 17 | the runtime tree has no `.rpc(`, no `.from(<schema table>)` (table names read from the migrations), no PostgREST, no role read; client types expose no database; the service credential is read in two modules and used for Storage only; the Auth Admin helper only talks to `/auth/v1`; the Edge reads nothing; signup/dev/password routes create no Supabase business state |
+| `referral-cms-cutover-static.test.ts`, `page-gates.test.ts`, `backend-role.test.ts`, `homepage-backend-read.test.ts` | 10 + 11 + 14 + 8 | route auth and CSRF-first ordering, exact bodies and limits, admin gate before bytes, no reward effect; gate outcomes; role resolver mapping and fail-closed parsing; the anonymous homepage read and its degradation |
+| ported | | middleware (auth-only), session-lifetime route tests, homepage tests (now data-based), legacy CSRF routes, static guard lists, schema parity (+4 target-only functions), privilege probes, consent gates (retry notice during an outage), migration pins (19) |
+
+**Docker / headless browser proof** (real `Dockerfile`s tagged `proof053`, frontend + backend containers on the
+compose network, scratch PostgreSQL 17 migrated through 0019 and populated by the real copy tool, stub Supabase
+Auth/Storage and the stub payment provider on the host): **59/59 checks passed.** Anonymous: homepage and examples
+render from PostgreSQL. New parent: sign-in provisions the account (profile, wallet, credits, identity, referral code
+only in PostgreSQL), dashboard gate, referral page and binding (bound / already_bound / 409), purchase through the
+provider stub, request, order detail with a signed preview, gallery - **zero requests to Supabase's `/rest/v1`
+during the whole journey**. Copied parent: referral count, delivered order. Role boundaries: a parent opening
+`/admin` or `/admin/requests` is sent to `/dashboard` with no admin markup; parent GET/PUT/PATCH/POST on the
+homepage, examples, referral and CMS APIs are 403 and **no byte is stored**; signed-out visitors go to the right
+login. Admin (email sign-in): every admin page renders; homepage saved (revision + 1, stale = 409); media bytes ->
+Storage, metadata -> PostgreSQL, revert removes row and object; referral overview, settings (409 on a stale token);
+example created with its image in Storage; fulfilment still works end to end. Public pages then show the new hero
+title and the published example with its Storage URL (read-after-write). **Backend stopped:** the anonymous
+homepage still renders (committed defaults), the examples page shows its unavailable card, a signed-in user gets
+a retry message (no dashboard content, no login redirect, `/admin` shows no admin markup), and after the backend
+returns the same session works. Hygiene: the Supabase stub saw only Auth and Storage calls, the browser contacted only
+Next, the auth stub and the provider checkout, no assertion header or secret reached the browser.
+
+Local timings (Docker, one machine, restricted role; NOT production estimates):
+
+| path | median | p90 |
+|---|---|---|
+| role resolution (provider verify + `/v1/auth/me`) | 4.8 ms | 5.7 ms |
+| referral summary (backend) | 3.6 ms | 4.4 ms |
+| referral bind (backend, fresh parents) | 4.7 ms | 5.0 ms |
+| homepage public read (backend) | 2.9 ms | 3.4 ms |
+| examples public read (backend) | 2.6 ms | 3.1 ms |
+| admin examples read / write (backend) | 3.7 / 5.3 ms | 5.9 / 17.2 ms |
+| new-user bootstrap (`account-setup` route) | 7.2 ms | 16.8 ms |
+| anonymous homepage page (browser fetch, SSR + backend, 20x) | 26.9 ms | 127 ms |
+| anonymous examples page (same) | 14.9 ms | 52.5 ms |
+
+### Production status
+
+**Not deployable.** Unchanged blockers: no real payment provider adapter (only the refused-in-production
+stub); the `amr` check against real Supabase tokens (the session-start model is not verified with real
+tokens); a real `pg_dump`/production export rehearsal (fixtures only); backend deployment; Storage still
+Supabase (its service credential signs final deliverables and stores CMS bytes). New for rehearsal: the
+Supabase `handle_new_user` trigger and Storage policies that read Supabase tables are now irrelevant to the
+app but still exist there; admin accounts must exist in PostgreSQL (`users.role`) because Supabase
+roles are no longer read anywhere.
+
 ## Next
 
-V0.1.53: referrals (then stop writing the Supabase profile at signup and retire the Supabase role reads in
-the Edge middleware / admin layout), then Storage bytes. Blockers before V0.1.53: none in this release's
-scope; of the carried items, decide the role-gate source (middleware) first because it is the last
-Supabase read on the order path.
+V0.1.54: production rehearsal prerequisites - a real export copy rehearsal, the `amr` check, the payment
+provider adapter, backend deployment and a refund-policy decision; then Storage bytes.

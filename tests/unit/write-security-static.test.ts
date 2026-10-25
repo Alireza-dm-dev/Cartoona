@@ -109,6 +109,11 @@ describe("Fastify: writes go through requireWriteAuth, reads cannot consume a no
       'post "/v1/parent/candy-purchases/:purchaseId/coupon"', 'post "/v1/parent/candy-purchases/:purchaseId/payment-attempts"',
       'post "/v1/parent/candy-purchases/:purchaseId/payment-attempts/:attemptId/session"', "post CONSENT_PATH", "post PAYMENT_EVENTS_PATH",
       "post PROVISION_PATH", "post REQUESTS_PATH",
+      // V0.1.53: referrals, homepage CMS, examples CMS.
+      'delete "/v1/admin/examples/:id"', 'delete "/v1/admin/homepage/media"',
+      'patch "/v1/admin/examples/:id"', 'patch "/v1/admin/referrals/settings"',
+      'post "/v1/admin/examples"', 'post "/v1/admin/homepage/media"', 'post "/v1/parent/referrals/bind"',
+      'put "/v1/admin/examples/:id/media"', 'put "/v1/admin/homepage"', 'put "/v1/admin/homepage/hero-layout"',
       // V0.1.52: fulfilment (admin) and the final-media access audit (parent).
       'patch "/v1/admin/requests/:requestId/final-media/:assetId"', 'patch "/v1/admin/requests/:requestId/status"',
       'post "/v1/admin/requests/:requestId/final-media"', 'post "/v1/parent/orders/:orderId/final-media/access"',
@@ -146,7 +151,8 @@ describe("exactly one Next.js write is cut over: consent (V0.1.48)", () => {
     // V0.1.50: the request loader is the third.
     // V0.1.51: purchases/payments and admin coupons.
     expect(callers.sort()).toEqual([
-      "lib/admin/coupons/service.ts", "lib/admin/requests/backend-requests.ts", "lib/candy-purchases/backend-purchases.ts",
+      // V0.1.53: the generic backend call helper (referrals, homepage and examples loaders) and the homepage/examples writers.
+      "lib/admin/coupons/service.ts", "lib/admin/requests/backend-requests.ts", "lib/backend/call.ts", "lib/candy-purchases/backend-purchases.ts",
       "lib/parent/account-setup/backend-provision.ts", "lib/parent/backend-media.ts",
       "lib/parent/consent/backend-consent.ts", "lib/requests/backend-request.ts",
     ])

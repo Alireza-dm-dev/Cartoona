@@ -7,15 +7,13 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { SupabaseClient } from "@supabase/supabase-js";
-
 import {
   LOCAL_MEDIA_FALLBACK,
   composeHeroLayout,
   composeMedia,
   isSafeMediaUrl,
-  readHomepageContentRow,
-  resolveHomepageWith,
+  resolveHomepageFromData,
+  type HomepageSourceData,
 } from "@/lib/homepage/resolve-core";
 import { DEFAULT_HOMEPAGE_CONTENT } from "@/lib/homepage/default-content";
 import { normalizeHomepageContent } from "@/lib/homepage/content-resolution";
@@ -24,7 +22,7 @@ import {
   HOMEPAGE_MEDIA_SLOTS,
   HOMEPAGE_MEDIA_SLOT_VALUES,
 } from "@/lib/homepage/media-slots";
-import { queryAdminHomepageMedia } from "@/lib/admin/homepage/media-service";
+import { buildMediaOverview } from "@/lib/admin/homepage/media-overview";
 import {
   DEFAULT_TEASER_PLAN_IDS,
   resolveFeaturedPlans,
@@ -33,7 +31,12 @@ import { resolveTeaserFaqs } from "@/components/marketing/FaqTeaserSection";
 import { plans } from "@/config/plans";
 import { faqs } from "@/config/faqs";
 
-// ── fake Supabase client ────────────────────────────────────────────────────
+// ── fake backend payload (V0.1.53) ──────────────────────────────────────────
+//
+// The homepage data now arrives as ONE payload from the backend (PostgreSQL),
+// shaped by GET /v1/public/homepage. These tests keep the row-shaped fixtures
+// they always used and adapt them to that payload, so what is asserted is still
+// the real resolution/composition code.
 
 interface FakeTables {
   homepage_content?: { data: unknown; error?: unknown };
@@ -41,47 +44,43 @@ interface FakeTables {
   homepage_hero_layout?: { data: unknown; error?: unknown };
 }
 
-/** Records which tables were actually read, so we can assert the read path ran. */
-interface FakeClient {
-  client: SupabaseClient;
+interface FakeBackend {
+  /** null = the backend could not answer at all. */
+  client: HomepageSourceData | null;
   reads: string[];
 }
+
+const PUBLIC_URL = (storagePath: string) => `https://cdn.example.test/storage/${storagePath}`;
 
 const MISSING_TABLE = {
   data: null,
   error: { code: "42P01", message: 'relation "x" does not exist' },
 };
 
-function fakeSupabase(tables: FakeTables, opts: { throwOn?: string } = {}): FakeClient {
-  const reads: string[] = [];
+function fakeBackend(tables: FakeTables, opts: { throwOn?: string } = {}): FakeBackend {
+  const reads = ["homepage_content", "homepage_media_assets", "homepage_hero_layout"];
+  // A content read error, or an unreachable backend, is "no answer": every piece falls back.
+  if (opts.throwOn || tables.homepage_content?.error) return { client: null, reads };
 
-  const builder = (table: string) => {
-    if (opts.throwOn === table) throw new Error("transport failure");
-    const result = tables[table as keyof FakeTables] ?? { data: null };
-    const chain = {
-      select: () => chain,
-      eq: () => chain,
-      maybeSingle: async () => result,
-      then: (resolve: (v: unknown) => unknown) => Promise.resolve(result).then(resolve),
-    };
-    return chain;
+  const content = tables.homepage_content?.data as { content_json: unknown; revision: number } | null | undefined;
+  const mediaRows = Array.isArray(tables.homepage_media_assets?.data) ? (tables.homepage_media_assets!.data as Record<string, unknown>[]) : [];
+  const layout = tables.homepage_hero_layout?.data as { tv_rect: unknown; revision: number } | null | undefined;
+  const data: HomepageSourceData = {
+    content: content ? { contentJson: content.content_json, revision: content.revision } : null,
+    media: mediaRows.map((r) => ({
+      slotKey: String(r.slot_key),
+      mediaType: String(r.media_type),
+      storagePath: String(r.storage_path),
+      mimeType: String(r.mime_type ?? ""),
+      byteSize: Number(r.byte_size ?? 0),
+      width: (r.width as number | null) ?? null,
+      height: (r.height as number | null) ?? null,
+      durationSeconds: (r.duration_seconds as number | null) ?? null,
+      updatedAt: String(r.updated_at ?? ""),
+    })),
+    heroLayout: layout ? { tvRect: layout.tv_rect, revision: layout.revision } : null,
   };
-
-  const client = {
-    from(table: string) {
-      reads.push(table);
-      return builder(table);
-    },
-    storage: {
-      from: () => ({
-        getPublicUrl: (storagePath: string) => ({
-          data: { publicUrl: `https://cdn.example.test/storage/${storagePath}` },
-        }),
-      }),
-    },
-  } as unknown as SupabaseClient;
-
-  return { client, reads };
+  return { client: data, reads };
 }
 
 function mediaRow(slotKey: string, storagePath: string, mediaType = "image") {
@@ -106,11 +105,11 @@ describe("resolver content read path", () => {
       ...DEFAULT_HOMEPAGE_CONTENT,
       hero: { ...DEFAULT_HOMEPAGE_CONTENT.hero, title: "عنوان از دیتابیس" },
     };
-    const { client, reads } = fakeSupabase({
+    const { client, reads } = fakeBackend({
       homepage_content: { data: { content_json: stored, revision: 7 } },
     });
 
-    const resolved = await resolveHomepageWith(client);
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     // Proves the read actually happened rather than silently falling back.
     expect(reads).toContain("homepage_content");
@@ -119,39 +118,41 @@ describe("resolver content read path", () => {
   });
 
   it("falls back to defaults when the content table is missing", async () => {
-    const { client } = fakeSupabase({ homepage_content: MISSING_TABLE });
-    const resolved = await resolveHomepageWith(client);
+    const { client } = fakeBackend({ homepage_content: MISSING_TABLE });
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.sources.content).toBe("default-read-error");
     expect(resolved.content).toEqual(DEFAULT_HOMEPAGE_CONTENT);
   });
 
   it("falls back to defaults when the row is missing on a fresh environment", async () => {
-    const { client } = fakeSupabase({ homepage_content: { data: null } });
-    const resolved = await resolveHomepageWith(client);
+    const { client } = fakeBackend({ homepage_content: { data: null } });
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.sources.content).toBe("default-missing-row");
     expect(resolved.content).toEqual(DEFAULT_HOMEPAGE_CONTENT);
   });
 
   it("falls back to defaults when stored content is malformed", async () => {
-    const { client } = fakeSupabase({
+    const { client } = fakeBackend({
       homepage_content: {
         data: { content_json: { hero: { title: 42 }, pricing: "nope" }, revision: 3 },
       },
     });
-    const resolved = await resolveHomepageWith(client);
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.sources.content).toBe("default-invalid-content");
     expect(resolved.content).toEqual(DEFAULT_HOMEPAGE_CONTENT);
   });
 
-  it("reports a transport failure as a read error rather than throwing", async () => {
-    const { client } = fakeSupabase({}, { throwOn: "homepage_content" });
-    const { row, readFailed } = await readHomepageContentRow(client);
-
-    expect(row).toBeNull();
-    expect(readFailed).toBe(true);
+  it("an unreachable backend degrades every piece to the committed defaults rather than throwing", () => {
+    const { client } = fakeBackend({}, { throwOn: "homepage_content" });
+    expect(client).toBeNull();
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
+    expect(resolved.sources.content).toBe("default-read-error");
+    expect(resolved.content).toEqual(DEFAULT_HOMEPAGE_CONTENT);
+    expect(resolved.heroLayout).toEqual(DEFAULT_TV_RECT);
+    expect(resolved.media).toEqual(LOCAL_MEDIA_FALLBACK);
   });
 });
 
@@ -162,10 +163,10 @@ describe("backward normalization of pre-navigation content", () => {
     const old = { ...DEFAULT_HOMEPAGE_CONTENT } as Record<string, unknown>;
     delete old.navigation;
 
-    const { client } = fakeSupabase({
+    const { client } = fakeBackend({
       homepage_content: { data: { content_json: old, revision: 1 } },
     });
-    const resolved = await resolveHomepageWith(client);
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.sources.content).toBe("database");
     expect(resolved.content.navigation.signupLabel).toBe("شروع کنید");
@@ -201,8 +202,8 @@ describe("backward normalization of pre-navigation content", () => {
 
 describe("media slot resolution", () => {
   it("falls every slot back to its committed local asset when the table is missing", async () => {
-    const { client } = fakeSupabase({ homepage_media_assets: MISSING_TABLE });
-    const resolved = await resolveHomepageWith(client);
+    const { client } = fakeBackend({ homepage_media_assets: MISSING_TABLE });
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.media).toEqual(LOCAL_MEDIA_FALLBACK);
     expect(resolved.media[HOMEPAGE_MEDIA_SLOTS.HERO_BACKGROUND]).toBe(
@@ -226,10 +227,10 @@ describe("media slot resolution", () => {
   });
 
   it("applies a single CMS override and leaves every other slot local", async () => {
-    const { client } = fakeSupabase({
+    const { client } = fakeBackend({
       homepage_media_assets: { data: [mediaRow("safety.image", "safety/new.png")] },
     });
-    const resolved = await resolveHomepageWith(client);
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.media[HOMEPAGE_MEDIA_SLOTS.SAFETY_IMAGE]).toBe(
       "https://cdn.example.test/storage/safety/new.png",
@@ -244,10 +245,10 @@ describe("media slot resolution", () => {
   });
 
   it("resolves hero and sections backgrounds independently", async () => {
-    const { client } = fakeSupabase({
+    const { client } = fakeBackend({
       homepage_media_assets: { data: [mediaRow("hero.background", "hero/bg.png")] },
     });
-    const resolved = await resolveHomepageWith(client);
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.media[HOMEPAGE_MEDIA_SLOTS.HERO_BACKGROUND]).toBe(
       "https://cdn.example.test/storage/hero/bg.png",
@@ -258,7 +259,7 @@ describe("media slot resolution", () => {
   });
 
   it("rejects a malformed storage path in favour of the local asset", async () => {
-    const { client } = fakeSupabase({
+    const { client } = fakeBackend({
       homepage_media_assets: {
         data: [
           mediaRow("safety.image", "../../etc/passwd"),
@@ -266,7 +267,7 @@ describe("media slot resolution", () => {
         ],
       },
     });
-    const resolved = await resolveHomepageWith(client);
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.media[HOMEPAGE_MEDIA_SLOTS.SAFETY_IMAGE]).toBe(
       "/images/homepage/family-tablet.jpg",
@@ -291,8 +292,8 @@ describe("media slot resolution", () => {
   });
 
   it("keys every slot with the canonical dot namespace and no underscore aliases", async () => {
-    const { client } = fakeSupabase({});
-    const resolved = await resolveHomepageWith(client);
+    const { client } = fakeBackend({});
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(Object.keys(resolved.media).sort()).toEqual([...HOMEPAGE_MEDIA_SLOT_VALUES].sort());
     for (const key of Object.keys(resolved.media)) {
@@ -302,8 +303,8 @@ describe("media slot resolution", () => {
   });
 
   it("never leaves a slot undefined", async () => {
-    const { client } = fakeSupabase({ homepage_media_assets: MISSING_TABLE });
-    const resolved = await resolveHomepageWith(client);
+    const { client } = fakeBackend({ homepage_media_assets: MISSING_TABLE });
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     for (const slot of HOMEPAGE_MEDIA_SLOT_VALUES) {
       expect(typeof resolved.media[slot]).toBe("string");
@@ -326,8 +327,8 @@ describe("media slot resolution", () => {
 
 describe("hero TV geometry", () => {
   it("uses the committed default when no layout row exists", async () => {
-    const { client } = fakeSupabase({ homepage_hero_layout: { data: null } });
-    const resolved = await resolveHomepageWith(client);
+    const { client } = fakeBackend({ homepage_hero_layout: { data: null } });
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.heroLayout).toEqual({
       x: 0.105,
@@ -346,10 +347,10 @@ describe("hero TV geometry", () => {
       { x: 0.1, y: 0.1, width: 0, height: 0.1 },
       null,
     ]) {
-      const { client } = fakeSupabase({
+      const { client } = fakeBackend({
         homepage_hero_layout: { data: { tv_rect: badRect, revision: 2 } },
       });
-      const resolved = await resolveHomepageWith(client);
+      const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
       expect(resolved.heroLayout).toEqual(DEFAULT_TV_RECT);
       expect(resolved.sources.heroLayout).toBe("default");
@@ -358,18 +359,18 @@ describe("hero TV geometry", () => {
 
   it("passes a valid stored rect through", async () => {
     const rect = { x: 0.2, y: 0.3, width: 0.1, height: 0.15 };
-    const { client } = fakeSupabase({
+    const { client } = fakeBackend({
       homepage_hero_layout: { data: { tv_rect: rect, revision: 4 } },
     });
-    const resolved = await resolveHomepageWith(client);
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.heroLayout).toEqual(rect);
     expect(resolved.sources.heroLayout).toBe("database");
   });
 
   it("hands the hero a rect with the canonical x/y vocabulary", async () => {
-    const { client } = fakeSupabase({});
-    const resolved = await resolveHomepageWith(client);
+    const { client } = fakeBackend({});
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(Object.keys(resolved.heroLayout).sort()).toEqual([
       "height",
@@ -398,8 +399,8 @@ describe("hero TV geometry", () => {
 
 describe("section prop composition", () => {
   it("exposes every section the page module renders", async () => {
-    const { client } = fakeSupabase({});
-    const { content } = await resolveHomepageWith(client);
+    const { client } = fakeBackend({});
+    const { content } = resolveHomepageFromData(client, PUBLIC_URL);
 
     for (const section of [
       "hero",
@@ -416,13 +417,9 @@ describe("section prop composition", () => {
     }
   });
 
-  it("reads all three bounded tables and nothing else", async () => {
-    const { client, reads } = fakeSupabase({});
-    await resolveHomepageWith(client);
-
-    expect(new Set(reads)).toEqual(
-      new Set(["homepage_content", "homepage_media_assets", "homepage_hero_layout"]),
-    );
+  it("one payload carries the content, the media rows and the hero layout - and nothing else", () => {
+    const { client } = fakeBackend({});
+    expect(Object.keys(client!).sort()).toEqual(["content", "heroLayout", "media"]);
   });
 });
 
@@ -442,10 +439,10 @@ describe("navigation labels", () => {
         signupLabel: "بزن بریم",
       },
     };
-    const { client } = fakeSupabase({
+    const { client } = fakeBackend({
       homepage_content: { data: { content_json: stored, revision: 2 } },
     });
-    const resolved = await resolveHomepageWith(client);
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.content.navigation).toEqual(stored.navigation);
   });
@@ -468,17 +465,17 @@ describe("build options and safety content", () => {
       ...DEFAULT_HOMEPAGE_CONTENT,
       buildOptions: { ...DEFAULT_HOMEPAGE_CONTENT.buildOptions, footnote: "پانویس تازه" },
     };
-    const { client } = fakeSupabase({
+    const { client } = fakeBackend({
       homepage_content: { data: { content_json: stored, revision: 5 } },
     });
-    const resolved = await resolveHomepageWith(client);
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.content.buildOptions.footnote).toBe("پانویس تازه");
   });
 
   it("names only bounded media keys on build-option cards", async () => {
-    const { client } = fakeSupabase({});
-    const resolved = await resolveHomepageWith(client);
+    const { client } = fakeBackend({});
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     for (const card of resolved.content.buildOptions.cards) {
       expect(["card_image", "card_video", "card_animation"]).toContain(card.media);
@@ -486,8 +483,8 @@ describe("build options and safety content", () => {
   });
 
   it("keeps the safety points the section renders", async () => {
-    const { client } = fakeSupabase({});
-    const resolved = await resolveHomepageWith(client);
+    const { client } = fakeBackend({});
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.content.safety.points.length).toBeGreaterThan(0);
     for (const point of resolved.content.safety.points) {
@@ -554,8 +551,8 @@ describe("pricing plan selection", () => {
   });
 
   it("never sources price, candy or benefits from the CMS", async () => {
-    const { client } = fakeSupabase({});
-    const resolved = await resolveHomepageWith(client);
+    const { client } = fakeBackend({});
+    const resolved = resolveHomepageFromData(client, PUBLIC_URL);
     const pricing = resolved.content.pricing as unknown as Record<string, unknown>;
 
     for (const forbidden of ["price", "priceToman", "candies", "benefits", "amount"]) {
@@ -569,11 +566,11 @@ describe("pricing plan selection", () => {
 
 describe("media overview degradation", () => {
   it("returns local preview paths when both media tables are missing", async () => {
-    const { client } = fakeSupabase({
+    const { client } = fakeBackend({
       homepage_media_assets: MISSING_TABLE,
       homepage_hero_layout: MISSING_TABLE,
     });
-    const overview = await queryAdminHomepageMedia(client);
+    const overview = buildMediaOverview(client?.media ?? [], client?.heroLayout ?? null, PUBLIC_URL);
 
     expect(overview.slots).toHaveLength(HOMEPAGE_MEDIA_SLOT_VALUES.length);
     expect(overview.heroLayout).toBeNull();
