@@ -26,6 +26,13 @@ export interface StubAuthOptions {
   refreshMode?: RefreshMode
   /** Rows PostgREST returns for `users` and `parent_profiles` (role gate, profile id). */
   role?: string
+  /**
+   * Browser proof only (V0.1.52): role per user id for `users?id=eq.<id>`, so
+   * the Edge middleware / admin layout gates (the Supabase role read that stays,
+   * documented) see an admin as an admin and a parent as a parent in ONE stub.
+   * The backend never trusts this: it decides the role from PostgreSQL.
+   */
+  roles?: Record<string, string>
   fullName?: string
   /**
    * Rows for other PostgREST tables (V0.1.46), e.g. empty `candy_packages` and
@@ -55,16 +62,19 @@ interface IssuedSession {
   amr?: unknown
 }
 
-export type StorageMode = "ok" | "upload_fail"
+export type StorageMode = "ok" | "upload_fail" | "sign_fail"
 
 export interface StubAuth {
   url: string
   /**
    * V0.1.50: a minimal in-memory stand-in for Supabase STORAGE (upload, copy,
    * remove), so the request route's real storage calls run locally. Keys are
-   * "<bucket>/<path>". Never contacts a hosted service.
+   * "<bucket>/<path>". V0.1.52: + signed URLs (single and batch; `signed`
+   * records every key signed, `uploads` every uploaded key with its bytes'
+   * content type, and `authorizations` the credential each storage call used).
+   * `sign_fail` is a Storage outage for signing. Never contacts a hosted service.
    */
-  storage: { objects: Set<string>; mode: StorageMode; removed: string[] }
+  storage: { objects: Set<string>; mode: StorageMode; removed: string[]; signed: string[]; uploads: Array<{ key: string; contentType: string | null }> }
   options: Required<StubAuthOptions>
   requests: Array<{ method: string; path: string; authorization: string | null }>
   /** Access tokens issued by refreshes, in order. */
@@ -92,12 +102,13 @@ export async function startStubAuth(initial: StubAuthOptions): Promise<StubAuth>
     port: 0,
     host: "127.0.0.1",
     logins: {},
+    roles: {},
     ...initial,
   }
   const requests: StubAuth["requests"] = []
   const refreshedTokens: string[] = []
   const hanging = new Set<http.ServerResponse>()
-  const storage: StubAuth["storage"] = { objects: new Set(), mode: "ok", removed: [] }
+  const storage: StubAuth["storage"] = { objects: new Set(), mode: "ok", removed: [], signed: [], uploads: [] }
   /** access token -> its session; refresh token -> its session. */
   const accessTokens = new Map<string, IssuedSession>()
   const refreshTokens = new Map<string, IssuedSession>()
@@ -185,6 +196,22 @@ export async function startStubAuth(initial: StubAuthOptions): Promise<StubAuth>
 
       if (path.startsWith("/storage/v1/object/")) {
         const rest = decodeURIComponent(path.slice("/storage/v1/object/".length))
+        if (req.method === "POST" && rest.startsWith("sign/")) {
+          const target = rest.slice("sign/".length)
+          if (storage.mode === "sign_fail") return json(res, 500, { statusCode: "500", error: "internal", message: "storage unavailable" })
+          let body: { paths?: string[] } = {}
+          try { body = JSON.parse(raw) } catch { /* empty */ }
+          if (Array.isArray(body.paths)) {
+            return json(res, 200, body.paths.map((p) => {
+              if (!storage.objects.has(`${target}/${p}`)) return { error: "Object not found", path: p, signedURL: null }
+              storage.signed.push(`${target}/${p}`)
+              return { error: null, path: p, signedURL: `/object/sign/${target}/${p}?token=stub` }
+            }))
+          }
+          if (!storage.objects.has(target)) return json(res, 400, { statusCode: "404", error: "not_found", message: "Object not found" })
+          storage.signed.push(target)
+          return json(res, 200, { signedURL: `/object/sign/${target}?token=stub` })
+        }
         if (req.method === "POST" && rest === "copy") {
           let body: { bucketId?: string; sourceKey?: string; destinationKey?: string } = {}
           try { body = JSON.parse(raw) } catch { /* empty */ }
@@ -196,6 +223,7 @@ export async function startStubAuth(initial: StubAuthOptions): Promise<StubAuth>
           if (storage.mode === "upload_fail") return json(res, 500, { statusCode: "500", error: "internal", message: "storage unavailable" })
           if (storage.objects.has(rest)) return json(res, 409, { statusCode: "409", error: "Duplicate", message: "The resource already exists" })
           storage.objects.add(rest)
+          storage.uploads.push({ key: rest, contentType: req.headers["content-type"] ?? null })
           return json(res, 200, { Key: rest })
         }
         if (req.method === "DELETE") {
@@ -210,7 +238,10 @@ export async function startStubAuth(initial: StubAuthOptions): Promise<StubAuth>
         }
       }
 
-      if (path === "/rest/v1/users") return json(res, 200, [{ role: options.role }])
+      if (path === "/rest/v1/users") {
+        const wanted = /(?:^|&)id=eq\.([0-9a-f-]{36})/i.exec((req.url ?? "").split("?")[1] ?? "")?.[1]
+        return json(res, 200, [{ role: (wanted && options.roles?.[wanted]) || options.role }])
+      }
       if (path === "/rest/v1/parent_profiles") return json(res, 200, [{ full_name: options.fullName }])
       const table = path.startsWith("/rest/v1/") ? options.tables[path.slice("/rest/v1/".length)] : undefined
       if (table) return json(res, 200, table)

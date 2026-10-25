@@ -1,26 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { encodeGalleryCursor } from "@/lib/parent/gallery/pagination";
-import { getSessionResult } from "../helpers/supabase-jwt"
 
-const m = vi.hoisted(() => ({ client: null as unknown, get: vi.fn() }));
-vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient: async () => m.client }));
+const CONTEXT = { identity: { provider: "supabase", subject: "u1" }, authenticatedAt: 1 };
+const m = vi.hoisted(() => ({ get: vi.fn() }));
+vi.mock("@/lib/parent/backend-caller", () => ({
+  verifyParentCaller: async () => ({ ok: true, context: { identity: { provider: "supabase", subject: "u1" }, authenticatedAt: 1 } }),
+}));
 vi.mock("@/lib/parent/gallery/queries", async (orig) => {
   const real = await orig<typeof import("@/lib/parent/gallery/queries")>();
   return { ...real, getParentGalleryMedia: m.get };
 });
 
-const healthyClient = () => ({
-  auth: { getUser: async () => ({ data: { user: { id: "u1" } }, error: null }), getSession: async () => getSessionResult("valid", "u1"), signOut: vi.fn() },
-  rpc: async () => ({
-    data: [{ is_valid: true, session_started_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-31T00:00:00Z" }],
-    error: null,
-  }),
-});
-
 describe("GET /api/parent/gallery paging contract", () => {
   beforeEach(() => {
     m.get.mockReset();
-    m.client = healthyClient();
   });
 
   it("passes cursor and a bounded limit through, returns media + nextCursor", async () => {
@@ -30,6 +23,7 @@ describe("GET /api/parent/gallery paging contract", () => {
     const res = await GET(new Request(`http://x/api/parent/gallery?cursor=${cur}&limit=10`));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ media: [{ id: "a" }], nextCursor: "next" });
+    expect(m.get.mock.calls[0][0]).toEqual(CONTEXT);
     expect(m.get.mock.calls[0][1]).toEqual({ cursor: cur, limit: 10 });
   });
 

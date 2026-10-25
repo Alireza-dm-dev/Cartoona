@@ -425,6 +425,25 @@ to the trust model; it reuses it:
 - cross-parent: a key, order id or file path belonging to another parent
   resolves to nothing (`found: false`, `400` for a foreign folder); keys are
   unique per `(parent_id, submission_key)`, so two parents can use the same key.
+## Admin and media authorization (V0.1.52)
+
+- **Who is an admin** is decided in one place per layer: the backend
+  (`requireRole("admin", "super_admin")` on the PostgreSQL `users.role` the
+  identity chain resolved) and, again, inside every trusted fulfilment function
+  (`is_admin_user_id`). Next never decides a role for these routes, never reads
+  `users.role` for them, and sends no actor id: the acting admin is the subject
+  of the v3 assertion. A parent session therefore gets `403` on every admin
+  route; an `X-Role`/`X-User-Id` header is not read anywhere. The Edge middleware and admin
+  layout role gate (a Supabase `users.role` read) remains as a *navigation* gate only.
+- **Admin writes** carry v3 (body digest + single-use nonce), the shared CSRF
+  guard first (JSON, or multipart for the upload), and are bound to method, path
+  and the exact body bytes. A read assertion cannot be used as a write; a write
+  assertion cannot be replayed, re-pointed at another order, or used with another body.
+- **Media access** is authorized by PostgreSQL rows (owner + final + approved +
+  parent-visible), never by Storage policies, `storage.objects`, a bucket name or a
+  key from the browser. The service credential signs a key only after that row was
+  returned; it is used for Storage calls only.
+
 
 ## Provider-authenticated writes: service assertions (V0.1.51)
 
@@ -722,7 +741,7 @@ Its results, and each caller's reaction, are unchanged:
 | Kind | Caller | Runs after | On expiry | On lookup failure |
 |---|---|---|---|---|
 | middleware | `middleware.ts` (`/dashboard*`, `/complete-request`, `/parent-consent`; not `/admin`) | getUser + role | local signOut, redirect `/login?reason=session_expired` | 503 `sessionCheckUnavailable` |
-| parent auth helper | `lib/parent/parent-request-context.ts` (since V0.1.46 its only caller is the order detail page, `verify: "identity"`; the orders and welcome-credits APIs moved to the backend) | getUser; in parallel with the role and profile reads | `session_invalid`: 401 + signOut | `session_invalid`: 503 |
+| parent auth helper | ~~`lib/parent/parent-request-context.ts`~~ (**deleted in V0.1.52**: its only caller, the order detail page, now uses `verifyParentCaller`; the orders and welcome-credits APIs moved to the backend) | getUser; in parallel with the role and profile reads | `session_invalid`: 401 + signOut | `session_invalid`: 503 |
 | server component | `app/(auth)/complete-request/page.tsx` | getUser + role | redirect `/login?reason=session_expired` (no sign-out, as before) | in-page retry message, no redirect |
 | route handlers (11 files, 12 calls) | `api/candy-purchases` (GET and POST), `candy-purchases/[id]/complete`, `candy-purchases/[id]/coupon`, `coupons/validate`, `parent-consent`, `parent/gallery`, `parent/password`, `referrals`, `referrals/bind`, `requests` | getUser + role | `createParentSessionFailureResponse`: 401 + signOut | 503 `SESSION_CHECK_UNAVAILABLE` |
 | route handler | `api/parent/orders/[orderId]/final-media` | ownership check (its own getUser), with `ownership.userId` | same | same |

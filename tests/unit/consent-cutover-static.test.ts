@@ -180,6 +180,11 @@ describe("the consent write: CSRF -> session -> v3 -> parent-only backend route"
       "app/api/candy-purchases/[id]/pay/route.ts",
       "app/api/candy-purchases/route.ts",
       "app/api/coupons/validate/route.ts",
+      // V0.1.52: admin status / final-media (JSON and multipart) and the parent final-media POST.
+      "app/api/admin/requests/[requestId]/final-media/[assetId]/route.ts",
+      "app/api/admin/requests/[requestId]/final-media/route.ts",
+      "app/api/admin/requests/[requestId]/status/route.ts",
+      "app/api/parent/orders/[orderId]/final-media/route.ts",
       // the payment return route reads only the configured origin (no guard: it is not a browser write)
       "app/api/payments/return/[provider]/route.ts",
     ].sort())
@@ -208,6 +213,9 @@ describe("scope: only consent moved", () => {
       'post "/v1/parent/candy-purchases/:purchaseId/coupon"', 'post "/v1/parent/candy-purchases/:purchaseId/payment-attempts"',
       'post "/v1/parent/candy-purchases/:purchaseId/payment-attempts/:attemptId/session"', "post CONSENT_PATH", "post PAYMENT_EVENTS_PATH",
       "post PROVISION_PATH", "post REQUESTS_PATH",
+      // V0.1.52: fulfilment (admin) and the final-media access audit (parent).
+      'patch "/v1/admin/requests/:requestId/final-media/:assetId"', 'patch "/v1/admin/requests/:requestId/status"',
+      'post "/v1/admin/requests/:requestId/final-media"', 'post "/v1/parent/orders/:orderId/final-media/access"',
     ].sort())
     for (const f of backendRuntime) {
       expect(code(f), f).not.toMatch(/record_final_media|media_assets|storage\.|\.rpc\(/i)

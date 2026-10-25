@@ -1,44 +1,46 @@
 import { NextResponse } from "next/server"
 import { withObservability } from "@/lib/observability/request-context"
-import { logAuthLookup } from "@/lib/observability/auth-events"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
-import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
+import { endParentSession } from "@/lib/auth/end-parent-session"
+import { SESSION_CHECK_UNAVAILABLE_BODY } from "@/lib/auth/expired-parent-session-response"
+import { verifyParentCaller } from "@/lib/parent/backend-caller"
 import { getParentGalleryMedia } from "@/lib/parent/gallery/queries"
 
 /**
- * GET /api/parent/gallery — the signed-in parent's own source media.
+ * GET /api/parent/gallery - the signed-in parent's own source media (V0.1.52).
  *
  * Backs the "انتخاب از گالری خصوصی" picker on /complete-request, which is a
  * client component and so cannot read the database directly.
  *
- * The response body is the same read model the gallery page renders: ids,
- * short-lived signed previews and display labels. No storage paths, and no
- * way to ask for another parent's media — the query resolves ownership from
- * the session rather than from anything the caller sends.
+ *   Supabase Auth verification (identity only) -> backend GET /v1/parent/gallery
+ *   (PostgreSQL ownership + keyset page) -> Storage signs only this page's keys.
+ *
+ * The body is the read model the gallery page renders: ids, short-lived signed
+ * previews and display labels. No storage paths, and no way to ask for another
+ * parent's media - ownership comes from the verified session, never the query.
+ * If Storage is down, items still list with a null preview and the request
+ * does not sign anyone out.
  */
 export const dynamic = "force-dynamic"
 
 export const GET = withObservability("GET /api/parent/gallery", handleGet)
 
 async function handleGet(request: Request) {
-  const supabase = await createServerSupabaseClient()
-
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-  if (authError || !user) {
-    logAuthLookup(authError)
+  const caller = await verifyParentCaller()
+  if (!caller.ok) {
+    if (caller.reason === "auth_unavailable") {
+      return NextResponse.json(SESSION_CHECK_UNAVAILABLE_BODY, { status: 503, headers: { "Retry-After": "2" } })
+    }
+    if (caller.reason === "session_expired") {
+      await endParentSession()
+      return NextResponse.json({ error: "برای ادامه دوباره وارد حساب شوید.", code: "PARENT_SESSION_EXPIRED" }, { status: 401 })
+    }
     return NextResponse.json({ error: "لطفاً ابتدا وارد حساب خود شوید" }, { status: 401 })
-  }
-
-  const lifetime = await checkParentSessionLifetime(supabase, user.id)
-  if (!lifetime.valid) {
-    return createParentSessionFailureResponse(supabase, lifetime)
   }
 
   // Bounded paging: `limit` is clamped server-side, `cursor` is opaque and
   // validated, and nothing here ever asks for the whole library.
   const params = new URL(request.url).searchParams
-  const result = await getParentGalleryMedia(supabase, {
+  const result = await getParentGalleryMedia(caller.context, {
     cursor: params.get("cursor"),
     limit: params.has("limit") ? Number.parseInt(params.get("limit") ?? "", 10) : undefined,
   })
@@ -46,6 +48,9 @@ async function handleGet(request: Request) {
   if (!result.ok) {
     if (result.reason === "unauthenticated") {
       return NextResponse.json({ error: "لطفاً ابتدا وارد حساب خود شوید" }, { status: 401 })
+    }
+    if (result.reason === "forbidden") {
+      return NextResponse.json({ error: "شما مجوز انجام این عملیات را ندارید." }, { status: 403 })
     }
     if (result.reason === "invalid_cursor") {
       return NextResponse.json({ error: "درخواست نامعتبر است." }, { status: 400 })

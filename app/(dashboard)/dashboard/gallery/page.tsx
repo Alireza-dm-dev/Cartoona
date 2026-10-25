@@ -7,7 +7,7 @@ import { SafetyNotice } from "@/components/ui/safety-notice";
 import { NewRequestActions } from "@/components/dashboard/new-request-actions";
 import { GalleryGrid } from "@/components/dashboard/gallery/gallery-grid";
 import { getParentGalleryMedia } from "@/lib/parent/gallery/queries";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { verifyParentCaller } from "@/lib/parent/backend-caller";
 
 /**
  * /dashboard/gallery — the parent's private source-media library.
@@ -23,11 +23,8 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 export const dynamic = "force-dynamic";
 
 export default async function GalleryPage() {
-  const supabase = await createServerSupabaseClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect("/login?from=/dashboard/gallery");
+  const caller = await verifyParentCaller();
+  if (!caller.ok && caller.reason === "unauthenticated") redirect("/login?from=/dashboard/gallery");
 
   return (
     <div className="mx-auto max-w-[880px]">
@@ -37,7 +34,7 @@ export default async function GalleryPage() {
       />
 
       <Suspense fallback={<GalleryLoadingState />}>
-        <GalleryContent />
+        <GalleryContent caller={caller} />
       </Suspense>
 
       <div className="mt-6">
@@ -50,9 +47,9 @@ export default async function GalleryPage() {
   );
 }
 
-async function GalleryContent() {
-  const supabase = await createServerSupabaseClient();
-  const result = await getParentGalleryMedia(supabase);
+async function GalleryContent({ caller }: { caller: Awaited<ReturnType<typeof verifyParentCaller>> }) {
+  if (!caller.ok) return <GalleryErrorState />;
+  const result = await getParentGalleryMedia(caller.context);
 
   if (!result.ok) {
     if (result.reason === "no_parent_profile") return <GalleryNoProfileState />;

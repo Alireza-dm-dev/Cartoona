@@ -298,8 +298,7 @@ describe.skipIf(!enabled)("V0.1.50 request submission cutover (local Docker Post
       ["INSERT characters", `insert into public.characters (name) values ('x')`],
       ["UPDATE creation_pricing", `update public.creation_pricing set candy_cost = 1`],
       ["EXECUTE complete_candy_purchase_trusted", `select * from public.complete_candy_purchase_trusted('${randomUUID()}', '${COPIED_A.profile}', 'ref')`],
-      ["EXECUTE update_order_status_trusted", `select * from public.update_order_status_trusted('${randomUUID()}', '${ADMIN}', 'delivered', now(), null, null)`],
-      ["EXECUTE record_final_media_trusted", `select * from public.record_final_media_trusted('${ADMIN}', '${randomUUID()}', 'p', 'video/mp4', 1, 'f')`],
+      // update_order_status_trusted and record_final_media_trusted are executable since V0.1.52 (0018); order-fulfilment-cutover-db.test.ts covers them.
       // create_payment_attempt_trusted is executable since V0.1.51 (0017); purchase-cutover-db.test.ts covers it.
     ])("the app role cannot %s -> 42501", async (_label, sql) => {
       expect(await sqlState(appPool.query(sql))).toBe("42501")

@@ -573,7 +573,7 @@ describe.skipIf(!enabled)("V0.1.48 consent cutover: copied data -> Fastify -> Ne
       ["update a wallet", "UPDATE public.candy_wallets SET balance = 1000"],
       ["complete a candy purchase", "SELECT * FROM public.complete_candy_purchase_trusted(gen_random_uuid(), gen_random_uuid(), 'x')"],
       // V0.1.50: create_parent_request_trusted is executable (0016): its privileges are asserted in request-cutover-db.test.ts.
-      ["record final media", "SELECT public.record_final_media_trusted(gen_random_uuid(), gen_random_uuid(), 'x', 'image/png', 1, 'x')"],
+      // V0.1.52: record_final_media_trusted is executable (0018); its privileges and role check are asserted in order-fulfilment-cutover-db.test.ts.
     ])("CANNOT %s (42501)", async (_l, sql) => {
       expect(await sqlState(appPool.query(sql))).toBe("42501")
     })
@@ -612,7 +612,7 @@ describe.skipIf(!enabled)("V0.1.48 consent cutover: copied data -> Fastify -> Ne
       expect(await tgt("select has_table_privilege('cartoona_app', 'public.parent_profiles', 'UPDATE')")).toBe("f")
       expect(await tgt(`select string_agg(column_name, ',' order by column_name) from information_schema.column_privileges
         where grantee = 'cartoona_app' and table_name = 'parent_profiles' and privilege_type = 'UPDATE'`)).toBe("full_name,updated_at")
-      expect(await tgt("select string_agg(version, ',' order by version) from public.schema_migrations")).toMatch(/0014_parent_consent_write,0015_supabase_parent_provisioning,0016_parent_request_privileges,0017_candy_purchase_payment$/)
+      expect(await tgt("select string_agg(version, ',' order by version) from public.schema_migrations")).toMatch(/0014_parent_consent_write,0015_supabase_parent_provisioning,0016_parent_request_privileges,0017_candy_purchase_payment,0018_order_fulfilment_media$/)
     })
 
     it("a raw DbError from the app role never leaks through the backend", async () => {

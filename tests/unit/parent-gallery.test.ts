@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { toGalleryMedia, getParentGalleryMedia, type RawGalleryRow } from "@/lib/parent/gallery/queries";
 import {
   isValidAssetId,
@@ -18,7 +18,6 @@ import { sanitizeFileName } from "@/lib/requests/sanitize-file-name";
  */
 
 const PARENT_A_USER = "11111111-1111-4111-8111-111111111111";
-const PARENT_A_PROFILE = "aaaaaaaa-1111-4111-8111-111111111111";
 const ASSET_A = "dddddddd-1111-4111-8111-111111111111";
 
 const row = (over: Partial<RawGalleryRow> = {}): RawGalleryRow => ({
@@ -30,75 +29,15 @@ const row = (over: Partial<RawGalleryRow> = {}): RawGalleryRow => ({
   ...over,
 });
 
-/** Records every filter applied, so the ownership contract can be asserted. */
-function makeSupabase(options: {
-  user?: { id: string } | null;
-  profile?: { id: string } | null;
-  assetRows?: unknown[];
-  assetRow?: unknown;
-  signedUrl?: string | null;
-  assetError?: boolean;
-}) {
-  const filters: Record<string, { column: string; value: unknown }[]> = {};
-
-  function builder(table: string) {
-    filters[table] ??= [];
-    const api: Record<string, unknown> = {};
-    const chain = () => api;
-    api.select = chain;
-    api.order = chain;
-    api.limit = chain;
-    api.or = chain;
-    // The list query is awaited directly after .limit(), so the builder is thenable.
-    api.then = (resolve: (v: unknown) => unknown) =>
-      resolve(
-        options.assetError
-          ? { data: null, error: new Error("boom") }
-          : { data: options.assetRows ?? [], error: null },
-      );
-    api.eq = (column: string, value: unknown) => {
-      filters[table].push({ column, value });
-      return api;
-    };
-    api.maybeSingle = () => {
-      if (table === "parent_profiles") {
-        return { data: options.profile ?? null, error: null };
-      }
-      if (options.assetError) return { data: null, error: new Error("boom") };
-      return { data: options.assetRow ?? null, error: null };
-    };
-    return api;
-  }
-
-  return {
-    filters,
-    client: {
-      auth: {
-        getUser: async () => ({
-          data: { user: options.user === undefined ? { id: PARENT_A_USER } : options.user },
-          error: null,
-        }),
-      },
-      from: (table: string) => builder(table),
-      storage: {
-        from: () => ({
-          createSignedUrls: async (paths: string[]) =>
-            options.signedUrl === null
-              ? { data: null, error: new Error("sign failed") }
-              : {
-                  data: paths.map((path) => ({
-                    path,
-                    error: null,
-                    signedUrl: options.signedUrl ?? "https://signed.example/x",
-                  })),
-                  error: null,
-                },
-        }),
-      },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any,
-  };
-}
+const m = vi.hoisted(() => ({ fetchPage: vi.fn(), fetchAsset: vi.fn() }));
+vi.mock("@/lib/parent/backend-media", () => ({ fetchGalleryPage: m.fetchPage, fetchOwnedSourceAsset: m.fetchAsset }));
+vi.mock("@/lib/supabase/server", () => ({
+  createServerSupabaseClient: async () => ({
+    storage: { from: () => ({ createSignedUrls: async (paths: string[]) => ({ data: paths.map((path) => ({ path, error: null, signedUrl: "https://signed.example/x" })), error: null }) }) },
+  }),
+}));
+const CONTEXT = { identity: { provider: "supabase", subject: PARENT_A_USER }, authenticatedAt: 1 } as never;
+beforeEach(() => { m.fetchPage.mockReset(); m.fetchAsset.mockReset(); });
 
 describe("gallery media serializer", () => {
   it("never carries a storage path into the read model", () => {
@@ -139,122 +78,66 @@ describe("gallery media serializer", () => {
   });
 });
 
-describe("gallery ownership filtering", () => {
-  it("scopes the read to the caller's own parent profile and source uploads", async () => {
-    const { client, filters } = makeSupabase({
-      profile: { id: PARENT_A_PROFILE },
-      assetRows: [row()],
-    });
-
-    const result = await getParentGalleryMedia(client);
+describe("gallery through the backend (ownership is SQL, proven against PostgreSQL elsewhere)", () => {
+  it("asks only with the verified context; the browser supplies no parent id", async () => {
+    m.fetchPage.mockResolvedValue({ ok: true, items: [{ id: ASSET_A, mimeType: "image/png", createdAt: "2026-03-01T10:00:00.000000+00:00", originalFilename: "photo.png", path: `${PARENT_A_USER}/order-1/photo.png` }], nextCursor: null });
+    const result = await getParentGalleryMedia(CONTEXT);
     expect(result.ok).toBe(true);
-
-    expect(filters.parent_profiles).toContainEqual({ column: "user_id", value: PARENT_A_USER });
-    expect(filters.media_assets).toContainEqual({
-      column: "orders.parent_id",
-      value: PARENT_A_PROFILE,
-    });
-    expect(filters.media_assets).toContainEqual({ column: "type", value: "upload" });
-    expect(filters.media_assets).toContainEqual({ column: "asset_role", value: "source" });
-  });
-
-  it("refuses to read anything for an anonymous caller", async () => {
-    const { client, filters } = makeSupabase({ user: null });
-    const result = await getParentGalleryMedia(client);
-    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
-    expect(filters.media_assets).toBeUndefined();
+    expect(m.fetchPage).toHaveBeenCalledTimes(1);
+    expect(m.fetchPage.mock.calls[0][0]).toBe(CONTEXT);
   });
 
   it("reports a missing parent profile instead of returning unscoped media", async () => {
-    const { client, filters } = makeSupabase({ profile: null });
-    const result = await getParentGalleryMedia(client);
-    expect(result).toEqual({ ok: false, reason: "no_parent_profile" });
-    expect(filters.media_assets).toBeUndefined();
+    m.fetchPage.mockResolvedValue({ ok: false, kind: "auth", reason: "no_parent_profile" });
+    expect(await getParentGalleryMedia(CONTEXT)).toEqual({ ok: false, reason: "no_parent_profile" });
   });
 
   it("hides the backend reason when the read fails", async () => {
-    const { client } = makeSupabase({ profile: { id: PARENT_A_PROFILE }, assetError: true });
-    const result = await getParentGalleryMedia(client);
+    m.fetchPage.mockResolvedValue({ ok: false, kind: "unavailable", outcomeUnknown: false });
+    const result = await getParentGalleryMedia(CONTEXT);
     expect(result).toEqual({ ok: false, reason: "read_failed" });
     expect(JSON.stringify(result)).not.toContain("boom");
   });
 
   it("returns an empty library rather than failing when there is no media", async () => {
-    const { client } = makeSupabase({ profile: { id: PARENT_A_PROFILE }, assetRows: [] });
-    const result = await getParentGalleryMedia(client);
-    expect(result).toEqual({ ok: true, media: [], nextCursor: null });
+    m.fetchPage.mockResolvedValue({ ok: true, items: [], nextCursor: null });
+    expect(await getParentGalleryMedia(CONTEXT)).toEqual({ ok: true, media: [], nextCursor: null });
   });
 });
 
 describe("existing-media selection validation", () => {
-  it("rejects anything that is not a media asset id", () => {
-    for (const bad of [
-      "",
-      "not-a-uuid",
-      `${PARENT_A_USER}/order-1/photo.png`,
-      "../../etc/passwd",
-      null,
-      undefined,
-      42,
-    ]) {
+  it("rejects anything that is not a media asset id", async () => {
+    for (const bad of ["", "not-a-uuid", `${PARENT_A_USER}/order-1/photo.png`, "../../etc/passwd", null, undefined, 42]) {
       expect(isValidAssetId(bad)).toBe(false);
+      expect(await resolveOwnedSourceAsset(CONTEXT, bad)).toEqual({ ok: false, reason: "not_found" });
     }
     expect(isValidAssetId(ASSET_A)).toBe(true);
+    expect(m.fetchAsset).not.toHaveBeenCalled();
   });
 
-  it("resolves an owned asset by id, filtering on the caller's parent profile", async () => {
-    const { client, filters } = makeSupabase({
-      profile: { id: PARENT_A_PROFILE },
-      assetRow: {
-        file_url: `${PARENT_A_USER}/order-1/photo.png`,
-        mime_type: "image/png",
-        original_filename: "photo.png",
-      },
-    });
-
-    const result = await resolveOwnedSourceAsset(client, ASSET_A);
-    expect(result.ok).toBe(true);
-    expect(filters.media_assets).toContainEqual({
-      column: "orders.parent_id",
-      value: PARENT_A_PROFILE,
-    });
-    expect(filters.media_assets).toContainEqual({ column: "id", value: ASSET_A });
-    expect(filters.media_assets).toContainEqual({ column: "asset_role", value: "source" });
+  it("resolves an owned asset by id through the backend", async () => {
+    m.fetchAsset.mockResolvedValue({ ok: true, path: `${PARENT_A_USER}/order-1/photo.png`, mimeType: "image/png", originalFilename: "photo.png" });
+    const result = await resolveOwnedSourceAsset(CONTEXT, ASSET_A);
+    expect(result).toEqual({ ok: true, asset: { path: `${PARENT_A_USER}/order-1/photo.png`, mimeType: "image/png", originalFilename: "photo.png" } });
+    expect(m.fetchAsset).toHaveBeenCalledWith(CONTEXT, ASSET_A);
   });
 
   it("reports another parent's asset as not_found, indistinguishable from a missing one", async () => {
-    // The ownership filter is what makes the row invisible, so the query
-    // simply returns nothing — exactly as it would for an id that never existed.
-    const foreign = await resolveOwnedSourceAsset(
-      makeSupabase({ profile: { id: PARENT_A_PROFILE }, assetRow: null }).client,
-      "cccccccc-2222-4222-8222-222222222222",
-    );
-    const missing = await resolveOwnedSourceAsset(
-      makeSupabase({ profile: { id: PARENT_A_PROFILE }, assetRow: null }).client,
-      ASSET_A,
-    );
+    m.fetchAsset.mockResolvedValue({ ok: false, kind: "not_found" });
+    const foreign = await resolveOwnedSourceAsset(CONTEXT, "cccccccc-2222-4222-8222-222222222222");
+    const missing = await resolveOwnedSourceAsset(CONTEXT, ASSET_A);
     expect(foreign).toEqual({ ok: false, reason: "not_found" });
     expect(missing).toEqual(foreign);
   });
 
   it("refuses a row whose path is outside the caller's own folder", async () => {
-    const { client } = makeSupabase({
-      profile: { id: PARENT_A_PROFILE },
-      assetRow: {
-        file_url: "22222222-2222-4222-8222-222222222222/order-9/photo.png",
-        mime_type: "image/png",
-        original_filename: "photo.png",
-      },
-    });
-    const result = await resolveOwnedSourceAsset(client, ASSET_A);
-    expect(result).toEqual({ ok: false, reason: "not_found" });
+    m.fetchAsset.mockResolvedValue({ ok: true, path: "22222222-2222-4222-8222-222222222222/order-9/photo.png", mimeType: "image/png", originalFilename: "photo.png" });
+    expect(await resolveOwnedSourceAsset(CONTEXT, ASSET_A)).toEqual({ ok: false, reason: "not_found" });
   });
 
-  it("never queries for an anonymous caller", async () => {
-    const { client, filters } = makeSupabase({ user: null });
-    const result = await resolveOwnedSourceAsset(client, ASSET_A);
-    expect(result).toEqual({ ok: false, reason: "unauthenticated" });
-    expect(filters.media_assets).toBeUndefined();
+  it("a backend outage is read_failed, never a guess", async () => {
+    m.fetchAsset.mockResolvedValue({ ok: false, kind: "unavailable", outcomeUnknown: false });
+    expect(await resolveOwnedSourceAsset(CONTEXT, ASSET_A)).toEqual({ ok: false, reason: "read_failed" });
   });
 });
 

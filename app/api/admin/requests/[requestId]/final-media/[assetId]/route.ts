@@ -2,9 +2,10 @@ import { NextResponse } from "next/server";
 import {
   requireAdminFulfilmentAuth,
   fulfilmentJsonError,
-  approveFinalMediaViaTrustedRpc,
-  supersedeFinalMediaViaTrustedRpc,
+  adminFailureResponse,
 } from "@/lib/admin/requests/fulfilment-service";
+import { adminFinalMediaAction } from "@/lib/admin/requests/backend-requests";
+import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf";
 import { isSafeOrderId } from "@/lib/admin/requests/media-validation";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +26,9 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ requestId: string; assetId: string }> },
 ) {
+  const csrf = rejectUnsafeBrowserWrite(request);
+  if (csrf) return csrf;
+
   const auth = await requireAdminFulfilmentAuth();
   if (!auth.ok) return auth.response;
 
@@ -65,13 +69,10 @@ export async function PATCH(
     return fulfilmentJsonError("عملیات نامعتبر است.", 422, "REQUEST_INVALID_BODY");
   }
 
-  if (action === "approve") {
-    const result = await approveFinalMediaViaTrustedRpc(auth.adminUserId, requestId, assetId);
-    if (!result.ok) return fulfilmentJsonError(result.message, result.status, result.code);
-    return NextResponse.json({ data: { assetId: result.assetId, deliveryStatus: "approved" } }, { status: 200 });
-  }
-
-  const result = await supersedeFinalMediaViaTrustedRpc(auth.adminUserId, requestId, assetId);
-  if (!result.ok) return fulfilmentJsonError(result.message, result.status, result.code);
-  return NextResponse.json({ data: { assetId: result.assetId, deliveryStatus: "superseded" } }, { status: 200 });
+  const result = await adminFinalMediaAction(auth.context, requestId, assetId, action);
+  if (!result.ok) return adminFailureResponse(result, action === "approve" ? "تأیید فایل انجام نشد." : "جایگزینی فایل انجام نشد.");
+  return NextResponse.json(
+    { data: { assetId: result.assetId, deliveryStatus: action === "approve" ? "approved" : "superseded" } },
+    { status: 200 },
+  );
 }

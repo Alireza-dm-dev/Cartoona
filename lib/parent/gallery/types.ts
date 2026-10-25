@@ -34,5 +34,5 @@ export type ParentGalleryResult =
     }
   | {
       ok: false;
-      reason: "unauthenticated" | "no_parent_profile" | "read_failed" | "invalid_cursor";
+      reason: "unauthenticated" | "no_parent_profile" | "read_failed" | "invalid_cursor" | "forbidden";
     };

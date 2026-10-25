@@ -1798,10 +1798,246 @@ migration 0017 ships with the app; the rollback rule above. Unchanged: the
 deployment, Storage, and V0.1.52 scope (order detail, gallery, final media,
 admin fulfilment) before parents can use new requests end to end.
 
+## V0.1.52: order detail, media metadata and admin fulfilment on PostgreSQL
+
+From V0.1.52 a request is usable end to end on the new architecture: it is
+created in PostgreSQL (V0.1.50), paid for in PostgreSQL (V0.1.51), shown on the
+parent's detail page, fulfilled by an admin and delivered, **all from PostgreSQL
+rows**. Supabase is Auth and Storage object **bytes** only.
+
+### Order/media consumer audit (before any change)
+
+| route / page | R/W | source before | Storage dependency | role | ownership rule | V0.1.52 |
+|---|---|---|---|---|---|---|
+| `/dashboard/orders/[orderId]` (page) | R | Supabase `orders`+`video_requests`+`drawing_animation_requests`+`media_assets`+RPC history | signs source files (`parent-uploads`) | parent | `parent_id` = profile from a Supabase profile read | **PostgreSQL** (backend), Storage signs only |
+| `POST /api/parent/orders/[id]/final-media` | R+audit W | Supabase ownership + `media_assets`; admin-client INSERT into Supabase `audit_logs` | signs `final-deliverables` with the **session** (Storage RLS read Supabase `media_assets`) | parent | Supabase read | **PostgreSQL** authorization + PostgreSQL audit; service credential signs |
+| `GET /api/parent/gallery`, `/dashboard/gallery` | R | Supabase `media_assets` join `orders` | batch-signs `parent-uploads` | parent | `orders.parent_id` | **PostgreSQL** keyset page, Storage signs the page |
+| `POST /api/requests` (gallery source) | R | Supabase `resolveOwnedSourceAsset` | server-side `copy` | parent | `orders.parent_id` | **PostgreSQL** (`GET /v1/parent/gallery/:id`), Storage copies |
+| `/admin/requests`, `/admin/requests/[id]` | R | Supabase joins (`parent_profiles`, `users`, `characters`, `media_assets`) | signs source + final | admin / super_admin | none (admins see all) | **PostgreSQL** |
+| `PATCH /api/admin/requests/[id]/status` | W | admin-client RPC `update_order_status_trusted` **in Supabase** | none | admin | role from Supabase `users` | **PostgreSQL** (v3 + nonce) |
+| `POST /api/admin/requests/[id]/final-media` | Storage W + DB W | admin-client upload + RPC `record_final_media_trusted` in Supabase | uploads bytes | admin | Supabase role | bytes -> Storage, **link -> PostgreSQL** |
+| `PATCH .../final-media/[assetId]` | W | Supabase RPC approve/supersede | none | admin | Supabase role | **PostgreSQL** |
+
+Staying on Supabase, on purpose (all documented below): the Edge middleware and
+the admin layout role gate (`users.role`), referrals, homepage/example CMS,
+`ensureParentProfile`/signup, the dev parent-auth route.
+
+### Metadata vs bytes
+
+| | PostgreSQL | Supabase Storage |
+|---|---|---|
+| a media row | id, order, `type`, `asset_role`, `delivery_status`, `parent_visible`, object **key** (`file_url`), MIME, size, filename, timestamps | the object |
+| authorization | every statement (`orders.parent_id = <profile>`, role/status/visibility predicates) | **none**: not consulted, `storage.objects` is never read |
+| a signed URL | never stored or returned by the backend | minted per request, 300 s, after PostgreSQL returned the key |
+| a browser | gets ids + short-lived URLs | never names a key or bucket |
+
+### Migration 0018
+
+No state machine changes: `update_order_status_trusted`, `record_final_media_trusted`,
+`approve_final_media_trusted`, `supersede_final_media_trusted` and
+`get_order_status_history_admin_trusted` already existed in 0005 (a comment-stripped diff
+against Supabase shows identical bodies). 0018 only:
+
+- adds `record_final_media_access_audit_trusted(actor, order, asset, action)`: SECURITY
+  DEFINER, empty `search_path`, refuses anything but the **owning** parent and the order's
+  **current approved, parent-visible final**, action in (`final_media_view`,
+  `final_media_download`), stores `{orderId}` only;
+- `REVOKE ALL ... FROM PUBLIC` then `GRANT EXECUTE` on those six functions to `cartoona_app`;
+- `GRANT SELECT` on `media_assets`, `video_requests`, `drawing_animation_requests`.
+
+Still no INSERT/UPDATE/DELETE on `orders`, `order_status_history`, `media_assets` or
+`audit_logs`. The data-copy target pin is 18 migrations.
+
+### Routes
+
+Backend (all `Cache-Control: no-store`; caller = `request.authPrincipal` only):
+
+| route | auth | notes |
+|---|---|---|
+| `GET /v1/parent/orders/:orderId` | v2, parent | ownership first, then source media, parent-safe history, current final; 4 statements, independent of file count |
+| `GET /v1/parent/orders/:orderId/final-media` | v2, parent | the key of the current approved final of an owned order; 404 otherwise |
+| `POST /v1/parent/orders/:orderId/final-media/access` | v3, parent | `{assetId, action}` -> audit function |
+| `GET /v1/parent/gallery?cursor&limit` | v2, parent | keyset `(created_at desc, id desc)`, 24 default / 48 max, source uploads only |
+| `GET /v1/parent/gallery/:assetId` | v2, parent | an owned source asset (request re-use) |
+| `GET /v1/admin/requests`, `/:id` | v2, admin/super_admin | queue (type/status/page), detail + media metadata + history (role re-checked in SQL) |
+| `GET /v1/admin/requests/:id/upload-gate` | v2, admin | admin + order exists + status allows a final upload; asked **before** bytes are stored |
+| `PATCH /v1/admin/requests/:id/status` | v3, admin | `{status, expectedUpdatedAt, internalNote, parentVisibleNote}` |
+| `POST /v1/admin/requests/:id/final-media` | v3, admin | `{filePath, mimeType, byteSize, originalFilename}` -> record the link |
+| `PATCH /v1/admin/requests/:id/final-media/:assetId` | v3, admin | `{action: approve \| supersede}` |
+
+Next (BFF): `verifyParentCaller()` -> the loaders in `lib/parent/orders/backend-order-detail.ts`,
+`lib/parent/backend-media.ts`, `lib/admin/requests/backend-requests.ts`. Every browser write
+starts with the shared CSRF guard (JSON, or the multipart variant for the upload). Next never
+decides a role: the backend refuses a parent on every admin route (403), the trusted functions
+re-check in PostgreSQL, and the browser can send no actor id.
+
+### Signed-URL authorization
+
+1. The only authorization is a PostgreSQL row: owner (`orders.parent_id` = the profile resolved
+   from the verified assertion) **and** `asset_role = 'final'`, `delivery_status = 'approved'`,
+   `parent_visible = true`. Foreign, unknown, superseded, unapproved all answer the same 404.
+2. The key signed is the one that row returned. No request field (body, query, header) can
+   name an object; a static guard pins `signFinalDeliverable(authorized.path, ...)`.
+3. Order in the route: authorize -> per-parent rate limit -> sign -> audit. A limited request
+   mints nothing; a failed audit write is logged (ids only) and never fails the response.
+4. **Why the service credential signs final deliverables:** the `final-deliverables` bucket
+   policy read Supabase `media_assets`. PostgreSQL-created orders have no such row, so the
+   policy would deny them. The policy is now irrelevant: PostgreSQL authorizes, then
+   `lib/storage/final-deliverables.ts` (the only module using the service client for these
+   paths, Storage calls only, never a table) signs. Source previews (`parent-uploads`) are
+   path-prefix based and still signed with the caller's session client.
+
+### Fulfilment state machine (unchanged, documented from the existing function)
+
+`pending_review -> in_progress | rejected | cancelled`; `in_progress -> ready | rejected | cancelled`;
+`ready -> delivered`; `delivered`, `rejected`, `cancelled` are terminal. `ready` requires at least
+one approved parent-visible final; `rejected` requires an internal or parent-visible note; notes
+are trimmed, empty -> NULL, <= 2000 chars. One statement: lock the order `FOR UPDATE`, compare
+`expectedUpdatedAt`, validate, update the order and append **one** `order_status_history` row.
+Parent-facing mapping (`status-mapping.ts`): `delivered` -> "ready", `rejected`/`cancelled` -> "closed".
+Rejection and cancellation do **not** refund candies (existing behavior, no financial mutation in
+this function; flagged below).
+
+### History and idempotency
+
+- Exactly one history row per real transition (proved: 12 parallel identical requests -> one write, one row).
+- The same v3 assertion twice -> `409 replayed_request` (nonce) before the handler.
+- A new assertion repeating a committed transition: a stale `expectedUpdatedAt` raises
+  `request_status_conflict`; if the order's current status already equals the target the
+  backend answers **200 `replayed: true`** with the current state and writes nothing. A current
+  token with an unchanged status stays `409 request_status_unchanged`; a different target stays 409.
+- A database failure on a write is a 503 the Next route reports as "result unknown, reload"
+  (never "not saved").
+
+### Final-media write boundary
+
+The Next BFF is the only holder of the storage credential, so the order is: backend **gate**
+(admin, order exists, status in pending_review/in_progress/ready) -> validate type/size ->
+upload bytes -> backend **record** -> on a *definite* refusal remove the object, on an
+*unknown* outcome keep it. The backend validates before the function runs: key exactly
+`orders/<this order>/final/<uuid>.<ext>`, extension agrees with an allow-listed MIME
+(png/jpeg/webp/mp4/webm), size within the type's cap (10 MiB image / 100 MiB video), exact body
+keys; the function re-checks the prefix, status and role. The object-exists check the 0005 function
+documents is satisfied by the upload having just succeeded (the backend holds no Storage client).
+A new final starts `uploaded`, not visible; approval is explicit; `ready` needs an approved one.
+
+### Storage failure semantics
+
+Metadata is always shown. A signing failure degrades each preview to `signedUrl: null` (the
+existing "unavailable" tile); the final-media route answers a retryable `500 SIGNING_FAILED`;
+nobody is signed out; the audit row is written only after a URL was minted.
+
+### Supabase profile / dependency map (item 24/26)
+
+| need | Supabase | PostgreSQL |
+|---|---|---|
+| sign-in, token verification | **Auth** | identity link, role, session policy |
+| object bytes, signed URLs, upload/copy/remove | **Storage** | keys + metadata |
+| Edge middleware / admin layout role gate | `users.role` read (the one remaining business-shaped read on the order path) | authoritative role for every backend decision |
+| order, media, history, fulfilment, wallet, purchases | - | **all** |
+| referrals, homepage/example CMS, `ensureParentProfile`/signup, dev route | still Supabase | not migrated |
+
+The unused `ParentRequestContext` (a Supabase profile/role reader) was deleted. Remaining
+Supabase `parent_profiles`/`users` readers: referrals (3 routes), `complete-signup` +
+`ensureParentProfile`, `/api/parent/password`, the admin layout / `requireAdmin` / example auth,
+the dev route and the `/complete-request` page's role gate. Referrals were not migrated (not trivial:
+the RPC set, the settings table and the admin pages).
+
+### Rollback (HARD rule)
+
+Never re-enable a Supabase order, request, fulfilment or financial writer: the Supabase
+`orders`, `media_assets`, `order_status_history` and wallet rows are stale by construction and
+would diverge from PostgreSQL. Roll back only to builds at or after V0.1.52 for anything
+touching orders/media; otherwise freeze the affected routes (503) until forward recovery. No
+dual write and no reverse sync exists. Migration 0018 is additive (a function and grants).
+
+### Copied data
+
+Historical orders, history (microsecond timestamps), source uploads and approved/superseded
+finals read through the new path unchanged (proved with the copied fixture: delivered order with
+three history rows and v1 superseded / v2 approved; a drawing animation with its upload; an
+in-progress video cancelled by an admin on the new stack). Storage keys are untouched.
+
+### Still NOT migrated
+
+Storage bytes, referrals, other admin writes (homepage, examples, referral settings), signup profile
+creation, the Edge role gate, a refund policy for rejected/cancelled orders, a real payment provider.
+
+### Migration matrix (after V0.1.52)
+
+| Surface | Source of truth |
+|---|---|
+| Auth | Supabase |
+| Identity provisioning, consent, account reads, orders list | PostgreSQL |
+| Request submission, candy debit | PostgreSQL |
+| Candy purchase / payment / coupons | PostgreSQL |
+| **Order detail** | **PostgreSQL** |
+| **Gallery metadata, final-media metadata, signed-URL authorization** | **PostgreSQL** |
+| **Admin queue, detail, status transitions, history** | **PostgreSQL** |
+| **Final-media link, approve, supersede, access audit** | **PostgreSQL** |
+| Payment provider (checkout, proof) | external (stub only locally) |
+| Referrals | legacy (Supabase) |
+| Homepage / examples CMS | legacy (Supabase) |
+| Edge role gate, admin layout | Supabase `users.role` |
+| Object bytes + signed URLs | Supabase Storage |
+
+### Verified locally (2026-10-24)
+
+**Totals** (`CARTOONA_PLAIN_PG=docker`): 112 files (109 passed, 3 skipped files), **3224 passed**, 34
+skipped (the opt-in suites that need a disposable Supabase project), 0 failed (V0.1.51: 3179 / 34).
+`npm run lint`: 0 errors (29 pre-existing warnings). `next build` (run inside the proof image
+build), `npm run backend:typecheck`, `npm run backend:build`, `git diff --check`: clean. Repo-wide
+`tsc` still reports only the known test-only type errors; no runtime file has one.
+
+| suite | tests | proves |
+|---|---|---|
+| `order-fulfilment-cutover-db.test.ts` (real PostgreSQL 17, copy, restricted role, listening Fastify, Next route handlers/loaders, stub Auth + in-memory Storage) | 47 | 8 forbidden privilege probes + role checks inside the functions; the audit function refuses non-owner/superseded/wrong order/unknown action; parent detail ownership (foreign = unknown = malformed = identical 404; admin 403; unlinked 403), no N+1 (statement count independent of file count), copied history with microseconds; final media: owner signs, audit row has ids only, cross-parent/unapproved/superseded/unknown all 404 and nothing signed, browser cannot name a key, CSRF, admin cannot use the parent route, **Storage outage keeps metadata and is a retryable 500 without sign-out or audit row**; gallery: 60 rows with identical timestamps walk 24/24/12 with no duplicate or gap, exact multiple has no phantom page, upload between pages, deleted cursor row, forged cursors 400, foreign/final/other roles excluded, batch signing, re-use resolves only owned sources; admin: queue/detail incl. internal notes, parent 403 on every verb with X-Role/X-User-Id spoof ignored, read-vs-write/body/path assertion binding, a session that *claims* admin but is a parent is 403 and stores no byte; state machine: one history row with the admin as actor, same assertion twice 409, new-nonce retry 200 `replayed` with no second row, every refusal writes nothing, terminals never reopen, **12 parallel identical transitions -> one write**, **competing targets -> one winner and clean 409s**; final-media boundary: 11 key/MIME/size violations 422 + shape 400, uploaded->approved->superseded, gate before bytes, **definite refusal removes the object, unknown outcome keeps it**; end to end upload -> approve -> ready -> delivered with parent list/detail/final/gallery and the admin view agreeing; copied order history/media intact and advanceable; zero `/rest/v1` calls |
+| `order-fulfilment-cutover-static.test.ts` | 15 | no `.from()/.rpc()` on a business table in the migrated surfaces; deleted readers/writers stay deleted; the service credential is Storage-only; the backend has no Storage code; signing only after PostgreSQL authorization in a fixed order; no actor/role/key from the browser; CSRF then caller; gate before `formData()`/upload; backend role and write preHandlers; key rules; 0018 shape and pin; repositories are constant SQL |
+| ported | | gallery (3 files), observability and rate-limit routes, session-lifetime route test, privilege probes that listed the now-granted functions, schema parity (+1 target-only function), migration pins (18), static guard lists (CSRF users, backend client users, backend writes, write auth) |
+
+**Docker / headless browser proof** (real `Dockerfile`s tagged `proof052`, frontend + backend containers on the
+compose network, scratch PostgreSQL 17 migrated through 0018 and populated by the real copy tool, stub Supabase
+Auth/Storage and the stub payment provider on the host): **49/49 checks passed.** New parent: sign-in ->
+provisioning -> consent -> candy bought through the provider stub -> request submitted (exists only in
+PostgreSQL) -> **the detail page renders it** (it 404'd before) with its source file from a short-lived signed
+URL -> gallery lists it -> no final media yet (404, nothing signed). Admin (email sign-in): queue and detail
+render from PostgreSQL; in_progress with exactly one history row by the admin; `ready` without an approved
+final refused; upload (bytes to Storage, link in PostgreSQL, not visible); a disallowed type refused before
+any byte is stored; approve; a spare upload superseded; ready; a stale token is a 409 and writes nothing;
+delivered; a stale-token retry returns the current state and writes nothing; terminal never reopens. Parent
+again: detail shows the result without any storage key, the final signs only for the approved asset (never the
+superseded copy), the audit row is in PostgreSQL, list and gallery agree. Unauthorized parent: the same 404 for
+another parent's order and an unknown id, cannot sign the final (nothing signed), gallery excludes it, the admin
+status/upload APIs are 403 with no byte stored, the admin page is unreachable. Copied historical order: renders
+with history, its approved v2 (not v1) signs, admin sees internal notes, cannot be reopened. Storage down:
+metadata still renders, the signed route is a retryable 500, the same session works after recovery. The
+browser contacted only Next, the auth stub and the provider's checkout page; no assertion header; no secret,
+DB password or backend address in the console; the Supabase REST surface was called only for the Edge/admin
+role gate (`/rest/v1/users`).
+
+Local timings (Docker, one machine, restricted role, loopback Fastify, 20-30 calls each; NOT production
+estimates; the transition figure includes reading the concurrency token first):
+
+| path | median | p90 |
+|---|---|---|
+| parent order detail (backend) | 5.7 ms | 10.0 ms |
+| gallery first page (24 of 30, backend) | 6.0 ms | 13.4 ms |
+| admin queue (backend) | 3.8 ms | 5.2 ms |
+| admin detail (backend) | 3.9 ms | 5.5 ms |
+| status transition (token read + write) | 8.1 ms | 25.0 ms |
+| final-media association | 3.9 ms | 6.5 ms |
+| signed-URL authorization (PostgreSQL part) | 3.3 ms | 4.8 ms |
+
+### Production status
+
+**Not deployable.** Unchanged blockers: no real payment provider adapter; the `amr` check against real
+Supabase tokens; a real `pg_dump` rehearsal; backend deployment; Storage still Supabase (and its
+service credential now also signs final deliverables); migration 0018 ships with the app. New: the
+Edge/admin-layout role gate still reads Supabase `users.role`; no refund policy for rejected/cancelled.
+
 ## Next
 
-V0.1.52: order detail, final media, gallery (and the media rows new requests
-create) and admin fulfilment on PostgreSQL, so a new request is usable end to
-end; then referrals, then stop writing the Supabase profile at signup.
-Production blockers: a real payment provider adapter, the `amr` check, a real
-`pg_dump` rehearsal, backend deployment, Storage.
+V0.1.53: referrals (then stop writing the Supabase profile at signup and retire the Supabase role reads in
+the Edge middleware / admin layout), then Storage bytes. Blockers before V0.1.53: none in this release's
+scope; of the carried items, decide the role-gate source (middleware) first because it is the last
+Supabase read on the order path.

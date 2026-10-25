@@ -75,9 +75,9 @@ describe("POST /api/requests has no Supabase Database/RPC business access", () =
     expect(read(ROUTE)).toContain('const OUTCOME_UNKNOWN_MESSAGE = "نتوانستیم تأیید کنیم که درخواست ثبت شده است یا نه."')
   })
 
-  it("Storage stays Supabase (bytes are not migrated) and is the ONLY remaining Supabase dependency besides Auth and the gallery metadata read", () => {
+  it("Storage stays Supabase (bytes are not migrated) and is the ONLY remaining Supabase dependency besides Auth (V0.1.52: the gallery source is resolved in PostgreSQL too)", () => {
     expect(route).toMatch(/supabase\.storage\s*\.from\("parent-uploads"\)/)
-    expect(route).toMatch(/resolveOwnedSourceAsset\(supabase, sourceAssetId\)/)
+    expect(route).toMatch(/resolveOwnedSourceAsset\(context, sourceAssetId\)/)
     const supabaseImports = [...read(ROUTE).matchAll(/from "(@\/lib\/supabase\/[a-z-]+)"/g)].map((m) => m[1])
     expect(supabaseImports).toEqual(["@/lib/supabase/server"])
   })
@@ -200,9 +200,9 @@ describe("scope: what did NOT move", () => {
     expect(code(ROUTE)).not.toMatch(/candy-purchases|backend-purchases/)
   })
 
-  it("the order DETAIL page and final media still read Supabase (documented V0.1.51 blocker)", () => {
-    expect(code("lib/parent/orders/detail-queries.ts")).toMatch(/SupabaseClient/)
-    expect(code("app/(dashboard)/dashboard/orders/[orderId]/page.tsx")).toMatch(/detail-queries|queries/)
+  it("V0.1.52 closed the V0.1.51 blocker: the order DETAIL page reads PostgreSQL through the backend loader", () => {
+    expect(code("lib/parent/orders/detail-queries.ts")).not.toMatch(/SupabaseClient/)
+    expect(code("app/(dashboard)/dashboard/orders/[orderId]/page.tsx")).toMatch(/backend-order-detail/)
   })
 
   it("migration 0016 changes no function body and adds no table, column or write privilege", () => {

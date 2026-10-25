@@ -48,6 +48,10 @@ const BACKEND_CLIENT_USERS = [
   "lib/admin/coupons/queries.ts",
   "lib/admin/coupons/service.ts",
   "lib/candy-purchases/backend-purchases.ts",
+  // V0.1.52: order detail, gallery/final-media metadata, admin requests + fulfilment.
+  "lib/admin/requests/backend-requests.ts",
+  "lib/parent/backend-media.ts",
+  "lib/parent/orders/backend-order-detail.ts",
 ].sort()
 // V0.1.48: every consent decision goes through the consent loader.
 const CONSENT_SURFACES = [
@@ -82,6 +86,14 @@ const BACKEND_ROUTES = [
   "app/api/payments/return/[provider]/route.ts",
   "app/api/payments/webhooks/[provider]/route.ts",
 ]
+// V0.1.52: these routes/pages reach the backend through the caller + loaders above (never the client directly).
+const V0152_BACKEND_SURFACES = [
+  "app/api/admin/requests/[requestId]/final-media/[assetId]/route.ts",
+  "app/api/admin/requests/[requestId]/final-media/route.ts",
+  "app/api/admin/requests/[requestId]/status/route.ts",
+  "app/api/parent/gallery/route.ts",
+  "app/api/parent/orders/[orderId]/final-media/route.ts",
+]
 
 describe("scope: creation pricing, the parent orders LIST and the parent account reads are the only migrated business reads", () => {
   it("only the pricing route, the auth proof route and the orders-list, account and consent loaders use the backend client", () => {
@@ -107,16 +119,20 @@ describe("scope: creation pricing, the parent orders LIST and the parent account
   })
 
   it("every other route (order detail, final media, gallery, billing, writes...) never reaches the backend", () => {
-    const routes = walk("app/api").filter((f) => !BACKEND_ROUTES.includes(f) && f !== "app/api/health/route.ts")
+    const routes = walk("app/api").filter((f) => !BACKEND_ROUTES.includes(f) && !V0152_BACKEND_SURFACES.includes(f) && f !== "app/api/health/route.ts")
     expect(routes.length).toBeGreaterThan(10)
-    expect(routes).toContain("app/api/parent/orders/[orderId]/final-media/route.ts")
-    // Storage-backed and write routes in particular:
-    for (const r of ["app/api/parent/gallery/route.ts", "app/api/referrals/route.ts", "app/api/parent/password/route.ts", "app/api/parent/complete-signup/route.ts"]) {
+    // Referral and legacy-signup routes stay on Supabase (documented; V0.1.52 audit):
+    for (const r of ["app/api/referrals/route.ts", "app/api/parent/password/route.ts", "app/api/parent/complete-signup/route.ts"]) {
       expect(routes, r).toContain(r)
     }
     for (const route of routes) expect(read(route), route).not.toMatch(/@\/lib\/backend|BACKEND_INTERNAL_URL|backend-orders|backend-account|backend-consent|backend-caller/)
     // V0.1.51: the two admin coupon pages read through the admin coupon loader.
-    const ADMIN_COUPON_PAGES = ["app/admin/coupons/[couponId]/page.tsx", "app/admin/coupons/new/page.tsx"]
+    const ADMIN_COUPON_PAGES = [
+      "app/admin/coupons/[couponId]/page.tsx", "app/admin/coupons/new/page.tsx",
+      // V0.1.52: the order detail, gallery and admin request pages read through the backend loaders.
+      "app/(dashboard)/dashboard/orders/[orderId]/page.tsx", "app/(dashboard)/dashboard/gallery/page.tsx",
+      "app/admin/requests/page.tsx", "app/admin/requests/[requestId]/page.tsx",
+    ]
     for (const page of walk("app").filter((f) => f.endsWith("page.tsx") && !ORDERS_LIST_SURFACES.includes(f) && !CONSENT_SURFACES.includes(f) && !ADMIN_COUPON_PAGES.includes(f))) {
       expect(read(page), page).not.toMatch(/@\/lib\/backend|backend-orders|backend-account|backend-consent|backend-caller/)
     }
@@ -127,6 +143,11 @@ describe("scope: creation pricing, the parent orders LIST and the parent account
     const registered = [...routes.matchAll(/app\.(get|post|put|patch|delete|route)\(\s*"([^"]+)"/g)].map((m) => `${m[1].toUpperCase()} ${m[2]}`)
     expect(registered.sort()).toEqual([
       "GET /health", "GET /ready", "GET /v1/admin/coupons", "GET /v1/admin/coupons/:couponId", "GET /v1/admin/coupons/packages",
+      // V0.1.52: admin requests, parent order detail / final media / gallery.
+      "GET /v1/admin/requests", "GET /v1/admin/requests/:requestId", "GET /v1/admin/requests/:requestId/upload-gate",
+      "GET /v1/parent/gallery", "GET /v1/parent/gallery/:assetId", "GET /v1/parent/orders/:orderId", "GET /v1/parent/orders/:orderId/final-media",
+      "PATCH /v1/admin/requests/:requestId/final-media/:assetId", "PATCH /v1/admin/requests/:requestId/status",
+      "POST /v1/admin/requests/:requestId/final-media", "POST /v1/parent/orders/:orderId/final-media/access",
       "GET /v1/auth/me", "GET /v1/candy-packages", "GET /v1/creation-pricing", "GET /v1/parent/candy-purchases",
       "GET /v1/parent/candy-purchases/:purchaseId/coupon-validation", "GET /v1/parent/orders",
       // V0.1.51 writes registered with a literal path (the others use *_PATH constants)

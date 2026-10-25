@@ -302,6 +302,29 @@ with `{ outcome }` for every handled case (`processed`, `duplicate_event`,
 provider retries; nothing was written). The backend never holds a provider
 secret.
 
+## Order detail, media metadata and admin fulfilment (V0.1.52)
+
+| Route | Auth |
+|---|---|
+| `GET /v1/parent/orders/:orderId` | v2 parent (ownership in SQL; 404 for foreign, unknown and malformed ids alike) |
+| `GET /v1/parent/orders/:orderId/final-media` | v2 parent (the key of the current approved, parent-visible final) |
+| `POST /v1/parent/orders/:orderId/final-media/access` `{assetId, action}` | v3 parent (audit row) |
+| `GET /v1/parent/gallery?cursor&limit`; `GET /v1/parent/gallery/:assetId` | v2 parent |
+| `GET /v1/admin/requests`, `/:requestId`, `/:requestId/upload-gate` | v2 admin or super_admin |
+| `PATCH /v1/admin/requests/:requestId/status` | v3 admin or super_admin |
+| `POST /v1/admin/requests/:requestId/final-media` | v3 admin or super_admin |
+| `PATCH /v1/admin/requests/:requestId/final-media/:assetId` `{action}` | v3 admin or super_admin |
+
+The backend holds **no Storage client and no storage credential**: it returns
+object keys only to the Next BFF, after PostgreSQL ownership and visibility
+predicates selected the row, and records links the BFF already stored. Admin
+writes: `requireWriteAuth(deps, "admin", "super_admin")` inline (a parent gets
+403 before any handler), exact-key bodies, small body limits, final-media keys
+validated against the order, MIME allow-list and size caps before the
+trusted function. Function refusals answer `{ error: <token> }` with the HTTP
+status of `mapFulfilmentRpcError`; a stale-token retry of a committed transition
+answers 200 `replayed: true`. Details: ROUTE_CUTOVER "V0.1.52".
+
 
 ## Local timings (informational)
 
@@ -330,6 +353,8 @@ Desktop. These are **not production estimates**.
 | `tests/unit/write-security-static.test.ts` | none | write routes use `requireWriteAuth`; nonce only on the write path; no Next write cut over; grants |
 | `tests/unit/write-security-db.test.ts` | opt-in `CARTOONA_PLAIN_PG=docker` | nonce function (first use, replay, 20-way races, held-lock race, expiry, purge), role privileges, the route as a login role, cross-parent, roles, session policy, uncertain timeout, read-after-write, timings |
 | `tests/unit/backend-auth-provision.test.ts` | always (fake DB) | `POST /v1/auth/provision` (V0.1.49): unlinked subject allowed, forged body/headers/query ignored or refused, tampered body, cross-path, wrong method, expired, v2-as-write, replay, deleted/admin, conflict mapping, database outages |
+| `tests/unit/order-fulfilment-cutover-db.test.ts` | opt-in `CARTOONA_PLAIN_PG=docker` | V0.1.52: privileges, parent detail/gallery/final-media ownership and signing, admin role isolation and v3 binding, the fulfilment state machine, history idempotency and races, the final-media write boundary, Storage outage, copied and PG-only orders end to end, timings |
+| `tests/unit/order-fulfilment-cutover-static.test.ts` | none | V0.1.52 guards: no Supabase business access, signing only after PostgreSQL authorization, no browser-supplied key/actor/role, CSRF and gate order, migration 0018 shape |
 | `tests/unit/provisioning-db.test.ts` | opt-in `CARTOONA_PLAIN_PG=docker` | the provisioning function as the login role (created/existing/backfill/conflicts/rollback), 20-way same-subject races (SQL, Fastify, Next), privileges, copied-vs-provisioned row shape, new-user end to end through Next, partial failures, timings |
 
 ## Before the first authenticated route cuts over

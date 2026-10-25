@@ -276,6 +276,23 @@ databases (see ROUTE_CUTOVER "V0.1.51"); they are replaced with
 `#variable_conflict use_column`, otherwise verbatim. The schema-parity test
 lists them as intentionally changed.
 
+### Order, media and fulfilment grants (V0.1.52)
+
+Migration 0018: EXECUTE on `update_order_status_trusted`,
+`record_final_media_trusted`, `approve_final_media_trusted`,
+`supersede_final_media_trusted`, `get_order_status_history_admin_trusted`
+(all from 0005, bodies untouched) and the new
+`record_final_media_access_audit_trusted`; SELECT on `media_assets`,
+`video_requests`, `drawing_animation_requests`. No INSERT/UPDATE/DELETE on
+`orders`, `order_status_history`, `media_assets` or `audit_logs`; the admin role
+check happens inside the functions (a parent user id is refused with P0001 even
+though EXECUTE is granted). `lib/repositories/parent-media.ts` (detail, gallery,
+final key, owned source asset, access audit) and `admin-requests.ts` (queue,
+detail, status, record/approve/supersede) hold constant SQL with bind
+parameters; ownership is `o.parent_id = $profile` inside the statement and no
+function accepts a parent id from a request. Timestamps are rendered as
+microsecond UTC text so `updatedAt` round-trips byte for byte.
+
 
 ## Tests
 

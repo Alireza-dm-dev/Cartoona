@@ -1,6 +1,7 @@
 import "server-only";
 
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { VerifiedAuthContext } from "@/lib/auth/supabase-identity-adapter";
+import { fetchOwnedSourceAsset } from "@/lib/parent/backend-media";
 import { PRIVATE_UPLOADS_BUCKET } from "@/lib/storage/private-signed-url";
 
 const UUID_RE =
@@ -22,67 +23,41 @@ export type ResolveSourceAssetResult =
   | { ok: false; reason: "unauthenticated" | "no_parent_profile" | "not_found" | "read_failed" };
 
 /**
- * Resolve a gallery asset the parent selected, proving ownership first.
+ * Resolve a gallery asset the parent selected, proving ownership first
+ * (V0.1.52: PostgreSQL through the backend, no Supabase table read).
  *
- * The browser sends a `media_assets.id` and nothing else — never a storage
+ * The browser sends a `media_assets.id` and nothing else - never a storage
  * path, which is why the path is looked up here rather than accepted as
- * input. The lookup filters on the resolved `parent_id`, so an id belonging to
- * another parent cannot resolve, and row level security applies the same rule
- * independently.
+ * input. The backend filters on the profile resolved from the verified
+ * assertion, so an id belonging to another parent cannot resolve.
  *
  * An asset owned by someone else is reported as `not_found`, identical to an
  * id that does not exist, so a crafted id cannot be used to probe whether
  * another parent's media is real.
  */
 export async function resolveOwnedSourceAsset(
-  supabase: SupabaseClient,
+  context: VerifiedAuthContext,
   assetId: unknown,
 ): Promise<ResolveSourceAssetResult> {
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) return { ok: false, reason: "unauthenticated" };
   if (!isValidAssetId(assetId)) return { ok: false, reason: "not_found" };
 
-  const { data: profile, error: profileError } = await supabase
-    .from("parent_profiles")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle();
-
-  if (profileError) return { ok: false, reason: "read_failed" };
-  if (!profile?.id) return { ok: false, reason: "no_parent_profile" };
-
-  const { data, error } = await supabase
-    .from("media_assets")
-    .select("file_url, mime_type, original_filename, orders!inner(parent_id)")
-    .eq("id", assetId)
-    .eq("orders.parent_id", profile.id)
-    .eq("type", "upload")
-    .eq("asset_role", "source")
-    .maybeSingle();
-
-  if (error) return { ok: false, reason: "read_failed" };
-  if (!data) return { ok: false, reason: "not_found" };
-
-  const path = typeof data.file_url === "string" ? data.file_url : null;
-  if (!path) return { ok: false, reason: "not_found" };
+  const found = await fetchOwnedSourceAsset(context, assetId);
+  if (!found.ok) {
+    if (found.kind === "not_found" || found.kind === "invalid") return { ok: false, reason: "not_found" };
+    if (found.kind === "auth") {
+      return { ok: false, reason: found.reason === "no_parent_profile" ? "no_parent_profile" : found.reason === "service_unavailable" ? "read_failed" : "not_found" };
+    }
+    return { ok: false, reason: "read_failed" };
+  }
 
   // Defence in depth against a historical row whose path does not follow the
   // per-parent convention: a copy is only ever made from the caller's own
   // folder, whatever the row claims.
-  if (!path.startsWith(`${user.id}/`)) return { ok: false, reason: "not_found" };
+  if (!found.path.startsWith(`${context.identity.subject}/`)) return { ok: false, reason: "not_found" };
 
   return {
     ok: true,
-    asset: {
-      path,
-      mimeType: typeof data.mime_type === "string" ? data.mime_type : null,
-      originalFilename:
-        typeof data.original_filename === "string" ? data.original_filename : null,
-    },
+    asset: { path: found.path, mimeType: found.mimeType, originalFilename: found.originalFilename },
   };
 }
 

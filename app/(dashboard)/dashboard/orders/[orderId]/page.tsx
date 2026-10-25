@@ -12,11 +12,9 @@ import {
 } from "@/components/dashboard/orders/order-detail-sections";
 import { OrderFinalMedia } from "@/components/dashboard/orders/order-final-media";
 import { OrdersErrorState, OrdersNoProfileState } from "@/components/dashboard/orders/orders-states";
-import { getParentOrderDetail } from "@/lib/parent/orders/detail-queries";
+import { fetchParentOrderDetail, verifyParentOrderDetailCaller } from "@/lib/parent/orders/backend-order-detail";
 import { PARENT_STATUS_LABELS, PARENT_STATUS_VARIANTS } from "@/lib/parent/orders/status-mapping";
 import { parentTypeIcon, parentTypeLabel } from "@/lib/parent/orders/type-mapping";
-import { resolveParentRequestContext } from "@/lib/parent/parent-request-context";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 /**
  * /dashboard/orders/[orderId] — one of the parent's own requests.
@@ -44,22 +42,21 @@ export default async function OrderDetailPage({
   params: Promise<{ orderId: string }>;
 }) {
   const { orderId } = await params;
-  const supabase = await createServerSupabaseClient();
 
-  // Identity once, then reused by every query below (middleware has already
-  // enforced role and session lifetime for this request).
-  const identity = await resolveParentRequestContext(supabase, { verify: "identity" });
-  if (!identity.ok && identity.reason === "unauthenticated") {
+  // Identity once (provider-verified session), then ONE backend read: ownership,
+  // metadata and history come from PostgreSQL; Storage only signs source keys.
+  const caller = await verifyParentOrderDetailCaller();
+  if (!caller.ok && caller.reason === "unauthenticated") {
     redirect(`/login?from=/dashboard/orders/${encodeURIComponent(orderId)}`);
   }
 
-  const result = identity.ok
-    ? await getParentOrderDetail(supabase, orderId, identity.context)
-    : null;
+  const result = caller.ok ? await fetchParentOrderDetail(caller.context, orderId) : null;
 
   // Another parent's order and a non-existent id are deliberately
   // indistinguishable from here.
   if (result && !result.ok && result.reason === "not_found") notFound();
+  const noProfile = (!caller.ok ? false : result !== null && !result.ok && result.reason === "no_parent_profile");
+  const failed = !caller.ok || (result !== null && !result.ok && result.reason !== "no_parent_profile");
 
   return (
     <div className="mx-auto max-w-[880px]">
@@ -73,9 +70,8 @@ export default async function OrderDetailPage({
         <span aria-hidden="true">→</span> بازگشت به سفارش‌های من
       </Link>
 
-      {!identity.ok && identity.reason === "no_parent_profile" && <OrdersNoProfileState />}
-      {!identity.ok && identity.reason !== "no_parent_profile" && <OrdersErrorState />}
-      {result && !result.ok && <OrdersErrorState />}
+      {noProfile && <OrdersNoProfileState />}
+      {failed && <OrdersErrorState />}
 
       {result?.ok && (
         <>

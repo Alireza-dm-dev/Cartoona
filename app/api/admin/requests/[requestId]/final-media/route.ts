@@ -3,10 +3,11 @@ import { randomUUID } from "node:crypto";
 import {
   requireAdminFulfilmentAuth,
   fulfilmentJsonError,
-  uploadFinalDeliverableToStorage,
-  recordFinalMediaViaTrustedRpc,
-  deleteFinalDeliverableFromStorage,
+  adminFailureResponse,
 } from "@/lib/admin/requests/fulfilment-service";
+import { adminRecordFinalMedia, adminUploadGate } from "@/lib/admin/requests/backend-requests";
+import { uploadFinalDeliverable, removeFinalDeliverable } from "@/lib/storage/final-deliverables";
+import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf";
 import {
   isSafeOrderId,
   validateFinalMediaFile,
@@ -25,15 +26,20 @@ function fileError(message: string, status: number, code: FulfilmentApiErrorCode
 
 /**
  * POST /api/admin/requests/[requestId]/final-media
- * Multipart upload of final deliverables. Files are first written to the
- * private `final-deliverables` bucket, then registered via the trusted RPC.
- * If the DB insert fails, the uploaded object is deleted (rollback).
+ * Multipart upload of final deliverables (V0.1.52). CSRF guard, then the
+ * backend gate (admin + order + status) BEFORE any bytes are stored; files are
+ * then written to the private `final-deliverables` bucket and the LINK is
+ * recorded in PostgreSQL via the backend (v3). If the DB record is definitely
+ * refused, the uploaded object is deleted (rollback).
  * Partial uploads are allowed: each successfully recorded file remains visible.
  */
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ requestId: string }> },
 ) {
+  const csrf = rejectUnsafeBrowserWrite(request, process.env, "multipart");
+  if (csrf) return csrf;
+
   const auth = await requireAdminFulfilmentAuth();
   if (!auth.ok) return auth.response;
 
@@ -41,6 +47,11 @@ export async function POST(
   if (!isSafeOrderId(requestId)) {
     return fileError("درخواست مورد نظر یافت نشد.", 404, "REQUEST_NOT_FOUND");
   }
+
+  // Authorize BEFORE a single byte is stored: the backend answers 403 for a
+  // non-admin, 404 for an unknown order, 409 when the status refuses uploads.
+  const gate = await adminUploadGate(auth.context, requestId);
+  if (!gate.ok) return adminFailureResponse(gate, "بارگذاری فایل انجام نشد.");
 
   let formData: FormData;
   try {
@@ -71,13 +82,15 @@ export async function POST(
       const bytes = await file.arrayBuffer();
       const storagePath = buildFinalStoragePath(requestId, validated.mimeType, randomUUID());
 
-      const upload = await uploadFinalDeliverableToStorage(requestId, storagePath, bytes, validated.mimeType);
-      if (!upload.ok) {
-        return fileError(upload.message, upload.status, upload.code);
+      // Storage upload (bytes); a successful upload is the "object exists with this
+      // MIME" fact the database contract expects the caller to have established.
+      const uploaded = await uploadFinalDeliverable(storagePath, bytes, validated.mimeType);
+      if (!uploaded) {
+        return fileError("بارگذاری فایل انجام نشد.", 500, "REQUEST_UNKNOWN_ERROR");
       }
       uploadedPaths.push(storagePath);
 
-      const recorded = await recordFinalMediaViaTrustedRpc(auth.adminUserId, requestId, {
+      const recorded = await adminRecordFinalMedia(auth.context, requestId, {
         filePath: storagePath,
         mimeType: validated.mimeType,
         byteSize: file.size,
@@ -85,10 +98,10 @@ export async function POST(
       });
 
       if (!recorded.ok) {
-        // DB insert failed — remove the orphaned storage object and surface the
-        // mapped error (e.g. 409 when the order no longer allows uploads).
-        await deleteFinalDeliverableFromStorage(storagePath);
-        return fileError(recorded.message, recorded.status, recorded.code);
+        // Definite refusal -> remove the orphaned object. An UNKNOWN outcome keeps it:
+        // the row may exist and own it (reload shows the truth).
+        if (!(recorded.kind === "unavailable" && recorded.outcomeUnknown)) await removeFinalDeliverable(storagePath);
+        return adminFailureResponse(recorded, "ثبت فایل انجام نشد.");
       }
 
       recordedAssetPaths.add(storagePath);
@@ -100,7 +113,7 @@ export async function POST(
     // Unexpected failure — clean up any object that never got a DB row.
     for (const path of uploadedPaths) {
       if (!recordedAssetPaths.has(path)) {
-        await deleteFinalDeliverableFromStorage(path);
+        await removeFinalDeliverable(path);
       }
     }
     return fileError("بارگذاری فایل انجام نشد.", 500, "REQUEST_UNKNOWN_ERROR");

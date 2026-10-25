@@ -1,24 +1,15 @@
 import "server-only";
 
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { VerifiedAuthContext } from "@/lib/auth/supabase-identity-adapter";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createPrivateSignedUrls } from "@/lib/storage/private-signed-url";
+import { fetchGalleryPage } from "@/lib/parent/backend-media";
 import {
   GALLERY_DEFAULT_PAGE_SIZE,
   clampGalleryPageSize,
   decodeGalleryCursor,
-  encodeGalleryCursor,
 } from "./pagination";
 import type { ParentGalleryMedia, ParentGalleryResult } from "./types";
-
-/**
- * Columns the gallery reads. Listed explicitly rather than with `*` so a later
- * column on `media_assets` cannot widen what the parent sees by accident.
- * `file_url` is read because a signed URL cannot be built without it, and it
- * is consumed inside this module only — `toGalleryMedia` never copies it into
- * the read model.
- */
-const GALLERY_COLUMNS =
-  "id, file_url, mime_type, created_at, original_filename, order_id";
 
 /** Untrusted shape of one row as it arrives from PostgREST. */
 export interface RawGalleryRow {
@@ -62,95 +53,51 @@ export function toGalleryMedia(
 }
 
 /**
- * One page of the signed-in parent's source assets, newest first.
+ * One page of the signed-in parent's source assets, newest first (V0.1.52).
  *
- * Ownership is enforced twice over. The query joins `orders` and filters on
- * the resolved `parent_id`, so another parent's row never reaches this
- * process; row level security applies the same rule independently on the anon
- * key. `asset_role`/`type` restrict the result to parent-uploaded source
- * media, which is what keeps delivered output out of this library.
- *
- * Paginated by keyset on (created_at DESC, id DESC): one extra row is read to
- * learn whether another page exists, and only the page itself is signed - in
- * a single batched storage call rather than one call per asset.
+ * Metadata and ownership come from PostgreSQL through the backend: the keyset
+ * query joins `orders` and filters on the profile resolved from the verified
+ * assertion, so another parent's row never reaches this process. Storage only
+ * signs the object keys of exactly this page, in one batched call. If Storage
+ * is down the page still lists every item with `signedUrl: null` (an
+ * unavailable tile), and nothing signs the caller out.
  */
 export async function getParentGalleryMedia(
-  supabase: SupabaseClient,
+  context: VerifiedAuthContext,
   options: { cursor?: string | null; limit?: number } = {},
 ): Promise<ParentGalleryResult> {
   const pageSize = clampGalleryPageSize(options.limit ?? GALLERY_DEFAULT_PAGE_SIZE);
 
-  let cursor = null;
   if (options.cursor !== undefined && options.cursor !== null && options.cursor !== "") {
-    cursor = decodeGalleryCursor(options.cursor);
-    if (!cursor) return { ok: false, reason: "invalid_cursor" };
+    if (!decodeGalleryCursor(options.cursor)) return { ok: false, reason: "invalid_cursor" };
   }
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) return { ok: false, reason: "unauthenticated" };
-
-  const { data: profile, error: profileError } = await supabase
-    .from("parent_profiles")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle();
-
-  if (profileError) return { ok: false, reason: "read_failed" };
-  if (!profile?.id) return { ok: false, reason: "no_parent_profile" };
-
-  let query = supabase
-    .from("media_assets")
-    .select(`${GALLERY_COLUMNS}, orders!inner(parent_id)`)
-    .eq("orders.parent_id", profile.id)
-    .eq("type", "upload")
-    .eq("asset_role", "source");
-
-  if (cursor) {
-    // Strictly after the cursor row in (created_at DESC, id DESC) order. The
-    // cursor was validated above, so nothing unexpected reaches the filter.
-    query = query.or(
-      `created_at.lt.${cursor.createdAt},and(created_at.eq.${cursor.createdAt},id.lt.${cursor.id})`,
-    );
+  const page = await fetchGalleryPage(context, { cursor: options.cursor, limit: pageSize });
+  if (!page.ok) {
+    if (page.kind === "auth") {
+      return { ok: false, reason: page.reason === "no_parent_profile" ? "no_parent_profile" : page.reason === "service_unavailable" ? "read_failed" : "forbidden" };
+    }
+    if (page.kind === "not_found") return { ok: false, reason: "no_parent_profile" };
+    if (page.kind === "invalid") return { ok: false, reason: "invalid_cursor" };
+    return { ok: false, reason: "read_failed" };
   }
 
-  const { data, error } = await query
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false })
-    .limit(pageSize + 1);
-
-  if (error) return { ok: false, reason: "read_failed" };
-
-  const rows = (Array.isArray(data) ? data : []) as unknown as RawGalleryRow[];
-  const hasMore = rows.length > pageSize;
-  const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
-
-  // One batched signing call for exactly this page.
-  const paths = pageRows
-    .map((r) => (typeof r.file_url === "string" ? r.file_url : ""))
-    .filter((p) => p.length > 0);
-  const signed = await createPrivateSignedUrls(supabase, paths);
+  // One batched signing call for exactly this page; a failure degrades the tiles.
+  let signed = new Map<string, string | null>();
+  try {
+    const supabase = await createServerSupabaseClient();
+    signed = await createPrivateSignedUrls(supabase, page.items.map((i) => i.path));
+  } catch {
+    signed = new Map();
+  }
 
   const media: ParentGalleryMedia[] = [];
-  for (const raw of pageRows) {
-    const path = typeof raw.file_url === "string" ? raw.file_url : null;
-    if (!path) continue;
-    // Signed per request and short-lived. The path it was built from never
-    // leaves this function; a failed signature degrades only this item.
-    const item = toGalleryMedia(raw, signed.get(path) ?? null);
-    if (item) media.push(item);
+  for (const item of page.items) {
+    const m = toGalleryMedia(
+      { id: item.id, file_url: item.path, mime_type: item.mimeType, created_at: item.createdAt, original_filename: item.originalFilename },
+      signed.get(item.path) ?? null,
+    );
+    if (m) media.push(m);
   }
-
-  let nextCursor: string | null = null;
-  if (hasMore) {
-    const last = pageRows[pageRows.length - 1];
-    if (typeof last.created_at === "string" && typeof last.id === "string") {
-      nextCursor = encodeGalleryCursor({ createdAt: last.created_at, id: last.id });
-    }
-  }
-
-  return { ok: true, media, nextCursor };
+  return { ok: true, media, nextCursor: page.nextCursor };
 }

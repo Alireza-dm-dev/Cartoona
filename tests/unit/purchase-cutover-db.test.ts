@@ -41,7 +41,7 @@ import { DAY_MS } from "../helpers/supabase-jwt"
  * V0.1.51 candy purchase / payment cutover on REAL local services
  * (opt-in: CARTOONA_PLAIN_PG=docker):
  *
- *   Supabase-shaped source -> V0.1.44 copy -> plain PostgreSQL 17 (0001-0017)
+ *   Supabase-shaped source -> V0.1.44 copy -> plain PostgreSQL 17 (0001-0018)
  *   stub Supabase Auth (real @supabase/ssr) -> Next purchase/coupon/pay routes
  *   -> Fastify (listening, RESTRICTED login role) -> trusted functions;
  *   stub payment provider (signed webhooks, verify API) -> Next webhook/return
@@ -261,12 +261,15 @@ describe.skipIf(!enabled)("V0.1.51 candy purchase / payment cutover (local Docke
     it("the SECURITY DEFINER functions the role may execute are exactly the audited list", async () => {
       const rows = (await q<{ proname: string }>(`select p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.prosecdef and has_function_privilege($1, p.oid, 'execute') order by 1`, [ROLE])).map((r) => r.proname)
-      expect(rows).toEqual([
+      expect([...rows].sort()).toEqual([
         "apply_coupon_to_purchase_trusted", "confirm_payment_attempt_trusted", "consume_internal_write_nonce", "create_candy_purchase_trusted",
         "create_coupon_trusted", "create_parent_request_trusted", "create_payment_attempt_trusted", "fail_payment_attempt_trusted",
         "provision_supabase_parent_identity", "record_parent_consent_trusted", "record_payment_attempt_session_trusted",
         "update_coupon_trusted", "validate_coupon_for_purchase_trusted",
-      ])
+        // V0.1.52 (0018): fulfilment + final media + the access audit.
+        "approve_final_media_trusted", "get_order_status_history_admin_trusted", "record_final_media_access_audit_trusted",
+        "record_final_media_trusted", "supersede_final_media_trusted", "update_order_status_trusted",
+      ].sort())
       for (const fn of ["create_candy_purchase_trusted", "confirm_payment_attempt_trusted", "fail_payment_attempt_trusted"]) {
         expect((await q(`select has_function_privilege('public', p.oid, 'execute') pub from pg_proc p where proname = $1`, [fn]))[0]).toEqual({ pub: false })
       }

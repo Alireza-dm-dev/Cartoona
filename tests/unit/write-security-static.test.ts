@@ -109,6 +109,9 @@ describe("Fastify: writes go through requireWriteAuth, reads cannot consume a no
       'post "/v1/parent/candy-purchases/:purchaseId/coupon"', 'post "/v1/parent/candy-purchases/:purchaseId/payment-attempts"',
       'post "/v1/parent/candy-purchases/:purchaseId/payment-attempts/:attemptId/session"', "post CONSENT_PATH", "post PAYMENT_EVENTS_PATH",
       "post PROVISION_PATH", "post REQUESTS_PATH",
+      // V0.1.52: fulfilment (admin) and the final-media access audit (parent).
+      'patch "/v1/admin/requests/:requestId/final-media/:assetId"', 'patch "/v1/admin/requests/:requestId/status"',
+      'post "/v1/admin/requests/:requestId/final-media"', 'post "/v1/parent/orders/:orderId/final-media/access"',
     ].sort())
   })
 
@@ -143,7 +146,8 @@ describe("exactly one Next.js write is cut over: consent (V0.1.48)", () => {
     // V0.1.50: the request loader is the third.
     // V0.1.51: purchases/payments and admin coupons.
     expect(callers.sort()).toEqual([
-      "lib/admin/coupons/service.ts", "lib/candy-purchases/backend-purchases.ts", "lib/parent/account-setup/backend-provision.ts",
+      "lib/admin/coupons/service.ts", "lib/admin/requests/backend-requests.ts", "lib/candy-purchases/backend-purchases.ts",
+      "lib/parent/account-setup/backend-provision.ts", "lib/parent/backend-media.ts",
       "lib/parent/consent/backend-consent.ts", "lib/requests/backend-request.ts",
     ])
   })
@@ -156,8 +160,10 @@ describe("exactly one Next.js write is cut over: consent (V0.1.48)", () => {
     // V0.1.50: request submission verifies the caller and hands off to the request loader.
     // V0.1.51: purchase, coupon, coupon validation and pay verify the caller and hand off to the purchase loader.
     expect(writers.sort()).toEqual([
+      // V0.1.52: the parent final-media route verifies the caller itself (the admin routes do so through fulfilment-service).
       "app/api/candy-purchases/[id]/coupon/route.ts", "app/api/candy-purchases/[id]/pay/route.ts", "app/api/candy-purchases/route.ts",
-      "app/api/coupons/validate/route.ts", "app/api/parent-consent/route.ts", "app/api/parent/account-setup/route.ts", "app/api/requests/route.ts",
+      "app/api/coupons/validate/route.ts", "app/api/parent-consent/route.ts", "app/api/parent/account-setup/route.ts",
+      "app/api/parent/orders/[orderId]/final-media/route.ts", "app/api/requests/route.ts",
     ])
   })
 

@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import {
   requireAdminFulfilmentAuth,
   fulfilmentJsonError,
-  updateOrderStatusViaTrustedRpc,
+  adminFailureResponse,
 } from "@/lib/admin/requests/fulfilment-service";
+import { adminUpdateStatus } from "@/lib/admin/requests/backend-requests";
+import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf";
 import { isSafeOrderId } from "@/lib/admin/requests/media-validation";
 import { parseAdminStatusUpdateInput } from "@/lib/admin/requests/fulfilment-types";
 
@@ -22,6 +24,10 @@ const MAX_BODY_BYTES = 8192;
  * values exist; terminal statuses never reopen. A rejected status requires a
  * reason note.
  *
+ * V0.1.52: PostgreSQL through the backend (v3 assertion + nonce + body digest),
+ * shared CSRF guard first. A retry whose transition already committed answers
+ * 200 with the current state (no second history row).
+ *
  * Errors: 404 not found, 409 concurrent change / unchanged, 422 invalid
  * transition or missing reason / final media.
  */
@@ -29,6 +35,9 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ requestId: string }> },
 ) {
+  const csrf = rejectUnsafeBrowserWrite(request);
+  if (csrf) return csrf;
+
   const auth = await requireAdminFulfilmentAuth();
   if (!auth.ok) return auth.response;
 
@@ -69,10 +78,11 @@ export async function PATCH(
     return fulfilmentJsonError(parsed.error, parsed.status, parsed.code);
   }
 
-  const result = await updateOrderStatusViaTrustedRpc(auth.adminUserId, requestId, parsed.input);
-  if (!result.ok) {
-    return fulfilmentJsonError(result.message, result.status, result.code);
-  }
+  // The acting admin is the verified session (v3 assertion subject); the body
+  // carries none. The backend checks the admin role and the trusted function
+  // re-checks it, locks the order and appends exactly one history row.
+  const result = await adminUpdateStatus(auth.context, requestId, parsed.input);
+  if (!result.ok) return adminFailureResponse(result, "ذخیره تغییر وضعیت انجام نشد.");
 
   return NextResponse.json({ data: result.result }, { status: 200 });
 }

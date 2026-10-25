@@ -5,8 +5,8 @@ import { Badge } from "@/components/ui/neu-badge";
 import { Button } from "@/components/ui/neu-button";
 import { OrderStatusBadge } from "@/components/ui/order-status-badge";
 import { EmptyState } from "@/components/ui/empty-state";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { queryAdminRequestQueue } from "@/lib/admin/requests/queries";
+import { verifyParentCaller } from "@/lib/parent/backend-caller";
+import { loadAdminQueue } from "@/lib/admin/requests/backend-requests";
 import {
   parsePageNumber,
   parsePageSize,
@@ -71,14 +71,9 @@ export default async function AdminRequestsPage({ searchParams }: QueuePageProps
   const page = parsePageNumber(sp.page);
   const pageSize = parsePageSize(sp.pageSize);
 
-  const supabase = await createServerSupabaseClient();
-
-  const result = await queryAdminRequestQueue(supabase, {
-    type,
-    status,
-    page,
-    pageSize,
-  });
+  // Backend read (admin role enforced there); null on any failure -> retry state.
+  const caller = await verifyParentCaller();
+  const result = caller.ok ? await loadAdminQueue(caller.context, { type, status, page, pageSize }) : null;
 
   const base = "/admin/requests";
 

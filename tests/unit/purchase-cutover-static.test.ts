@@ -128,13 +128,16 @@ describe("8/31. the browser cannot choose price, amount, wallet, owner or status
 })
 
 describe("29/30. scope: what did NOT move", () => {
-  it("order detail, final media and gallery still read Supabase; admin fulfilment never reaches the backend", () => {
-    expect(code("lib/parent/orders/detail-queries.ts")).toMatch(/SupabaseClient/)
-    expect(code("lib/parent/orders/final-media-queries.ts")).toMatch(/SupabaseClient/)
-    expect(code("app/api/parent/gallery/route.ts")).not.toMatch(/@\/lib\/backend/)
-    for (const f of [...walk("app/api/admin/requests"), ...walk("app/admin/requests"), ...walk("lib/admin/requests")]) {
-      expect(code(f), f).not.toMatch(/@\/lib\/backend|backend-caller/)
-    }
+  it("V0.1.52: order detail, final media, gallery and admin fulfilment are PostgreSQL through the backend; no Supabase Database read remains in them", () => {
+    const files = [
+      "lib/parent/orders/detail-queries.ts", "lib/parent/orders/backend-order-detail.ts", "lib/parent/backend-media.ts",
+      "lib/parent/gallery/queries.ts", "lib/parent/gallery/source-asset.ts", "app/api/parent/gallery/route.ts",
+      "app/api/parent/orders/[orderId]/final-media/route.ts", "app/(dashboard)/dashboard/orders/[orderId]/page.tsx",
+      ...walk("app/api/admin/requests"), ...walk("app/admin/requests"), ...walk("lib/admin/requests"),
+    ]
+    for (const f of files) expect(code(f), f).not.toMatch(/\.from\(\s*["'`](orders|media_assets|video_requests|drawing_animation_requests|parent_profiles|users|audit_logs|order_status_history|characters)["'`]|\.rpc\(/)
+    expect(fs.existsSync(path.join(root, "lib/parent/orders/final-media-queries.ts"))).toBe(false)
+    expect(fs.existsSync(path.join(root, "lib/audit/final-media-audit.ts"))).toBe(false)
   })
 
   it("Storage is untouched: no backend Storage code, no blob columns, request uploads still go to Supabase Storage", () => {

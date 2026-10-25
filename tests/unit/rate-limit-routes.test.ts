@@ -55,15 +55,15 @@ vi.mock("@/lib/requests/request-submission", () => ({
     data: { type: "image", title: null, description: "", characterId: null, durationKey: null, durationChoice: null, videoScript: null, videoStyle: null, animationStyle: null, charactersSpeak: null, fileName: null, childName: null },
   }),
 }))
-vi.mock("@/lib/audit/final-media-audit", () => ({ recordFinalMediaAudit: m.audit }))
-vi.mock("@/lib/parent/orders/final-media-queries", () => ({
-  resolveParentOwnsOrder: m.ownership,
-  resolveCurrentParentFinalMedia: async () => ({ id: OID, path: "final/x.mp4", mimeType: "video/mp4", fileName: "x.mp4" }),
+// V0.1.52: ownership + eligibility come from the backend (PostgreSQL), the key is signed by Storage, the audit is a backend write.
+vi.mock("@/lib/parent/backend-media", () => ({
+  authorizeFinalMedia: m.ownership,
+  recordFinalMediaAccess: m.audit,
 }))
+vi.mock("@/lib/storage/final-deliverables", () => ({ signFinalDeliverable: m.sign }))
 vi.mock("@/lib/storage/private-signed-url", () => ({
   PRIVATE_MEDIA_SIGNED_URL_TTL_SECONDS: 300,
   PRIVATE_UPLOADS_BUCKET: "parent-uploads",
-  createPrivateSignedUrl: m.sign,
 }))
 
 const chain = (data: unknown) => ({
@@ -99,8 +99,8 @@ beforeEach(() => {
     m.existingOrder ? { ok: true, found: true, order: m.existingOrder } : { ok: true, found: false },
   )
   m.sign.mockReset().mockResolvedValue("https://signed.example/x?token=abc")
-  m.audit.mockReset().mockResolvedValue(undefined)
-  m.ownership.mockReset().mockImplementation(async () => ({ ok: true, userId: m.userId }))
+  m.audit.mockReset().mockResolvedValue({ ok: true })
+  m.ownership.mockReset().mockImplementation(async () => ({ ok: true, assetId: OID, path: "final/x.mp4", mimeType: "video/mp4", fileName: "x.mp4" }))
 })
 afterEach(() => restoreSink())
 
@@ -204,7 +204,7 @@ describe("POST /api/requests rate limiting", () => {
 describe("POST /api/parent/orders/[orderId]/final-media rate limiting", () => {
   const call = async () =>
     (await import("@/app/api/parent/orders/[orderId]/final-media/route")).POST(
-      new Request("http://x", { method: "POST" }),
+      new Request("http://x", { method: "POST", headers: { "content-type": "application/json", origin: "http://localhost:3000" }, body: "{}" }),
       { params: Promise.resolve({ orderId: OID }) },
     )
 
@@ -221,7 +221,7 @@ describe("POST /api/parent/orders/[orderId]/final-media rate limiting", () => {
   })
 
   it("ownership checks remain intact: a foreign/missing order is rejected and never reaches signing", async () => {
-    m.ownership.mockResolvedValue({ ok: false, reason: "not_found" })
+    m.ownership.mockResolvedValue({ ok: false, kind: "not_found" })
     const res = await call()
     expect(res.status).toBe(404)
     expect(m.sign).not.toHaveBeenCalled()
@@ -292,7 +292,7 @@ describe("wiring: every protected route limits after identity and before expensi
     ["app/api/candy-purchases/[id]/pay/route.ts", /verifyParentCaller\(\)/, [/startPayment\(/]],
     ["app/api/candy-purchases/route.ts", /verifyParentCaller\(\)/, [/createPurchase\(/]],
     ["app/api/parent/password/route.ts", /auth\.getUser\(\)/, [/updateUser|updateUserById|\.auth\.admin/]],
-    ["app/api/parent/orders/[orderId]/final-media/route.ts", /resolveParentOwnsOrder\(/, [/createPrivateSignedUrl\(/, /recordFinalMediaAudit\(/]],
+    ["app/api/parent/orders/[orderId]/final-media/route.ts", /verifyParentCaller\(\)/, [/signFinalDeliverable\(/, /recordFinalMediaAccess\(/]],
   ]
   it.each(cases)("%s", (file, identity, expensive) => {
     const src = read(file)

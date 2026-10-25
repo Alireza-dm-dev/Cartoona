@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server"
 import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { checkParentSessionLifetime } from "@/lib/auth/parent-session-lifetime"
-import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
+import { endParentSession } from "@/lib/auth/end-parent-session"
+import { SESSION_CHECK_UNAVAILABLE_BODY } from "@/lib/auth/expired-parent-session-response"
+import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf"
 import { isValidOrderId } from "@/lib/parent/orders/detail-queries"
-import {
-  resolveParentOwnsOrder,
-  resolveCurrentParentFinalMedia,
-} from "@/lib/parent/orders/final-media-queries"
+import { verifyParentCaller } from "@/lib/parent/backend-caller"
+import { authorizeFinalMedia, recordFinalMediaAccess } from "@/lib/parent/backend-media"
 import {
   parseFinalMediaAction,
   mapOwnershipFailure,
@@ -17,22 +15,28 @@ import {
   SIGNING_FAILED_ERROR,
   type ParentFinalMediaError,
 } from "@/lib/parent/orders/final-media-response"
-import { createPrivateSignedUrl, PRIVATE_MEDIA_SIGNED_URL_TTL_SECONDS } from "@/lib/storage/private-signed-url"
+import { PRIVATE_MEDIA_SIGNED_URL_TTL_SECONDS } from "@/lib/storage/private-signed-url"
+import { signFinalDeliverable } from "@/lib/storage/final-deliverables"
 import { FINAL_DELIVERABLES_BUCKET } from "@/lib/admin/requests/media-validation"
-import { recordFinalMediaAudit } from "@/lib/audit/final-media-audit"
 import { withObservability, log } from "@/lib/observability/request-context"
 
 /**
- * POST /api/parent/orders/[orderId]/final-media
+ * POST /api/parent/orders/[orderId]/final-media (V0.1.52)
  *
  * Mints a short-lived signed URL for the parent's own order's current final
  * deliverable. Body: { action?: "view" | "download" }, default "view".
  *
- * Never gates on order.status: the only authorization this route trusts is
- * `resolveCurrentParentFinalMedia`, which requires asset_role=final,
- * delivery_status=approved and parent_visible=true — the same predicate the
- * `final-deliverables` storage RLS policy enforces independently. A signed
- * URL is generated fresh on every call and never persisted.
+ *   CSRF guard -> Supabase Auth verification (identity only)
+ *   -> backend GET /v1/parent/orders/:id/final-media   PostgreSQL decides: the order is the
+ *        caller's AND the asset is final + approved + parent-visible. The key comes from
+ *        that row; nothing the browser sends names an object.
+ *   -> per-parent rate limit
+ *   -> Storage signs that key (service credential, bytes only)
+ *   -> backend POST .../final-media/access   the audit row (best-effort, logged)
+ *
+ * Never gates on order.status. Authorization is NOT delegated to Storage
+ * policies. Foreign, missing and not-yet-approved all read as 404. If Storage
+ * is down the answer is a retryable 500 SIGNING_FAILED and nobody is signed out.
  */
 
 export const dynamic = "force-dynamic"
@@ -53,31 +57,43 @@ async function handlePost(
   request: Request,
   { params }: { params: Promise<{ orderId: string }> },
 ) {
+  const rejected = rejectUnsafeBrowserWrite(request)
+  if (rejected) return rejected
+
   const { orderId } = await params
   if (!isValidOrderId(orderId)) {
     return errorResponse(mapOwnershipFailure("not_found"))
   }
 
-  const supabase = await createServerSupabaseClient()
-
-  const ownership = await resolveParentOwnsOrder(supabase, orderId)
-  if (!ownership.ok) {
-    if (ownership.reason === "unauthenticated") {
-      return errorResponse(mapOwnershipFailure("unauthenticated"))
+  const caller = await verifyParentCaller()
+  if (!caller.ok) {
+    if (caller.reason === "unauthenticated") return errorResponse(mapOwnershipFailure("unauthenticated"))
+    if (caller.reason === "session_expired") {
+      await endParentSession()
+      return NextResponse.json({ error: "برای ادامه دوباره وارد حساب شوید.", code: "PARENT_SESSION_EXPIRED" }, { status: 401, headers: JSON_HEADERS })
     }
-    return errorResponse(mapOwnershipFailure(ownership.reason))
+    return NextResponse.json(SESSION_CHECK_UNAVAILABLE_BODY, { status: 503, headers: { ...JSON_HEADERS, "Retry-After": "2" } })
   }
 
-  const lifetime = await checkParentSessionLifetime(supabase, ownership.userId)
-  if (!lifetime.valid) {
-    return createParentSessionFailureResponse(supabase, lifetime)
+  const authorized = await authorizeFinalMedia(caller.context, orderId.trim())
+  if (!authorized.ok) {
+    if (authorized.kind === "auth") {
+      if (authorized.reason === "session_expired" || authorized.reason === "session_invalidated") {
+        await endParentSession()
+        return NextResponse.json({ error: "برای ادامه دوباره وارد حساب شوید.", code: "PARENT_SESSION_EXPIRED" }, { status: 401, headers: JSON_HEADERS })
+      }
+      if (authorized.reason === "service_unavailable") return errorResponse(SIGNING_FAILED_ERROR)
+      // not a parent / no profile: indistinguishable from a missing order
+      return errorResponse(mapOwnershipFailure("not_parent"))
+    }
+    if (authorized.kind === "unavailable" || authorized.kind === "invalid") return errorResponse(SIGNING_FAILED_ERROR)
+    // 404 covers a foreign order, an unknown order and "no approved final yet".
+    return errorResponse(FINAL_NOT_READY_ERROR)
   }
 
-  // Per parent, AFTER ownership and session checks (so the limiter learns nothing
-  // about orders the caller does not own) and BEFORE the body parse, the
-  // eligibility query, URL signing and the audit write. A limited request mints
-  // no URL.
-  const limited = await enforceRateLimit(ownership.userId, RATE_LIMIT_POLICIES.finalMediaSign)
+  // Per parent, AFTER ownership is proven (the limiter learns nothing about
+  // orders the caller does not own) and BEFORE signing and the audit write.
+  const limited = await enforceRateLimit(caller.context.identity.subject, RATE_LIMIT_POLICIES.finalMediaSign)
   if (limited) return limited
 
   let body: unknown = null
@@ -97,17 +113,10 @@ async function handlePost(
   }
   const { action } = parsedAction
 
-  const final = await resolveCurrentParentFinalMedia(supabase, orderId)
-  if (!final) {
-    return errorResponse(FINAL_NOT_READY_ERROR)
-  }
-
-  const url = await createPrivateSignedUrl(
-    supabase,
-    final.path,
+  const url = await signFinalDeliverable(
+    authorized.path,
     PRIVATE_MEDIA_SIGNED_URL_TTL_SECONDS,
-    FINAL_DELIVERABLES_BUCKET,
-    action === "download" ? (final.fileName ?? true) : undefined,
+    action === "download" ? (authorized.fileName ?? true) : undefined,
   )
 
   if (!url) {
@@ -116,33 +125,31 @@ async function handlePost(
       operation: action === "download" ? "final_media_download" : "final_media_view",
       bucket: FINAL_DELIVERABLES_BUCKET,
       orderId,
-      mediaAssetId: final.id,
-      mediaType: final.mimeType ?? undefined,
+      mediaAssetId: authorized.assetId,
+      mediaType: authorized.mimeType ?? undefined,
       errorCode: "STORAGE_UNAVAILABLE",
     })
     return errorResponse(SIGNING_FAILED_ERROR)
   }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (user) {
-    // Awaited: a fire-and-forget write can be lost when a serverless instance
-    // freezes after the response. A failed write is logged and never fails the
-    // response (see recordFinalMediaAudit).
-    await recordFinalMediaAudit({
-      actorUserId: user.id,
+  // Awaited (a detached write can be lost when a serverless instance freezes).
+  // A failed audit write is logged and never fails the response.
+  const audited = await recordFinalMediaAccess(caller.context, orderId.trim(), authorized.assetId, action)
+  if (!audited.ok) {
+    log("error", "AUDIT_WRITE_FAILED", {
+      subsystem: "audit",
+      operation: action === "download" ? "final_media_download" : "final_media_view",
       orderId,
-      mediaAssetId: final.id,
-      action: action === "download" ? "final_media_download" : "final_media_view",
+      mediaAssetId: authorized.assetId,
+      errorCode: "DATABASE_UNAVAILABLE",
     })
   }
 
   const success = toFinalMediaSignedResponse({
     url,
     ttlSeconds: PRIVATE_MEDIA_SIGNED_URL_TTL_SECONDS,
-    mediaType: final.mimeType,
-    fileName: final.fileName,
+    mediaType: authorized.mimeType,
+    fileName: authorized.fileName,
   })
 
   return NextResponse.json(success, { headers: JSON_HEADERS })

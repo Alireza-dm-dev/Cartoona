@@ -1,20 +1,17 @@
 import "server-only";
 import { NextResponse } from "next/server";
-import type { SupabaseClient } from "@supabase/supabase-js";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { createAdminSupabaseClient } from "@/lib/supabase/admin";
-import { isAdminRole } from "@/lib/auth/admin-role";
+import type { VerifiedAuthContext } from "@/lib/auth/supabase-identity-adapter";
+import { endParentSession } from "@/lib/auth/end-parent-session";
+import { verifyParentCaller } from "@/lib/parent/backend-caller";
 import type { FulfilmentApiErrorCode } from "@/lib/admin/requests/fulfilment-error-codes";
-import type {
-  AdminFinalMediaInfo,
-  AdminHistoryItem,
-  AdminStatusUpdateInput,
-  AdminStatusUpdateResult,
-} from "@/lib/admin/requests/fulfilment-types";
-import { toAdminFinalMediaInfo, toAdminHistoryItem } from "@/lib/admin/requests/fulfilment-types";
-import { mapFulfilmentRpcError } from "@/lib/admin/requests/fulfilment-errors";
-import { FINAL_DELIVERABLES_BUCKET } from "@/lib/admin/requests/media-validation";
-import { createPrivateSignedUrl } from "@/lib/storage/private-signed-url";
+import type { AdminCallFailure } from "@/lib/admin/requests/backend-requests";
+
+/**
+ * Shared answers of the admin fulfilment BFF routes (V0.1.52). The business
+ * work moved to the backend (backend-requests.ts) and Storage bytes to
+ * lib/storage/final-deliverables.ts; what is left here is the response shape
+ * and the caller verification.
+ */
 
 export const FULFILMENT_JSON_HEADERS = {
   "Cache-Control": "no-store",
@@ -32,291 +29,46 @@ export function fulfilmentJsonError(
   );
 }
 
-/** Structured RPC/storage failure — lets callers build the exact error shape. */
-export interface FulfilmentRpcFailure {
-  ok: false;
-  code: FulfilmentApiErrorCode;
-  message: string;
-  status: number;
-}
-
-function rpcFailure(message: unknown): FulfilmentRpcFailure {
-  const mapped = mapFulfilmentRpcError(message);
-  return { ok: false, code: mapped.code, message: mapped.message, status: mapped.status };
-}
-
 /**
- * Authenticates the request as an admin / super_admin and returns the verified
- * server supabase client plus the user id. On failure returns a NextResponse.
+ * Verifies the session with the identity provider and returns the verified
+ * context for backend calls. It does NOT decide the role: the backend refuses
+ * a non-admin (403) on every admin route and the trusted functions re-check it
+ * in PostgreSQL, so there is exactly one place that answers "is this an admin".
  * Admin routes do NOT run the parent session-lifetime check.
  */
 export async function requireAdminFulfilmentAuth(): Promise<
-  | { ok: true; supabase: SupabaseClient; adminUserId: string }
+  | { ok: true; context: VerifiedAuthContext }
   | { ok: false; response: NextResponse }
 > {
-  let supabase;
-  try {
-    supabase = await createServerSupabaseClient();
-  } catch {
-    return { ok: false, response: fulfilmentJsonError("خطای احراز هویت رخ داد.", 500) };
+  const caller = await verifyParentCaller();
+  if (caller.ok) return { ok: true, context: caller.context };
+  if (caller.reason === "auth_unavailable") {
+    return { ok: false, response: fulfilmentJsonError("بررسی نشست موقتاً ممکن نیست. لطفاً چند لحظه بعد دوباره تلاش کنید.", 503) };
   }
-
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
-  if (authError || !user) {
-    return { ok: false, response: fulfilmentJsonError("لطفاً ابتدا وارد حساب خود شوید.", 401) };
-  }
-
-  const { data: roleRow, error: roleError } = await supabase
-    .from("users")
-    .select("role")
-    .eq("id", user.id)
-    .maybeSingle();
-
-  if (roleError || !roleRow || !isAdminRole(roleRow.role)) {
-    return { ok: false, response: fulfilmentJsonError("شما مجوز انجام این عملیات را ندارید.", 403) };
-  }
-
-  return { ok: true, supabase, adminUserId: user.id };
+  if (caller.reason === "session_expired") await endParentSession();
+  return { ok: false, response: fulfilmentJsonError("لطفاً ابتدا وارد حساب خود شوید.", 401) };
 }
 
-/* ── Trusted RPC mutations (service_role only) ──────────────────────────────── */
-
-export async function updateOrderStatusViaTrustedRpc(
-  adminUserId: string,
-  requestId: string,
-  input: AdminStatusUpdateInput,
-): Promise<{ ok: true; result: AdminStatusUpdateResult } | FulfilmentRpcFailure> {
-  let admin;
-  try {
-    admin = createAdminSupabaseClient();
-  } catch {
-    return { ok: false, code: "REQUEST_UNKNOWN_ERROR", message: "ذخیره تغییر وضعیت انجام نشد.", status: 500 };
+/** The response for a backend failure of an admin call. */
+export async function adminFailureResponse(failure: AdminCallFailure, unknownMessage: string): Promise<NextResponse> {
+  switch (failure.kind) {
+    case "auth":
+      if (failure.reason === "session_expired") {
+        await endParentSession();
+        return fulfilmentJsonError("برای ادامه دوباره وارد حساب شوید.", 401);
+      }
+      if (failure.reason === "unauthenticated") return fulfilmentJsonError("لطفاً ابتدا وارد حساب خود شوید.", 401);
+      return fulfilmentJsonError("شما مجوز انجام این عملیات را ندارید.", 403, "REQUEST_UNAUTHORIZED");
+    case "not_found":
+      return fulfilmentJsonError("درخواست مورد نظر یافت نشد.", 404, "REQUEST_NOT_FOUND");
+    case "refused":
+      return fulfilmentJsonError(failure.message, failure.status, failure.code);
+    case "unavailable":
+      // An uncertain write is NOT reported as "not saved": the client reloads to see the truth.
+      return fulfilmentJsonError(
+        failure.outcomeUnknown ? "نتیجه عملیات مشخص نیست. صفحه را دوباره بارگذاری کنید." : unknownMessage,
+        503,
+        "REQUEST_UNKNOWN_ERROR",
+      );
   }
-
-  const { data, error } = await admin.rpc("update_order_status_trusted", {
-    p_admin_user_id: adminUserId,
-    p_order_id: requestId,
-    p_new_status: input.status,
-    p_expected_updated_at: input.expectedUpdatedAt,
-    p_internal_note: input.internalNote,
-    p_parent_visible_note: input.parentVisibleNote,
-  });
-
-  if (error) return rpcFailure(error.message);
-
-  const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
-  if (
-    !row ||
-    typeof row.order_id !== "string" ||
-    // The RPC's RETURNS TABLE names this column new_status, not status — this
-    // used to check the wrong key, which meant every transition fell into
-    // this branch and reported a 500 even when the RPC had already committed
-    // the change (see 20260801120000_request_fulfilment_workflow.sql §5).
-    typeof row.new_status !== "string" ||
-    typeof row.updated_at !== "string" ||
-    typeof row.history_id !== "string"
-  ) {
-    return { ok: false, code: "REQUEST_UNKNOWN_ERROR", message: "ذخیره تغییر وضعیت انجام نشد.", status: 500 };
-  }
-
-  return {
-    ok: true,
-    result: {
-      orderId: row.order_id,
-      previousStatus: (typeof row.previous_status === "string" ? row.previous_status : null) as AdminStatusUpdateResult["previousStatus"],
-      status: row.new_status as AdminStatusUpdateResult["status"],
-      updatedAt: row.updated_at,
-      historyId: row.history_id,
-    },
-  };
-}
-
-export async function recordFinalMediaViaTrustedRpc(
-  adminUserId: string,
-  orderId: string,
-  params: { filePath: string; mimeType: string; byteSize: number; originalFilename: string },
-): Promise<{ ok: true; assetId: string } | FulfilmentRpcFailure> {
-  let admin;
-  try {
-    admin = createAdminSupabaseClient();
-  } catch {
-    return { ok: false, code: "REQUEST_UNKNOWN_ERROR", message: "ثبت فایل انجام نشد.", status: 500 };
-  }
-
-  const { data, error } = await admin.rpc("record_final_media_trusted", {
-    p_admin_user_id: adminUserId,
-    p_order_id: orderId,
-    p_file_path: params.filePath,
-    p_mime_type: params.mimeType,
-    p_byte_size: params.byteSize,
-    p_original_filename: params.originalFilename,
-  });
-
-  if (error) return rpcFailure(error.message);
-
-  const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
-  const assetId = row?.asset_id;
-  if (typeof assetId !== "string") {
-    return { ok: false, code: "REQUEST_UNKNOWN_ERROR", message: "ثبت فایل انجام نشد.", status: 500 };
-  }
-  return { ok: true, assetId };
-}
-
-export async function approveFinalMediaViaTrustedRpc(
-  adminUserId: string,
-  orderId: string,
-  assetId: string,
-): Promise<{ ok: true; assetId: string } | FulfilmentRpcFailure> {
-  let admin;
-  try {
-    admin = createAdminSupabaseClient();
-  } catch {
-    return { ok: false, code: "REQUEST_UNKNOWN_ERROR", message: "تأیید فایل انجام نشد.", status: 500 };
-  }
-
-  const { data, error } = await admin.rpc("approve_final_media_trusted", {
-    p_admin_user_id: adminUserId,
-    p_order_id: orderId,
-    p_asset_id: assetId,
-  });
-
-  if (error) return rpcFailure(error.message);
-  const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
-  if (typeof row?.asset_id !== "string") {
-    return { ok: false, code: "REQUEST_UNKNOWN_ERROR", message: "تأیید فایل انجام نشد.", status: 500 };
-  }
-  return { ok: true, assetId: row.asset_id };
-}
-
-export async function supersedeFinalMediaViaTrustedRpc(
-  adminUserId: string,
-  orderId: string,
-  assetId: string,
-): Promise<{ ok: true; assetId: string } | FulfilmentRpcFailure> {
-  let admin;
-  try {
-    admin = createAdminSupabaseClient();
-  } catch {
-    return { ok: false, code: "REQUEST_UNKNOWN_ERROR", message: "جایگزینی فایل انجام نشد.", status: 500 };
-  }
-
-  const { data, error } = await admin.rpc("supersede_final_media_trusted", {
-    p_admin_user_id: adminUserId,
-    p_order_id: orderId,
-    p_asset_id: assetId,
-  });
-
-  if (error) return rpcFailure(error.message);
-  const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
-  if (typeof row?.asset_id !== "string") {
-    return { ok: false, code: "REQUEST_UNKNOWN_ERROR", message: "جایگزینی فایل انجام نشد.", status: 500 };
-  }
-  return { ok: true, assetId: row.asset_id };
-}
-
-/* ── Storage (service_role admin client) ────────────────────────────────────── */
-
-export type StorageUploadResult =
-  | { ok: true; path: string }
-  | { ok: false; code: FulfilmentApiErrorCode; message: string; status: number };
-
-export async function uploadFinalDeliverableToStorage(
-  orderId: string,
-  storagePath: string,
-  bytes: ArrayBuffer,
-  contentType: string,
-): Promise<StorageUploadResult> {
-  let admin;
-  try {
-    admin = createAdminSupabaseClient();
-  } catch {
-    return { ok: false, code: "REQUEST_UNKNOWN_ERROR", message: "بارگذاری فایل انجام نشد.", status: 500 };
-  }
-
-  const { error } = await admin.storage
-    .from(FINAL_DELIVERABLES_BUCKET)
-    .upload(storagePath, bytes, { contentType, upsert: false });
-
-  if (error) {
-    return { ok: false, code: "REQUEST_UNKNOWN_ERROR", message: "بارگذاری فایل انجام نشد.", status: 500 };
-  }
-  return { ok: true, path: storagePath };
-}
-
-/**
- * Best-effort rollback of an uploaded storage object after a failed DB insert.
- * Never throws — failure here is logged by the caller and does not mask the
- * original error.
- */
-export async function deleteFinalDeliverableFromStorage(storagePath: string): Promise<void> {
-  try {
-    const admin = createAdminSupabaseClient();
-    await admin.storage.from(FINAL_DELIVERABLES_BUCKET).remove([storagePath]);
-  } catch {
-    // best-effort only
-  }
-}
-
-/* ── Reads (authenticated admin client; mirrors queryAdminRequestDetail) ────── */
-
-export async function loadAdminFinalMedia(
-  supabase: SupabaseClient,
-  orderId: string,
-): Promise<AdminFinalMediaInfo[]> {
-  const { data, error } = await supabase
-    .from("media_assets")
-    .select("id, file_url, mime_type, byte_size, created_at, superseded_at, delivery_status, parent_visible")
-    .eq("order_id", orderId)
-    .eq("asset_role", "final")
-    .order("created_at", { ascending: false });
-
-  if (error || !data) return [];
-
-  const result: AdminFinalMediaInfo[] = [];
-  for (const asset of data) {
-    // Signed URLs only for live assets (uploaded/approved). Superseded assets
-    // keep a null URL — they are retained for audit but not downloadable.
-    const live = asset.delivery_status === "uploaded" || asset.delivery_status === "approved";
-    const signedUrl = live ? await createPrivateSignedUrl(supabase, asset.file_url, 300, FINAL_DELIVERABLES_BUCKET) : null;
-    result.push(
-      toAdminFinalMediaInfo(
-        {
-          id: asset.id,
-          file_url: asset.file_url,
-          mime_type: asset.mime_type,
-          byte_size: asset.byte_size,
-          created_at: asset.created_at,
-          superseded_at: asset.superseded_at,
-          delivery_status: asset.delivery_status,
-          parent_visible: asset.parent_visible === true,
-        },
-        signedUrl,
-      ),
-    );
-  }
-  return result;
-}
-
-export async function loadAdminFulfilmentHistory(
-  supabase: SupabaseClient,
-  orderId: string,
-): Promise<AdminHistoryItem[] | null> {
-  const { data, error } = await supabase.rpc("get_order_status_history_admin", {
-    p_order_id: orderId,
-  });
-
-  if (error) return null;
-  const rows = Array.isArray(data) ? data : [];
-  return rows.map((r) =>
-    toAdminHistoryItem({
-      id: String(r.id ?? ""),
-      previous_status: r.previous_status ?? null,
-      new_status: String(r.new_status ?? "pending_review"),
-      changed_by: r.changed_by_name ?? null,
-      changed_by_deleted: Boolean(r.changed_by_deleted),
-      internal_note: r.internal_note ?? null,
-      parent_visible_note: r.parent_visible_note ?? null,
-      created_at: String(r.created_at ?? ""),
-    }),
-  );
 }

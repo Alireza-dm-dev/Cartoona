@@ -41,10 +41,9 @@ import {
  *                                                       spend + ledger: ONE transaction
  *
  * No Supabase Database table or RPC is read or written by the submission
- * itself. The two Supabase reads that remain are for the optional gallery
- * source only (media_assets + the profile id its ownership filter needs, see
- * resolveOwnedSourceAsset) - read-only, and only when the browser chose a
- * gallery file. No price, credit amount, wallet, profile id, user id or role
+ * itself. (V0.1.52: the optional gallery source is resolved in PostgreSQL via
+ * the backend too - see resolveOwnedSourceAsset - so no Supabase Database read
+ * remains; Supabase is Auth + Storage bytes only.) No price, credit amount, wallet, profile id, user id or role
  * is accepted from the browser: the backend derives them.
  *
  * The write is ONE attempt, never retried here. If its answer is lost the
@@ -339,7 +338,7 @@ async function handlePost(request: Request) {
     // policies both depend on.
     {
       const sourceAssetId = (sourceAssetIdRaw as string).trim()
-      const resolved = await resolveOwnedSourceAsset(supabase, sourceAssetId)
+      const resolved = await resolveOwnedSourceAsset(context, sourceAssetId)
 
       // A foreign id, a non-existent id and a row without a recorded MIME type
       // all answer identically, so this cannot be used to probe another

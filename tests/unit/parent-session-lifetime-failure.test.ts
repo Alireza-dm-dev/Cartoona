@@ -107,75 +107,68 @@ describe("createParentSessionFailureResponse", () => {
   })
 })
 
-// ── Real API route: GET /api/parent/gallery ──────────────────────────────────
+// ── Real API route: GET /api/parent/gallery (V0.1.52: verified through verifyParentCaller) ──
 const galleryMocks = vi.hoisted(() => ({
-  client: null as unknown,
+  verify: vi.fn(),
+  end: vi.fn(),
   getParentGalleryMedia: vi.fn(),
 }))
-vi.mock("@/lib/supabase/server", () => ({
-  createServerSupabaseClient: async () => galleryMocks.client,
-}))
+vi.mock("@/lib/parent/backend-caller", () => ({ verifyParentCaller: galleryMocks.verify }))
+vi.mock("@/lib/auth/end-parent-session", () => ({ endParentSession: galleryMocks.end }))
 vi.mock("@/lib/parent/gallery/queries", () => ({
   getParentGalleryMedia: galleryMocks.getParentGalleryMedia,
 }))
+const GALLERY_CONTEXT = { identity: { provider: "supabase", subject: "u1" }, authenticatedAt: 1 }
 
-describe("API route: lookup_failed fails closed, keeps session, retry works", () => {
-  beforeEach(() => galleryMocks.getParentGalleryMedia.mockReset())
+describe("API route: an identity-provider outage fails closed, keeps session, retry works", () => {
+  beforeEach(() => {
+    galleryMocks.getParentGalleryMedia.mockReset()
+    galleryMocks.verify.mockReset()
+    galleryMocks.end.mockReset()
+  })
 
-  function sessionClient(kinds: SessionKind[]) {
-    return {
-      auth: {
-        getUser: vi.fn(async () => ({ data: { user: { id: "u1" } }, error: null })),
-        ...sessionReader(kinds),
-        signOut: vi.fn(async () => ({})),
-      },
-    }
-  }
-
-  test("lookup_failed: 503, no signOut, no protected data; retry on SAME session succeeds", async () => {
+  test("auth_unavailable: 503, no sign-out, no protected data; retry on SAME session succeeds", async () => {
     const { GET } = await import("@/app/api/parent/gallery/route")
     galleryMocks.getParentGalleryMedia.mockResolvedValue({ ok: true, media: [{ id: "m1" }] })
-    const client = sessionClient(["transient", "valid"])
-    galleryMocks.client = client
+    galleryMocks.verify
+      .mockResolvedValueOnce({ ok: false, reason: "auth_unavailable" })
+      .mockResolvedValueOnce({ ok: true, context: GALLERY_CONTEXT })
 
     const first = await GET(new Request("http://x/api/parent/gallery"))
     expect(first.status).toBe(503)
     expect((await first.json()).code).toBe("SESSION_CHECK_UNAVAILABLE")
-    expect(client.auth.signOut).not.toHaveBeenCalled()
+    expect(galleryMocks.end).not.toHaveBeenCalled()
     expect(galleryMocks.getParentGalleryMedia).not.toHaveBeenCalled() // fails closed
 
-    // Backend healthy again; same client / same session, no re-login.
     const second = await GET(new Request("http://x/api/parent/gallery"))
     expect(second.status).toBe(200)
     expect((await second.json()).media).toEqual([{ id: "m1" }])
-    expect(client.auth.signOut).not.toHaveBeenCalled()
+    expect(galleryMocks.end).not.toHaveBeenCalled()
   })
 
   test("definite expiry still returns 401 and signs out", async () => {
     const { GET } = await import("@/app/api/parent/gallery/route")
-    const client = sessionClient(["expired"])
-    galleryMocks.client = client
+    galleryMocks.verify.mockResolvedValue({ ok: false, reason: "session_expired" })
     const res = await GET(new Request("http://x/api/parent/gallery"))
     expect(res.status).toBe(401)
     expect((await res.json()).code).toBe("PARENT_SESSION_EXPIRED")
-    expect(client.auth.signOut).toHaveBeenCalledWith({ scope: "local" })
+    expect(galleryMocks.end).toHaveBeenCalledTimes(1)
     expect(galleryMocks.getParentGalleryMedia).not.toHaveBeenCalled()
   })
 
-  test("valid session -> allowed", async () => {
+  test("valid session -> allowed, and the verified context (never a browser value) reaches the loader", async () => {
     const { GET } = await import("@/app/api/parent/gallery/route")
-    galleryMocks.getParentGalleryMedia.mockResolvedValue({ ok: true, media: [] })
-    galleryMocks.client = sessionClient(["valid"])
-    expect((await GET(new Request("http://x/api/parent/gallery"))).status).toBe(200)
+    galleryMocks.getParentGalleryMedia.mockResolvedValue({ ok: true, media: [], nextCursor: null })
+    galleryMocks.verify.mockResolvedValue({ ok: true, context: GALLERY_CONTEXT })
+    expect((await GET(new Request("http://x/api/parent/gallery?parentId=evil"))).status).toBe(200)
+    expect(galleryMocks.getParentGalleryMedia.mock.calls[0][0]).toBe(GALLERY_CONTEXT)
   })
 
-  test("no user -> 401 authentication failure (unchanged), no signOut", async () => {
+  test("no session -> 401 authentication failure (unchanged), no sign-out", async () => {
     const { GET } = await import("@/app/api/parent/gallery/route")
-    const client = sessionClient(["valid"])
-    client.auth.getUser = vi.fn(async () => ({ data: { user: null }, error: { message: "no" } })) as never
-    galleryMocks.client = client
+    galleryMocks.verify.mockResolvedValue({ ok: false, reason: "unauthenticated" })
     expect((await GET(new Request("http://x/api/parent/gallery"))).status).toBe(401)
-    expect(client.auth.signOut).not.toHaveBeenCalled()
+    expect(galleryMocks.end).not.toHaveBeenCalled()
   })
 })
 

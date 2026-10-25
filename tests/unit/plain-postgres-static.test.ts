@@ -58,7 +58,7 @@ describe("database/migrations — no Supabase dependency", () => {
     // function, 0015 (V0.1.49) EXECUTE on the provisioning function, 0016 (V0.1.50) EXECUTE on the request function and SELECT on characters. They may grant to `cartoona_app` and nothing else.
     // As statements (the candy ledger has a 'grant' transaction type).
     const APP_ROLE_FILE = "0009_application_role.sql"
-    const GRANT_FILES = [APP_ROLE_FILE, "0010_identity_read_grant.sql", "0012_internal_write_nonces.sql", "0013_parent_profile_name_update_grant.sql", "0014_parent_consent_write.sql", "0015_supabase_parent_provisioning.sql", "0016_parent_request_privileges.sql", "0017_candy_purchase_payment.sql"]
+    const GRANT_FILES = [APP_ROLE_FILE, "0010_identity_read_grant.sql", "0012_internal_write_nonces.sql", "0013_parent_profile_name_update_grant.sql", "0014_parent_consent_write.sql", "0015_supabase_parent_provisioning.sql", "0016_parent_request_privileges.sql", "0017_candy_purchase_payment.sql", "0018_order_fulfilment_media.sql"]
     const baseline = Object.entries(sql)
       .filter(([f]) => !GRANT_FILES.includes(f))
       .map(([, s]) => s.replace(/--.*$/gm, ""))
@@ -118,6 +118,18 @@ describe("database/migrations — no Supabase dependency", () => {
     expect(purchase).not.toMatch(/\b(INSERT|UPDATE|DELETE|TRUNCATE)\b[^;]*\bON\b[^;]*\bTO\b/i)
     expect(purchase).not.toMatch(/GRANT[^;]*complete_candy_purchase_trusted/i)
     expect(grants).toContain("SELECT (id, purchase_id, status) ON public.payment_attempts TO cartoona_app")
+
+    // 0018 (V0.1.52): EXECUTE on the five fulfilment functions + the one new audit function, SELECT on
+    // the three read tables. No table write, no new state machine (the 0005 functions are untouched).
+    const fulfilment = sql["0018_order_fulfilment_media.sql"].replace(/--.*$/gm, "")
+    const fGrants = [...fulfilment.matchAll(/^\s*GRANT\s+([^;]+);/gim)].map((m) => m[1].replace(/\s+/g, " "))
+    expect(fGrants.filter((g) => g.startsWith("EXECUTE")).map((g) => /public\.([a-z_]+)\(/.exec(g)![1]).sort()).toEqual([
+      "approve_final_media_trusted", "get_order_status_history_admin_trusted", "record_final_media_access_audit_trusted",
+      "record_final_media_trusted", "supersede_final_media_trusted", "update_order_status_trusted",
+    ])
+    expect(fGrants).toContain("SELECT ON public.media_assets, public.video_requests, public.drawing_animation_requests TO cartoona_app")
+    expect(fulfilment).not.toMatch(/\b(INSERT|UPDATE|DELETE|TRUNCATE)\b[^;]*\bON\b[^;]*\bTO\b/i)
+    expect(fulfilment.match(/CREATE\s+(OR\s+REPLACE\s+)?FUNCTION/gi)).toHaveLength(1)
   })
 
   it("4. never calls auth.uid() / auth.jwt() / auth.role()", () => {

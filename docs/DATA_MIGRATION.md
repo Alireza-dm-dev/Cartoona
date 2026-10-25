@@ -593,3 +593,14 @@ redemptions are stale. The copy remains a one-time step; never rerun it into
 a target that holds PostgreSQL-only purchases or ledger rows, and never
 re-enable a Supabase financial writer (ROUTE_CUTOVER "V0.1.51 Rollback").
 The real `pg_dump` rehearsal and the `amr` check stay open.
+
+### V0.1.52: order detail, media and fulfilment, re-audit of 0018
+
+The target is pinned to 18 migrations (`EXPECTED_TARGET_MIGRATIONS`, `0018_order_fulfilment_media`).
+0018 adds one function and grants only; no table, column or copy mapping changed, so the copy tool,
+its order and the "N applied" counts moved by one migration and nothing else. Copied orders, their
+history (microsecond timestamps), source uploads and approved/superseded finals read through the
+new path unchanged (see `order-fulfilment-cutover-db.test.ts`). **Object bytes are still not copied**:
+a media row carries the Storage key; the same bucket keys keep resolving as long as Storage is
+unchanged. After the copy, no Supabase `orders`, `media_assets` or `order_status_history` row may be
+written again (ROUTE_CUTOVER "V0.1.52 Rollback").

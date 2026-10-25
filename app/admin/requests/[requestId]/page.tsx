@@ -5,18 +5,14 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/neu-badge";
 import { Button } from "@/components/ui/neu-button";
 import { OrderStatusBadge } from "@/components/ui/order-status-badge";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { queryAdminRequestDetail } from "@/lib/admin/requests/queries";
+import { verifyParentCaller } from "@/lib/parent/backend-caller";
+import { loadAdminRequestView } from "@/lib/admin/requests/backend-requests";
 import { parentDeletedLabel } from "@/lib/admin/requests/mappers";
 import { isKnownOrderStatus } from "@/lib/admin/requests/mappers";
 import {
   getAllowedNextStatuses,
   canUploadFinalMedia,
 } from "@/lib/admin/requests/workflow";
-import {
-  loadAdminFinalMedia,
-  loadAdminFulfilmentHistory,
-} from "@/lib/admin/requests/fulfilment-service";
 import { StatusUpdateForm } from "@/components/admin/requests/status-update-form";
 import { FinalMediaUpload } from "@/components/admin/requests/final-media-upload";
 import { FulfilmentTimeline } from "@/components/admin/requests/fulfilment-timeline";
@@ -59,16 +55,26 @@ export default async function AdminRequestDetailPage({
     notFound();
   }
 
-  const supabase = await createServerSupabaseClient();
-  const [detail, finalMedia, history] = await Promise.all([
-    queryAdminRequestDetail(supabase, { requestId }),
-    loadAdminFinalMedia(supabase, requestId),
-    loadAdminFulfilmentHistory(supabase, requestId),
-  ]);
+  // One backend read (admin role enforced there): order, parent info, media
+  // metadata and history from PostgreSQL. Storage only signs the keys it returns.
+  const caller = await verifyParentCaller();
+  const result = caller.ok ? await loadAdminRequestView(caller.context, requestId) : null;
 
-  if (!detail) {
+  if (result && !result.ok && result.reason === "not_found") {
     notFound();
   }
+  if (!result || !result.ok) {
+    return (
+      <div className="mx-auto max-w-[960px]">
+        <PageHeader title="جزئیات درخواست" description="بررسی اطلاعات درخواست والد، فایل‌های ورودی و جزئیات نوع درخواست." />
+        <Card variant="admin" className="border-coral/20 bg-coral/5">
+          <p className="text-sm text-coral">دریافت اطلاعات درخواست انجام نشد.</p>
+          <p className="mt-1 text-xs text-text-dark/50">لطفاً بعداً دوباره تلاش کنید.</p>
+        </Card>
+      </div>
+    );
+  }
+  const { detail, finalMedia, history } = result.view;
 
   return (
     <div className="mx-auto max-w-[960px]">
@@ -223,7 +229,7 @@ export default async function AdminRequestDetailPage({
           allowedNext={getAllowedNextStatuses(detail.status)}
         />
 
-        <FulfilmentTimeline history={history ?? []} />
+        <FulfilmentTimeline history={history} />
 
         <div className="flex justify-start">
           <Link href="/admin/requests">

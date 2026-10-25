@@ -49,7 +49,6 @@ vi.mock("@/lib/requests/request-submission", () => ({
     },
   }),
 }))
-vi.mock("@/lib/audit/final-media-audit", () => ({ recordFinalMediaAudit: m.audit }))
 
 let records: LogRecord[]
 let restore: () => void
@@ -94,7 +93,7 @@ beforeEach(() => {
   m.verify.mockReset().mockResolvedValue({ ok: true, context: { identity: { provider: "supabase", subject: "u1" }, authenticatedAt: 1 } })
   m.lookup.mockReset().mockResolvedValue({ ok: true, found: false })
   m.create.mockReset().mockResolvedValue(created())
-  m.audit.mockReset().mockResolvedValue(undefined)
+  m.audit.mockReset().mockResolvedValue({ ok: true })
 })
 afterEach(() => restore())
 
@@ -228,29 +227,32 @@ describe("POST /api/requests observability", () => {
   })
 })
 
-describe("final-media audit decision: awaited, failures logged", () => {
-  const final = { id: OID, path: "o/final.mp4", fileName: "final.mp4", mimeType: "video/mp4" }
+describe("final-media audit decision: awaited, failures logged (V0.1.52: written in PostgreSQL via the backend)", () => {
+  const final = { ok: true as const, assetId: OID, path: "o/final.mp4", fileName: "final.mp4", mimeType: "video/mp4" }
 
   async function finalRoute(sign: string | null) {
     vi.resetModules()
     await reattachSink()
-    vi.doMock("@/lib/parent/orders/final-media-queries", () => ({
-      resolveParentOwnsOrder: async () => ({ ok: true, userId: "u1" }),
-      resolveCurrentParentFinalMedia: async () => final,
+    vi.doMock("@/lib/parent/backend-caller", () => ({
+      verifyParentCaller: async () => ({ ok: true, context: { identity: { provider: "supabase", subject: "u1" }, authenticatedAt: 1 } }),
     }))
-    vi.doMock("@/lib/storage/private-signed-url", () => ({
-      PRIVATE_MEDIA_SIGNED_URL_TTL_SECONDS: 300,
-      createPrivateSignedUrl: async () => sign,
+    vi.doMock("@/lib/parent/backend-media", () => ({
+      authorizeFinalMedia: async () => final,
+      recordFinalMediaAccess: m.audit,
     }))
+    vi.doMock("@/lib/storage/final-deliverables", () => ({ signFinalDeliverable: async () => sign }))
     return (await import("@/app/api/parent/orders/[orderId]/final-media/route")).POST
   }
   const call = (POST: Awaited<ReturnType<typeof finalRoute>>) =>
-    POST(new Request("http://x", { method: "POST" }), { params: Promise.resolve({ orderId: OID }) })
+    POST(
+      new Request("http://x", { method: "POST", headers: { "content-type": "application/json", origin: "http://localhost:3000" }, body: "{}" }),
+      { params: Promise.resolve({ orderId: OID }) },
+    )
 
   it("the response waits for the audit write (not fire-and-forget)", async () => {
     const POST = await finalRoute("https://s/signed?token=abc")
     let release!: () => void
-    m.audit.mockReturnValue(new Promise<void>((r) => { release = r }))
+    m.audit.mockReturnValue(new Promise<{ ok: true }>((r) => { release = () => r({ ok: true }) }))
     let settled = false
     const pending = call(POST).then((r) => { settled = true; return r })
     await new Promise((r) => setTimeout(r, 20))
@@ -262,7 +264,7 @@ describe("final-media audit decision: awaited, failures logged", () => {
     expect(JSON.stringify(records)).not.toMatch(/token=abc/)
   })
 
-  it("mint failure -> FINAL_MEDIA_SIGN_FAILED with ids only, 5xx completion logged", async () => {
+  it("mint failure -> FINAL_MEDIA_SIGN_FAILED with ids only, 5xx completion logged, nothing audited", async () => {
     const POST = await finalRoute(null)
     const res = await call(POST)
     expect(res.status).toBeGreaterThanOrEqual(500)
@@ -272,34 +274,15 @@ describe("final-media audit decision: awaited, failures logged", () => {
     expect(JSON.stringify(records)).not.toContain("final.mp4")
     expect(m.audit).not.toHaveBeenCalled()
   })
-})
 
-describe("recordFinalMediaAudit never fails silently", () => {
-  const input = { actorUserId: "u1", orderId: OID, mediaAssetId: OID, action: "final_media_view" as const }
-  async function realAudit(insert: () => Promise<unknown>) {
-    vi.resetModules()
-    await reattachSink()
-    vi.doUnmock("@/lib/audit/final-media-audit")
-    vi.doMock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => ({ from: () => ({ insert }) }) }))
-    const mod = await vi.importActual<typeof import("@/lib/audit/final-media-audit")>("@/lib/audit/final-media-audit")
-    return mod.recordFinalMediaAudit
-  }
-
-  it("a returned {error} is logged (previously ignored)", async () => {
-    const run = await realAudit(async () => ({ error: { message: "permission denied for table audit_logs" } }))
-    await expect(run(input)).resolves.toBeUndefined()
-    expect(records[0]).toMatchObject({ level: "error", event: "AUDIT_WRITE_FAILED", subsystem: "audit", operation: "final_media_view", orderId: OID, mediaAssetId: OID, errorCode: "DATABASE_UNAVAILABLE" })
-    expect(JSON.stringify(records)).not.toContain("permission denied")
-  })
-  it("a throw (e.g. timeout) is logged and does not propagate", async () => {
-    const { FetchTimeoutError } = await import("@/lib/http/fetch-with-timeout")
-    const run = await realAudit(async () => { throw new FetchTimeoutError(10_000) })
-    await expect(run(input)).resolves.toBeUndefined()
-    expect(records[0]).toMatchObject({ event: "AUDIT_WRITE_FAILED", errorCode: "REQUEST_TIMEOUT" })
-  })
-  it("success logs nothing", async () => {
-    const run = await realAudit(async () => ({ error: null }))
-    await run(input)
-    expect(records).toHaveLength(0)
+  it("a failed audit write is logged (ids only) and never fails the signed response", async () => {
+    const POST = await finalRoute("https://s/signed?token=abc")
+    m.audit.mockResolvedValue({ ok: false, kind: "unavailable", outcomeUnknown: false })
+    const res = await call(POST)
+    expect(res.status).toBe(200)
+    expect(records.find((r) => r.event === "AUDIT_WRITE_FAILED")).toMatchObject({
+      level: "error", subsystem: "audit", operation: "final_media_view", orderId: OID, mediaAssetId: OID, errorCode: "DATABASE_UNAVAILABLE",
+    })
+    expect(JSON.stringify(records)).not.toMatch(/token=abc|permission denied/)
   })
 })

@@ -39,7 +39,7 @@ import { DAY_MS } from "../helpers/supabase-jwt"
  * (opt-in: CARTOONA_PLAIN_PG=docker):
  *
  *   Supabase-shaped source (real migrations + triggers + fixtures) -> V0.1.44
- *   copy -> plain PostgreSQL 17 (0001-0017) = the pre-cutover population;
+ *   copy -> plain PostgreSQL 17 (0001-0018) = the pre-cutover population;
  *   brand-new stub Supabase Auth subjects = the post-cutover population.
  *   stub Supabase Auth (real @supabase/ssr) -> Next POST /api/parent/account-setup
  *   (CSRF, v3 write) -> Fastify POST /v1/auth/provision (listening, restricted
