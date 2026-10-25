@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify"
-import { checkSessionRole, pingDatabase } from "@/lib/db/health"
+import { checkSchemaHead, checkSessionRole, pingDatabase } from "@/lib/db/health"
 import { logEvent } from "@/lib/observability/logger"
 import type { BackendDeps } from "../app"
 
@@ -10,7 +10,8 @@ import type { BackendDeps } from "../app"
  *
  * GET /ready - readiness. PostgreSQL answers `SELECT 1` AND the session is a
  *   restricted cartoona_app login (not the owner, not a superuser). The role
- *   check passes once per process and is then cached; the ping runs every time.
+ *   check and the migration-head check pass once per process and are then cached;
+ *   the ping runs every time.
  *   The body is a fixed status - never an error kind, message or target.
  */
 export function registerHealthRoutes(app: FastifyInstance, deps: BackendDeps): void {
@@ -20,6 +21,7 @@ export function registerHealthRoutes(app: FastifyInstance, deps: BackendDeps): v
   })
 
   let roleVerified = false
+  let schemaVerified = false
 
   app.get("/ready", async (request, reply) => {
     reply.header("Cache-Control", "no-store")
@@ -38,6 +40,16 @@ export function registerHealthRoutes(app: FastifyInstance, deps: BackendDeps): v
         return reply.code(503).send({ status: "unavailable" })
       }
       roleVerified = true
+    }
+
+    // Migration head (V0.1.54): a database behind this build must not take traffic.
+    if (!schemaVerified) {
+      const schema = await checkSchemaHead(db)
+      if (!schema.ok) {
+        logEvent("error", "READINESS_FAILED", { requestId: request.id, subsystem: "database", reason: `schema_${schema.reason}` })
+        return reply.code(503).send({ status: "unavailable" })
+      }
+      schemaVerified = true
     }
 
     return { status: "ready" }

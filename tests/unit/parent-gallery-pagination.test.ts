@@ -28,8 +28,7 @@ const m = vi.hoisted(() => ({
   singleCalls: 0,
 }));
 vi.mock("@/lib/parent/backend-media", () => ({ fetchGalleryPage: m.fetchPage }));
-vi.mock("@/lib/supabase/server", () => ({
-  createServerSupabaseClient: async () => ({
+const signingClient = () => ({
     storage: {
       from: () => ({
         createSignedUrl: async () => (m.singleCalls++, { data: { signedUrl: "https://single" }, error: null }),
@@ -47,8 +46,9 @@ vi.mock("@/lib/supabase/server", () => ({
         },
       }),
     },
-  }),
-}));
+});
+vi.mock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => signingClient() }));
+
 
 import { getParentGalleryMedia } from "@/lib/parent/gallery/queries";
 
@@ -89,7 +89,7 @@ describe("batched signing", () => {
     const src = readFileSync(path.resolve(__dirname, "../../lib/parent/gallery/queries.ts"), "utf8");
     expect(src).not.toMatch(/createPrivateSignedUrl\(/);
     expect(src).not.toMatch(/\.createSignedUrl\(/);
-    expect(src).toMatch(/createPrivateSignedUrls\(/);
+    expect(src).toMatch(/signParentSources\(/); // one batch, service credential (V0.1.54)
   });
 
   it("a partial signing failure degrades only that item", async () => {

@@ -16,7 +16,11 @@ const m = vi.hoisted(() => ({
   verify: vi.fn(),
 }))
 
-vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient: m.createServerClient }))
+vi.mock("@/lib/storage/parent-uploads", () => ({
+  uploadParentSource: async (...a: unknown[]) => (await m.upload(...a)).error,
+  copyParentSource: async () => null,
+  removeParentSource: async () => null,
+}))
 // V0.1.50: identity, consent, the idempotency lookup and the write all go
 // through the backend; these tests cover the upload-size guards in front of it.
 vi.mock("@/lib/parent/backend-caller", () => ({ verifyParentCaller: m.verify }))

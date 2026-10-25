@@ -6,7 +6,6 @@ import { categorizeError, ERROR_CATEGORIES } from "@/lib/observability/errors"
 import { FetchTimeoutError } from "@/lib/http/fetch-with-timeout"
 import { withObservability, log } from "@/lib/observability/request-context"
 import { createPrivateSignedUrl, createPrivateSignedUrls } from "@/lib/storage/private-signed-url"
-import { createParentSessionFailureResponse } from "@/lib/auth/expired-parent-session-response"
 import { AuthRetryableFetchError } from "@supabase/supabase-js"
 import { logAuthLookup } from "@/lib/observability/auth-events"
 
@@ -201,21 +200,6 @@ describe("error categories", () => {
 })
 
 describe("auth / session events", () => {
-  const sb = () => ({ auth: { signOut: vi.fn(async () => ({})) } })
-
-  it("lookup_failed -> warn SESSION_LOOKUP_FAILED / AUTH_UNAVAILABLE, no signOut", async () => {
-    const client = sb()
-    const res = await createParentSessionFailureResponse(client, { valid: false, reason: "lookup_failed" })
-    expect(res.status).toBe(503)
-    expect(client.auth.signOut).not.toHaveBeenCalled()
-    expect(records).toHaveLength(1)
-    expect(records[0]).toMatchObject({ level: "warn", event: "SESSION_LOOKUP_FAILED", errorCode: "AUTH_UNAVAILABLE", subsystem: "auth" })
-  })
-  it("definite expiry -> info SESSION_EXPIRED (not noisy)", async () => {
-    const res = await createParentSessionFailureResponse(sb(), { valid: false, reason: "expired" })
-    expect(res.status).toBe(401)
-    expect(records[0]).toMatchObject({ level: "info", event: "SESSION_EXPIRED", reason: "expired" })
-  })
   it("transient getUser failure -> warn; plain unauthenticated -> debug (suppressed)", () => {
     logAuthLookup(new AuthRetryableFetchError("Request timed out after 10000ms", 0))
     logAuthLookup(null)

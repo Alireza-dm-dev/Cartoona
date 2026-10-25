@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest"
 
 vi.mock("@/lib/observability/request-context", () => ({ log: () => {} }))
 
-import { checkBrowserWrite, expectedOrigins } from "@/lib/security/csrf"
+import { checkBrowserWrite, expectedOrigins, isWriteFrozen } from "@/lib/security/csrf"
 
 /**
  * V0.1.49 CARTOONA_APP_ORIGIN configuration rules (lib/security/csrf.ts),
@@ -86,5 +86,29 @@ describe("never inferred from the request", () => {
     expect(checkBrowserWrite(req(headers), prod(APP))?.status).toBe(403)
     expect(checkBrowserWrite(req(headers), prod())?.status).toBe(503)
     expect(checkBrowserWrite(req(headers), { NODE_ENV: "development" })?.status).toBe(403)
+  })
+})
+
+describe("cutover write freeze (V0.1.54)", () => {
+  const post = () => new Request("https://cartoona.ir/api/x", { method: "POST", headers: { "content-type": "application/json", origin: "https://cartoona.ir" } })
+  const env = { NODE_ENV: "production", CARTOONA_APP_ORIGIN: "https://cartoona.ir" }
+
+  it("is off unless exactly '1'", () => {
+    for (const v of [undefined, "", "0", "true", "yes", " 1"]) {
+      expect(isWriteFrozen({ ...env, CARTOONA_WRITE_FREEZE: v })).toBe(false)
+      expect(checkBrowserWrite(post(), { ...env, CARTOONA_WRITE_FREEZE: v })).toBeNull()
+    }
+  })
+
+  it("refuses every unsafe browser write with 503 before any other check, and leaves GET alone", () => {
+    const e = { ...env, CARTOONA_WRITE_FREEZE: "1" }
+    expect(checkBrowserWrite(post(), e)).toEqual({ status: 503, code: "write_freeze", reason: "freeze" })
+    expect(checkBrowserWrite(new Request("https://cartoona.ir/api/x", { method: "DELETE" }), e)?.code).toBe("write_freeze")
+    expect(checkBrowserWrite(new Request("https://cartoona.ir/api/x", { method: "GET" }), e)).toBeNull()
+  })
+
+  it("the payment webhook route honours it", async () => {
+    const fs = await import("node:fs")
+    expect(fs.readFileSync("app/api/payments/webhooks/[provider]/route.ts", "utf8")).toMatch(/isWriteFrozen\(\)/)
   })
 })

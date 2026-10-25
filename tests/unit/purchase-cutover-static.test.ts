@@ -102,9 +102,10 @@ describe("31. the wallet is credited ONLY by a provider-verified event", () => {
     }
   })
 
-  it("the stub provider refuses production unless explicitly forced, and the registry resolves only the configured provider", () => {
+  it("the stub provider refuses production with no override, and the registry resolves only the configured provider", () => {
     const stub = code("lib/payments/providers/stub.ts")
-    expect(stub).toMatch(/env\.NODE_ENV === "production" && env\.CARTOONA_PAYMENT_STUB_UNSAFE_ALLOW_IN_PRODUCTION !== "1"\) return null/)
+    expect(stub).toMatch(/env\.NODE_ENV === "production"\) return null/)
+    expect(stub.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/UNSAFE_ALLOW/)
     expect(stub).toMatch(/timingSafeEqual/)
     expect(code("lib/payments/providers/registry.ts")).toMatch(/adapter && adapter\.id === pathId \? adapter : null/)
   })
@@ -143,7 +144,7 @@ describe("29/30. scope: what did NOT move", () => {
   it("Storage is untouched: no backend Storage code, no blob columns, request uploads still go to Supabase Storage", () => {
     for (const f of walk("backend/src")) expect(code(f), f).not.toMatch(/storage\.from|@supabase|bytea/i)
     expect(read("database/migrations/0017_candy_purchase_payment.sql")).not.toMatch(/bytea|large object|lo_import/i)
-    expect(code("app/api/requests/route.ts")).toMatch(/supabase\.storage\s*\.from\("parent-uploads"\)/)
+    expect(code("app/api/requests/route.ts")).toMatch(/uploadParentSource\(subject/)
   })
 
   it("request submission is still PostgreSQL-backed", () => {

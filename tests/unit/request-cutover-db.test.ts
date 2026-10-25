@@ -263,6 +263,7 @@ describe.skipIf(!enabled)("V0.1.50 request submission cutover (local Docker Post
     vi.stubEnv("DATABASE_URL", roleUrl)
     vi.stubEnv("CARTOONA_INTERNAL_AUTH_SECRET", AUTH_SECRET)
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-key")
+    vi.stubEnv("SUPABASE_SECRET_KEY", "stub-service-key") // V0.1.54: parent source bytes use the service credential
     vi.stubEnv("BACKEND_REQUEST_TIMEOUT_MS", "3000")
     ;({ app: backend, url: backendUrl } = await startBackend(faultyDb()))
     vi.stubEnv("BACKEND_INTERNAL_URL", backendUrl)

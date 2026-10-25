@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { enforceRateLimit, RATE_LIMIT_POLICIES } from "@/lib/rate-limit"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
+import { copyParentSource, removeParentSource, uploadParentSource } from "@/lib/storage/parent-uploads"
 import { endParentSession } from "@/lib/auth/end-parent-session"
 import { SESSION_CHECK_UNAVAILABLE_BODY } from "@/lib/auth/expired-parent-session-response"
 import { rejectUnsafeBrowserWrite } from "@/lib/security/csrf"
@@ -109,13 +109,9 @@ async function authFailure(reason: ParentConsentFailure | "session_expired" | "n
 export const POST = withObservability("POST /api/requests", handlePost)
 
 // Orphan-file cleanup. Best effort, never throws, failure is logged.
-async function removeOrphanedUpload(
-  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
-  path: string,
-  reason: string,
-): Promise<void> {
+async function removeOrphanedUpload(subject: string, path: string, reason: string): Promise<void> {
   try {
-    const { error } = await supabase.storage.from("parent-uploads").remove([path])
+    const error = await removeParentSource(subject, path)
     if (error) throw error
   } catch (error) {
     log("warn", "SUBMISSION_CLEANUP_FAILED", {
@@ -244,7 +240,6 @@ async function handlePost(request: Request) {
   }
   if (!earlier.ok && earlier.reason !== "service_unavailable") return authFailure(earlier.reason)
 
-  const supabase = await createServerSupabaseClient()
   const orderId = crypto.randomUUID()
 
   let storagePath: string | null = null
@@ -297,12 +292,9 @@ async function handlePost(request: Request) {
     storagePath = `${subject}/${orderId}/${safeName}`
     originalFilename = uploadedFile.name
 
-    const { error: uploadError } = await supabase.storage
-      .from("parent-uploads")
-      .upload(storagePath, uploadedFile, {
-        contentType: uploadedFile.type,
-        upsert: false,
-      })
+    // Service-credential write into the verified subject's own folder (V0.1.54):
+    // PostgreSQL, not a Storage policy, decided that this parent may submit.
+    const uploadError = await uploadParentSource(subject, storagePath, uploadedFile, uploadedFile.type)
 
     if (uploadError) {
       log("error", "SUBMISSION_STORAGE_FAILED", {
@@ -312,12 +304,6 @@ async function handlePost(request: Request) {
         mediaType: uploadedFile.type,
         errorCode: categorizeError(uploadError, "storage"),
       })
-      if (uploadError.message?.includes("row-level security")) {
-        return NextResponse.json({
-          error: "خطای دسترسی در بارگذاری فایل. لطفاً دوباره وارد شوید.",
-          code: "storage_permission_denied",
-        }, { status: 403 })
-      }
       return NextResponse.json({
         error: "بارگذاری فایل با خطا مواجه شد. لطفاً دوباره تلاش کنید.",
         code: "upload_failed",
@@ -355,9 +341,7 @@ async function handlePost(request: Request) {
       // The copy inherits the label the parent already knows this file by.
       originalFilename = resolved.asset.originalFilename
 
-      const { error: copyError } = await supabase.storage
-        .from(PRIVATE_UPLOADS_BUCKET)
-        .copy(resolved.asset.path, storagePath)
+      const copyError = await copyParentSource(subject, resolved.asset.path, storagePath)
 
       if (copyError) {
         log("error", "SUBMISSION_STORAGE_FAILED", {
@@ -403,7 +387,7 @@ async function handlePost(request: Request) {
   // belongs to no order: remove it. An UNCERTAIN outcome never removes it - the
   // order may exist and own the object.
   const cleanupRefused = async (reason: string) => {
-    if (fileUploaded && storagePath) await removeOrphanedUpload(supabase, storagePath, reason)
+    if (fileUploaded && storagePath) await removeOrphanedUpload(subject, storagePath, reason)
   }
 
   if (!result.ok) {

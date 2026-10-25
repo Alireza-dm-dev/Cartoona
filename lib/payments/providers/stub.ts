@@ -16,9 +16,8 @@ import { PaymentProviderError, type PaymentProviderAdapter, type ProviderEvent }
  * over the raw body, timestamp tolerance, constant-time compare, server-side
  * verification) so the same code paths are proven that a real provider will
  * use. It is NOT a payment method: anyone who can reach its checkout page can
- * "pay". Refused when NODE_ENV=production unless
- * CARTOONA_PAYMENT_STUB_UNSAFE_ALLOW_IN_PRODUCTION=1 (local container proofs
- * run the production build; never set it anywhere else).
+ * "pay". Refused whenever NODE_ENV=production, with
+ * no override (V0.1.54): a production build can never resolve this adapter.
  */
 
 const TOLERANCE_SECONDS = 300
@@ -33,7 +32,7 @@ export interface StubConfig {
 }
 
 export function readStubConfig(env: Env = process.env): StubConfig | null {
-  if (env.NODE_ENV === "production" && env.CARTOONA_PAYMENT_STUB_UNSAFE_ALLOW_IN_PRODUCTION !== "1") return null
+  if (env.NODE_ENV === "production") return null
   const baseUrl = env.CARTOONA_PAYMENT_STUB_URL?.trim().replace(/\/+$/, "")
   const apiKey = env.CARTOONA_PAYMENT_STUB_API_KEY?.trim()
   const webhookSecret = env.CARTOONA_PAYMENT_STUB_WEBHOOK_SECRET?.trim()

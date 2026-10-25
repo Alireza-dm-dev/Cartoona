@@ -61,6 +61,35 @@ export async function checkSessionRole(db?: Queryable): Promise<SessionRoleCheck
   }
 }
 
+/**
+ * Whether the schema is at the migration head this build needs (V0.1.54).
+ * schema_migrations is owner-only, so the restricted login cannot read it;
+ * instead the catalog is asked whether a function created by the HEAD migration
+ * exists AND this login may execute it (which also proves the grants ran).
+ * HEAD_PROBE must name a function of the newest file in database/migrations;
+ * tests/unit/startup-gate.test.ts fails when a new migration is added without
+ * moving it.
+ */
+export const HEAD_PROBE = {
+  migration: "0019_remove_supabase_db_dependencies",
+  signature: "public.delete_example_trusted(uuid, uuid)",
+} as const;
+
+export type SchemaVersionCheck = { ok: true } | { ok: false; reason: "behind" | "check_failed" };
+
+export async function checkSchemaHead(db?: Queryable): Promise<SchemaVersionCheck> {
+  try {
+    const result = await (db ?? getPool()).query<{ ready: boolean | null }>(
+      "SELECT pg_catalog.has_function_privilege(current_user, to_regprocedure($1), 'EXECUTE') AS ready",
+      [HEAD_PROBE.signature],
+    );
+    return result.rows[0]?.ready === true ? { ok: true } : { ok: false, reason: "behind" };
+  } catch {
+    // has_function_privilege(NULL oid) yields NULL; an error means the catalog could not be read.
+    return { ok: false, reason: "check_failed" };
+  }
+}
+
 export async function pingDatabase(db?: Queryable): Promise<DbPingResult> {
   const started = performance.now();
   try {

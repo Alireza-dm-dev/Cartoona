@@ -1,6 +1,8 @@
 import { buildBackendApp } from "./app"
 import { BackendConfigError, loadBackendConfig } from "./config"
 import { logEvent } from "@/lib/observability/logger"
+import { checkSchemaHead, checkSessionRole } from "@/lib/db/health"
+import { getPool } from "@/lib/db/pool"
 
 /**
  * Backend entry point: validate config, build the app, listen, shut down
@@ -23,6 +25,25 @@ async function main(): Promise<void> {
     const message = error instanceof BackendConfigError ? error.message : "invalid configuration"
     console.error(`backend: refusing to start - ${message}`)
     process.exit(1)
+  }
+
+  // Production fail-fast (V0.1.54): a reachable database that is definitively
+  // WRONG (owner/superuser login, role group missing, schema behind this build)
+  // stops the process before it listens. An unreachable database does not: that
+  // is what /ready reports, so a restart loop never hides a database outage.
+  if (process.env.NODE_ENV === "production") {
+    const role = await checkSessionRole(getPool())
+    if (!role.ok && role.reason !== "check_failed") {
+      console.error(`backend: refusing to start - database login is not the restricted application role (${role.reason})`)
+      process.exit(1)
+    }
+    if (role.ok) {
+      const schema = await checkSchemaHead(getPool())
+      if (!schema.ok && schema.reason === "behind") {
+        console.error("backend: refusing to start - database schema is behind this build (apply migrations first)")
+        process.exit(1)
+      }
+    }
   }
 
   const app = buildBackendApp()

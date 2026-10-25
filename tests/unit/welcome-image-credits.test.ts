@@ -132,6 +132,7 @@ const m = vi.hoisted(() => ({
   lookup: vi.fn(),
 }))
 vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient: async () => m.client }))
+vi.mock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => m.client }))
 // V0.1.50: identity, consent, the idempotency lookup and the write all go
 // through the backend; the payment source is decided in PostgreSQL and merely
 // reported by the route (the database rule itself: welcome-credits-db.test.ts,

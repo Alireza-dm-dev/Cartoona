@@ -4,8 +4,7 @@ import type { VerifiedAuthContext } from "@/lib/auth/supabase-identity-adapter";
 import { backendGetJson } from "@/lib/backend/client";
 import { isBackendClientError } from "@/lib/backend/errors";
 import { currentRequestId } from "@/lib/observability/request-context";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { createPrivateSignedUrls } from "@/lib/storage/private-signed-url";
+import { signParentSources } from "@/lib/storage/parent-uploads";
 import { mapBackendRejection, verifyParentCaller, type BackendParentRejection, type ParentBackendFailure } from "../backend-caller";
 import type { ParentOrderDetailResult } from "./detail-types";
 import { assembleParentOrderDetail, isValidOrderId, type BackendOrderDetail } from "./detail-queries";
@@ -146,8 +145,7 @@ export async function fetchParentOrderDetail(context: VerifiedAuthContext, order
   let signed = new Map<string, string | null>();
   if (outcome.data.sourceMedia.length > 0) {
     try {
-      const supabase = await createServerSupabaseClient();
-      signed = await createPrivateSignedUrls(supabase, outcome.data.sourceMedia.map((m) => m.path));
+      signed = await signParentSources(outcome.data.sourceMedia.map((m) => m.path));
     } catch {
       signed = new Map();
     }

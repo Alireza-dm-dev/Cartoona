@@ -55,6 +55,7 @@ export type BrowserWriteRejection =
   | { status: 415; code: "unsupported_media_type"; reason: "content_type" }
   | { status: 403; code: "csrf_rejected"; reason: "origin_missing" | "origin_malformed" | "origin_mismatch" | "fetch_site" }
   | { status: 503; code: "csrf_not_configured"; reason: "config" }
+  | { status: 503; code: "write_freeze"; reason: "freeze" }
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"])
 const DEV_DEFAULT_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
@@ -74,6 +75,18 @@ function canonicalOrigin(value: string): string | null {
   // URL#origin drops path, query, credentials and a trailing slash; requiring
   // the raw value to equal it refuses all of those instead of normalizing them.
   return url.origin === value ? value : null
+}
+
+/**
+ * Cutover write freeze (V0.1.54). CARTOONA_WRITE_FREEZE=1 (exactly "1", read per
+ * request) makes every browser-facing business write answer 503 write_freeze
+ * with Retry-After, before any body is read or session verified. Reads, sign-in
+ * and the Next -> Fastify hop are untouched; the payment webhook route checks
+ * it too so the provider retries later. An operator tool for the cutover window
+ * only - see docs/PRODUCTION_CUTOVER.md. Unset in every normal deployment.
+ */
+export function isWriteFrozen(env: Env = process.env): boolean {
+  return env.CARTOONA_WRITE_FREEZE === "1"
 }
 
 /** The configured origins; null when misconfigured (or unset in production). */
@@ -115,6 +128,7 @@ export type BrowserWriteBody = "json" | "multipart"
 /** Pure decision; null means the request may proceed. */
 export function checkBrowserWrite(request: Request, env: Env = process.env, body: BrowserWriteBody = "json"): BrowserWriteRejection | null {
   if (SAFE_METHODS.has(request.method.toUpperCase())) return null
+  if (isWriteFrozen(env)) return { status: 503, code: "write_freeze", reason: "freeze" }
 
   const contentType = request.headers.get("content-type")
   if (!(body === "multipart" ? isMultipartContentType(contentType) : isJsonContentType(contentType))) {
@@ -141,6 +155,7 @@ const MESSAGES: Record<BrowserWriteRejection["code"], string> = {
   unsupported_media_type: "فرمت درخواست باید JSON باشد.",
   csrf_rejected: "درخواست از مبدأ نامعتبر.",
   csrf_not_configured: "این عملیات موقتاً در دسترس نیست.",
+  write_freeze: "سیستم در حال به‌روزرسانی است. لطفاً چند دقیقه بعد دوباره تلاش کنید.",
 }
 
 /**
@@ -151,7 +166,7 @@ const MESSAGES: Record<BrowserWriteRejection["code"], string> = {
 export function rejectUnsafeBrowserWrite(request: Request, env: Env = process.env, body: BrowserWriteBody = "json"): NextResponse | null {
   const rejection = checkBrowserWrite(request, env, body)
   if (!rejection) return null
-  log(rejection.status === 503 ? "error" : "info", "CSRF_REJECTED", {
+  log(rejection.status === 503 && rejection.code !== "write_freeze" ? "error" : "info", "CSRF_REJECTED", {
     subsystem: "request",
     status: rejection.status,
     errorCode: rejection.code,
@@ -162,6 +177,13 @@ export function rejectUnsafeBrowserWrite(request: Request, env: Env = process.en
       error: rejection.code === "unsupported_media_type" && body === "multipart" ? "فرمت درخواست باید multipart/form-data باشد." : MESSAGES[rejection.code],
       code: rejection.code,
     },
-    { status: rejection.status, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } },
+    {
+      status: rejection.status,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        ...(rejection.code === "write_freeze" ? { "Retry-After": "120" } : {}),
+      },
+    },
   )
 }

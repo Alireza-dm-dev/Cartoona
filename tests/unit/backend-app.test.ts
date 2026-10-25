@@ -42,6 +42,7 @@ const PRICES = [
 const healthy: Responder = (text) => {
   if (text === "SELECT 1") return [{ "?column?": 1 }]
   if (text.includes("pg_has_role")) return [SAFE_ROLE]
+  if (text.includes("has_function_privilege")) return [{ ready: true }]
   if (text.includes("creation_pricing")) return PRICES
   return new Error(`unexpected SQL: ${text}`)
 }
@@ -121,6 +122,18 @@ describe("GET /ready (readiness)", () => {
     for (let i = 0; i < 3; i++) expect((await a.inject({ method: "GET", url: "/ready" })).statusCode).toBe(200)
     expect(calls.filter((c) => c.text === "SELECT 1")).toHaveLength(3)
     expect(calls.filter((c) => c.text.includes("pg_has_role"))).toHaveLength(1)
+    expect(calls.filter((c) => c.text.includes("has_function_privilege"))).toHaveLength(1)
+  })
+
+  it.each([
+    ["the head migration is not applied", [{ ready: null }]],
+    ["the head function is not executable by this login", [{ ready: false }]],
+  ])("503 when %s (schema behind this build)", async (_label, rows) => {
+    const { app: a } = build((text, v) => (text.includes("has_function_privilege") ? rows : healthy(text, v)))
+    const res = await a.inject({ method: "GET", url: "/ready" })
+    expect(res.statusCode).toBe(503)
+    expect(res.json()).toEqual({ status: "unavailable" })
+    expect(logs.some((l) => l.event === "READINESS_FAILED" && l.reason === "schema_behind")).toBe(true)
   })
 
   it.each([

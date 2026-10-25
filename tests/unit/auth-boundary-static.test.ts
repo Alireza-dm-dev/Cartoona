@@ -75,7 +75,7 @@ describe("the Supabase adapter verifies identity and nothing else", () => {
   })
 
   it("never derives the session start from the token issue time", () => {
-    for (const file of ["lib/auth/supabase-session-evidence.ts", "lib/auth/supabase-identity-adapter.ts", "lib/auth/parent-session-lifetime.ts"]) {
+    for (const file of ["lib/auth/supabase-session-evidence.ts", "lib/auth/supabase-identity-adapter.ts"]) {
       expect(code(file), file).not.toMatch(/\biat\b/)
     }
     expect(code("lib/auth/supabase-session-evidence.ts")).toMatch(/earliest = Math\.min\(earliest, timestamp\)/)
@@ -189,21 +189,13 @@ describe("V0.1.43: no runtime dependency on Supabase session internals", () => {
     expect(historical).toContain("20260725120000_parent_session_lifetime.sql")
   })
 
-  it("every former caller uses the provider-neutral lifetime check with the VERIFIED user id", () => {
-    const callers = runtime.filter((f) => /checkParentSessionLifetime\(/.test(code(f)) && f !== "lib/auth/parent-session-lifetime.ts")
-    // 13 since V0.1.48: POST /api/parent-consent verifies through
-    // verifyParentCaller (same 30-day policy) and the backend (which also
-    // enforces sessions_not_before), like the other cut-over routes.
-    // 12 since V0.1.50: POST /api/requests does the same.
-    // 8 since V0.1.51: the purchase, coupon and coupon-validation routes verify through verifyParentCaller.
-    // 5 since V0.1.52: the gallery API and the final-media route verify through verifyParentCaller,
-    // and the (unused) Supabase ParentRequestContext was deleted.
-    // 0 since V0.1.53: the password, referral and page gates take the session + role from the
-    // backend (PostgreSQL) and the Edge middleware no longer checks a lifetime.
-    expect(callers.length).toBe(0)
-    for (const file of callers) {
-      expect(code(file), file).toMatch(/checkParentSessionLifetime\(supabase, (user\.id|ownership\.userId)\)/)
-    }
+  it("the Supabase-backed lifetime check is gone: no module, no callers (V0.1.54)", () => {
+    // The check had 0 runtime callers since V0.1.53 (the 30-day policy and
+    // sessions_not_before are enforced by the backend on every assertion), so the
+    // module and its failure-response helper were deleted.
+    expect(fs.existsSync(path.join(root, "lib/auth/parent-session-lifetime.ts"))).toBe(false)
+    const callers = runtime.filter((f) => /checkParentSessionLifetime|createParentSessionFailureResponse|parent-session-lifetime/.test(code(f)))
+    expect(callers).toEqual([])
   })
 
   it("the session policy is pure and neutral", () => {

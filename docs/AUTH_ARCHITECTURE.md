@@ -48,7 +48,6 @@ Browser ── session cookie (Supabase) ──> Next.js server
 | Deadline helpers | `lib/auth/auth-deadline.ts` | one total budget for an auth check |
 | Session policy | `lib/identity/session-policy.ts` | pure: evidence + policy + clock -> valid / expired / invalidated |
 | Session evidence | `lib/auth/supabase-session-evidence.ts` | Supabase claim layout (`amr`) -> sign-in time; decode only, after verification |
-| Lifetime for Supabase-backed routes | `lib/auth/parent-session-lifetime.ts` | `checkParentSessionLifetime(supabase, verifiedUserId)`, no network call |
 | Identity resolution | `lib/repositories/user-identities.ts` | parameterised SQL; read-only |
 | Backend auth | `backend/src/plugins/auth.ts` | `requireAuth`, `requireRole`; reads one header |
 | Proof endpoints | `backend/src/routes/auth.ts` (`GET /v1/auth/me`), `app/api/auth/backend-me/route.ts` | minimal `{ authenticated, userId, role }` |
@@ -798,3 +797,8 @@ Its results, and each caller's reaction, are unchanged:
   `on_auth_user_created` trigger inserts `public.users`. Then
   `POST /api/parent/complete-signup` calls `ensureParentProfile` (profile,
   plus the wallet and welcome credits through triggers).
+
+
+## V0.1.54 - dead lifetime check removed
+
+`lib/auth/parent-session-lifetime.ts` (`checkParentSessionLifetime`) and `createParentSessionFailureResponse` had zero runtime callers since V0.1.53 and were deleted; `tests/unit/auth-boundary-static.test.ts` pins that no module or caller returns. The session policy (`lib/identity/session-policy.ts`), the AMR evidence reader and the backend's 30-day / `sessions_not_before` enforcement are unchanged. Earlier sections above that mention the function describe history.

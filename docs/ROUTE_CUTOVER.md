@@ -1645,7 +1645,7 @@ backend route and by the functions).
 
 Provider boundary: `lib/payments/providers/` (adapter interface;
 `stub` adapter for local/test only, refused under `NODE_ENV=production`
-unless `CARTOONA_PAYMENT_STUB_UNSAFE_ALLOW_IN_PRODUCTION=1`). Provider
+with no override since V0.1.54). Provider
 secrets stay in Next; the backend never sees them. With no provider
 configured (production today) `pay` answers `503 PAYMENT_UNAVAILABLE`.
 

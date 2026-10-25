@@ -64,7 +64,10 @@ vi.mock("@/lib/storage/final-deliverables", () => ({ signFinalDeliverable: m.sig
 vi.mock("@/lib/storage/private-signed-url", () => ({
   PRIVATE_MEDIA_SIGNED_URL_TTL_SECONDS: 300,
   PRIVATE_UPLOADS_BUCKET: "parent-uploads",
+  createPrivateSignedUrls: async () => new Map(),
 }))
+// V0.1.54: parent source bytes are written with the service credential (lib/storage/parent-uploads).
+vi.mock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => healthyClient() }))
 
 const chain = (data: unknown) => ({
   select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: m.existingOrder, error: null }) }), maybeSingle: async () => ({ data, error: null }) }) }),

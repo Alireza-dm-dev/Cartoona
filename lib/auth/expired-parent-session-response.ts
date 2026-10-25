@@ -1,6 +1,4 @@
 import { NextResponse } from "next/server"
-import type { ParentSessionLifetimeResult } from "@/lib/auth/parent-session-lifetime"
-import { log } from "@/lib/observability/request-context"
 
 const EXPIRED_SESSION_BODY = {
   error: "برای ادامه دوباره وارد حساب شوید.",
@@ -51,27 +49,4 @@ export function createSessionCheckUnavailableResponse(): NextResponse {
       "X-Content-Type-Options": "nosniff",
     },
   })
-}
-
-/**
- * Response for a parent session that did not pass the lifetime check.
- *
- * Only a definite expiry / missing session ends the session. A transient
- * `lookup_failed` must never reach signOut.
- */
-export async function createParentSessionFailureResponse(
-  supabase: { auth: { signOut: (opts: { scope: "local" }) => Promise<unknown> } },
-  lifetime: Extract<ParentSessionLifetimeResult, { valid: false }>,
-): Promise<NextResponse> {
-  if (lifetime.reason === "lookup_failed") {
-    // Infrastructure problem, not an expiry: the session is kept (see above).
-    log("warn", "SESSION_LOOKUP_FAILED", {
-      subsystem: "auth",
-      errorCode: "AUTH_UNAVAILABLE",
-      reason: lifetime.reason,
-    })
-    return createSessionCheckUnavailableResponse()
-  }
-  log("info", "SESSION_EXPIRED", { subsystem: "auth", reason: lifetime.reason })
-  return createExpiredParentSessionResponse(supabase)
 }

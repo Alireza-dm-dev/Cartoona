@@ -75,11 +75,19 @@ describe("POST /api/requests has no Supabase Database/RPC business access", () =
     expect(read(ROUTE)).toContain('const OUTCOME_UNKNOWN_MESSAGE = "نتوانستیم تأیید کنیم که درخواست ثبت شده است یا نه."')
   })
 
-  it("Storage stays Supabase (bytes are not migrated) and is the ONLY remaining Supabase dependency besides Auth (V0.1.52: the gallery source is resolved in PostgreSQL too)", () => {
-    expect(route).toMatch(/supabase\.storage\s*\.from\("parent-uploads"\)/)
+  it("Storage stays Supabase (bytes are not migrated) but is written by the service credential, not the parent's session (V0.1.54)", () => {
+    // The parent_uploads_* Storage policies call the Supabase-database functions is_parent()/is_admin(),
+    // which stop describing reality once accounts are created in PostgreSQL. The route therefore
+    // imports no Supabase client at all and writes through lib/storage/parent-uploads.ts.
+    expect(route).toMatch(/uploadParentSource\(subject, storagePath/)
+    expect(route).toMatch(/copyParentSource\(subject, resolved\.asset\.path, storagePath\)/)
+    expect(route).toMatch(/removeParentSource\(subject, path\)/)
     expect(route).toMatch(/resolveOwnedSourceAsset\(context, sourceAssetId\)/)
-    const supabaseImports = [...read(ROUTE).matchAll(/from "(@\/lib\/supabase\/[a-z-]+)"/g)].map((m) => m[1])
-    expect(supabaseImports).toEqual(["@/lib/supabase/server"])
+    expect(route).not.toMatch(/\.storage\b|createServerSupabaseClient|row-level security/)
+    expect([...read(ROUTE).matchAll(/from "(@\/lib\/supabase\/[a-z-]+)"/g)].map((m) => m[1])).toEqual([])
+    const helper = code("lib/storage/parent-uploads.ts")
+    expect(helper).toMatch(/isOwnedUploadKey\(key, subject\)/)
+    expect(helper).toMatch(/isOwnedUploadKey\(fromKey, subject\) \|\| !isOwnedUploadKey\(toKey, subject\)/)
   })
 })
 

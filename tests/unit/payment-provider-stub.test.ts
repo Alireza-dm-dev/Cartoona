@@ -34,7 +34,7 @@ describe("which provider is configured", () => {
   it.each([
     [{ NODE_ENV: "production", ...full }, false],
     [{ NODE_ENV: "production", ...full, CARTOONA_PAYMENT_STUB_UNSAFE_ALLOW_IN_PRODUCTION: "true" }, false],
-    [{ NODE_ENV: "production", ...full, CARTOONA_PAYMENT_STUB_UNSAFE_ALLOW_IN_PRODUCTION: "1" }, true],
+    [{ NODE_ENV: "production", ...full, CARTOONA_PAYMENT_STUB_UNSAFE_ALLOW_IN_PRODUCTION: "1" }, false],
     [{ NODE_ENV: "test", ...full }, true],
   ])("NODE_ENV/override %j -> stub allowed: %s", (env, allowed) => {
     expect(readStubConfig(env) !== null).toBe(allowed)

@@ -50,8 +50,8 @@ describe("19/20. no Supabase business read or write remains in the migrated surf
 
   it("the service credential is used for Storage bytes only on these paths (one module), never for a table", () => {
     const users = [...walk("app"), ...walk("lib"), ...walk("components")].filter((f) => /createAdminSupabaseClient/.test(code(f)) && !f.startsWith("lib/supabase/"))
-    // V0.1.53: the three Storage modules only (the dev route and the homepage CMS no longer use it).
-    expect(users.sort()).toEqual(["lib/storage/example-media.ts", "lib/storage/final-deliverables.ts", "lib/storage/homepage-media.ts"])
+    // V0.1.54: the four Storage modules only (the dev route and the homepage CMS no longer use it).
+    expect(users.sort()).toEqual(["lib/storage/example-media.ts", "lib/storage/final-deliverables.ts", "lib/storage/homepage-media.ts", "lib/storage/parent-uploads.ts"])
     const storage = code("lib/storage/final-deliverables.ts")
     expect([...storage.matchAll(/admin\.(\w+)/g)].map((m) => m[1]).every((m) => m === "storage")).toBe(true)
     expect(storage).not.toMatch(/\.rpc\(|admin\.from\(/)

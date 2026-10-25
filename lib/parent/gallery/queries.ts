@@ -1,8 +1,7 @@
 import "server-only";
 
 import type { VerifiedAuthContext } from "@/lib/auth/supabase-identity-adapter";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { createPrivateSignedUrls } from "@/lib/storage/private-signed-url";
+import { signParentSources } from "@/lib/storage/parent-uploads";
 import { fetchGalleryPage } from "@/lib/parent/backend-media";
 import {
   GALLERY_DEFAULT_PAGE_SIZE,
@@ -85,8 +84,7 @@ export async function getParentGalleryMedia(
   // One batched signing call for exactly this page; a failure degrades the tiles.
   let signed = new Map<string, string | null>();
   try {
-    const supabase = await createServerSupabaseClient();
-    signed = await createPrivateSignedUrls(supabase, page.items.map((i) => i.path));
+    signed = await signParentSources(page.items.map((i) => i.path));
   } catch {
     signed = new Map();
   }

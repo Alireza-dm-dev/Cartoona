@@ -20,6 +20,8 @@ const m = vi.hoisted(() => ({
 }))
 
 vi.mock("@/lib/supabase/server", () => ({ createServerSupabaseClient: m.serverClient }))
+// V0.1.54: parent source bytes are written with the service credential (lib/storage/parent-uploads).
+vi.mock("@/lib/supabase/admin", () => ({ createAdminSupabaseClient: () => healthyClient() }))
 // V0.1.50: identity, consent, the idempotency lookup and the write all go
 // through the backend; the route touches Supabase only for Storage (and the
 // optional gallery metadata read, mocked below).
@@ -35,7 +37,7 @@ vi.mock("@/lib/parent/gallery/source-asset", async (orig) => ({
   ...(await orig<typeof import("@/lib/parent/gallery/source-asset")>()),
   resolveOwnedSourceAsset: async () => ({
     ok: true,
-    asset: { id: OID, path: "u/secret/path.png", originalFilename: "sara-private.png", mimeType: "image/png" },
+    asset: { id: OID, path: "u1/secret/path.png", originalFilename: "sara-private.png", mimeType: "image/png" },
   }),
   sourceAssetCopyName: () => "copy.png",
 }))
@@ -176,7 +178,8 @@ describe("POST /api/requests observability", () => {
   it("storage upload failure -> SUBMISSION_STORAGE_FAILED (safe category, no path/filename)", async () => {
     m.upload.mockResolvedValue({ error: { message: "row-level security violation for u1/o/sara-birthday.png" } })
     const res = await (await POST())(post(png))
-    expect(res.status).toBe(403)
+    // V0.1.54: no Storage policy decides a parent's access any more, so there is no 403 policy branch.
+    expect(res.status).toBe(500)
     expect(records.find((r) => r.event === "SUBMISSION_STORAGE_FAILED")).toMatchObject({
       level: "error", operation: "upload", bucket: "parent-uploads", mediaType: "image/png", errorCode: "STORAGE_UNAVAILABLE",
     })

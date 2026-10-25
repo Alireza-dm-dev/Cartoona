@@ -4,8 +4,7 @@ import type { VerifiedAuthContext } from "@/lib/auth/supabase-identity-adapter"
 import { backendGetJson, backendWriteJson } from "@/lib/backend/client"
 import { isBackendClientError } from "@/lib/backend/errors"
 import { currentRequestId } from "@/lib/observability/request-context"
-import { createServerSupabaseClient } from "@/lib/supabase/server"
-import { createPrivateSignedUrls } from "@/lib/storage/private-signed-url"
+import { signParentSources } from "@/lib/storage/parent-uploads"
 import { signFinalDeliverable } from "@/lib/storage/final-deliverables"
 import type { OrderStatus, OrderType } from "@/types/app"
 import type { FulfilmentApiErrorCode } from "@/lib/admin/requests/fulfilment-error-codes"
@@ -185,12 +184,11 @@ export async function loadAdminRequestView(context: VerifiedAuthContext, request
       typeRows = [...(childRow ? [childRow] : []), { label: "فایل مرجع", value: hasUpload ? "بارگذاری شده" : "بارگذاری نشده" }]
     }
 
-    // Storage = bytes only. Source previews: the caller's session client, one batch.
+    // Storage = bytes only. Source previews: service-credential signing of keys the backend (admin role) returned, one batch.
     let signedSources = new Map<string, string | null>()
     if (uploads.length > 0) {
       try {
-        const supabase = await createServerSupabaseClient()
-        signedSources = await createPrivateSignedUrls(supabase, uploads.map((m) => String(m.path)))
+        signedSources = await signParentSources(uploads.map((m) => String(m.path)))
       } catch {
         signedSources = new Map()
       }

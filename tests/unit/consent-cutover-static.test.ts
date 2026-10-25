@@ -196,6 +196,8 @@ describe("the consent write: CSRF -> session -> v3 -> parent-only backend route"
       "app/api/admin/examples/route.ts",
       // the payment return route reads only the configured origin (no guard: it is not a browser write)
       "app/api/payments/return/[provider]/route.ts",
+      // V0.1.54: the cutover write freeze (isWriteFrozen) is also honoured by the provider webhook.
+      "app/api/payments/webhooks/[provider]/route.ts",
     ].sort())
   })
 
@@ -211,7 +213,7 @@ describe("scope: only consent moved", () => {
   it("request creation is PostgreSQL (V0.1.50) through the backend; Storage is still Supabase", () => {
     const requests = code("app/api/requests/route.ts")
     expect(requests).toMatch(/createRequestViaBackend\(context, payload\)/)
-    expect(requests).toMatch(/storage\.from\("parent-uploads"\)/)
+    expect(requests).toMatch(/uploadParentSource\(subject/)
     expect(requests).not.toMatch(/\.rpc\(|create_parent_request_trusted|createAdminSupabaseClient/)
   })
 

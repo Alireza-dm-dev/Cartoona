@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { withObservability, log } from "@/lib/observability/request-context"
 import { paymentProviderFor } from "@/lib/payments/providers/registry"
+import { isWriteFrozen } from "@/lib/security/csrf"
 import { deliverProviderEvent } from "@/lib/candy-purchases/backend-purchases"
 
 export const dynamic = "force-dynamic"
@@ -32,6 +33,9 @@ async function handlePost(request: Request, { params }: { params: Promise<{ prov
   const { provider: providerId } = await params
   const adapter = paymentProviderFor(providerId)
   if (!adapter) return NextResponse.json({ error: "not_found" }, { status: 404, headers: { "Cache-Control": "no-store" } })
+
+  // Cutover write freeze: not processed, so the provider retries after the freeze.
+  if (isWriteFrozen()) return NextResponse.json({ error: "retry" }, { status: 503, headers: { "Cache-Control": "no-store", "Retry-After": "120" } })
 
   const raw = await request.text()
   if (raw.length > MAX_BODY) return NextResponse.json({ error: "too_large" }, { status: 413 })

@@ -117,9 +117,9 @@ describe("the service credential is Storage-only", () => {
     expect(importers).toEqual(["app/api/dev/parent-auth/route.ts"])
   })
 
-  it("createAdminSupabaseClient is imported only by the three Storage modules", () => {
+  it("createAdminSupabaseClient is imported only by the four Storage modules", () => {
     const users = RUNTIME.filter((f) => /createAdminSupabaseClient/.test(code(f)) && f !== "lib/supabase/admin.ts").sort()
-    expect(users).toEqual(["lib/storage/example-media.ts", "lib/storage/final-deliverables.ts", "lib/storage/homepage-media.ts"])
+    expect(users).toEqual(["lib/storage/example-media.ts", "lib/storage/final-deliverables.ts", "lib/storage/homepage-media.ts", "lib/storage/parent-uploads.ts"])
     for (const f of users) {
       expect(code(f), f).not.toMatch(/\.rpc\(|\.auth\b|admin\.from\(/)
       expect(code(f), f).toMatch(/storage/)
