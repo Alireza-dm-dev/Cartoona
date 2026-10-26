@@ -2268,7 +2268,25 @@ Supabase `handle_new_user` trigger and Storage policies that read Supabase table
 app but still exist there; admin accounts must exist in PostgreSQL (`users.role`) because Supabase
 roles are no longer read anywhere.
 
+## V0.1.55 - Final blocker resolution
+
+No application migration. Added `npm run production:preflight` (config validation, no I/O), `npm run cutover:check`
+(read-only precheck), `DB_SSL_MODE`/`DB_SSL_CA` (TLS to PostgreSQL was impossible to configure before), a static
+write-freeze coverage test, the numbered runbook with its irreversible boundary and go/no-go list, and
+`docs/PRODUCTION_DEPLOYMENT_SPEC.md`. Every remaining blocker is classified in `docs/PRODUCTION_CUTOVER.md` section 15;
+AMR verification, a real export rehearsal and (for paid launch) a payment provider remain open and external.
+Production cutover: **NO-GO**.
+
+**TLS handshake: UNVERIFIED.** `DB_SSL_MODE=verify-full` is unit tested (config only); no TLS-enabled PostgreSQL
+was available locally, so a real handshake has not been exercised.
+
+**Totals** (`CARTOONA_PLAIN_PG=docker npm test`, run alone): 121 files, **3403 passed**, 37 skipped, 0 failed.
+Do not add `CARTOONA_LOCAL_PG=docker` to that invocation: it requires a `host:port` value, and with the docker
+form a full run produced unrelated failures (`welcome-image-credits-db`, rate-limit route tests). The affected
+tests pass in isolation; the root cause is not known.
+
 ## Next
 
-V0.1.54: production rehearsal prerequisites - a real export copy rehearsal, the `amr` check, the payment
-provider adapter, backend deployment and a refund-policy decision; then Storage bytes.
+Operator inputs still required (see PRODUCTION_CUTOVER.md section 15): a real export copy rehearsal, the `amr`
+check, the payment provider adapter (paid launch only), backend/PostgreSQL hosting and backups, and a
+refund-policy decision; then Storage bytes.

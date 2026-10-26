@@ -1,14 +1,16 @@
-# Production cutover (V0.1.54)
+# Production cutover (V0.1.54 readiness, V0.1.55 resolution and runbook)
 
 Operator checklist, audits and decisions for moving Cartoona's business data
 from the Supabase database to PostgreSQL in production. Nothing in this
 repository performs a production cutover; every step below is run by a person.
-V0.1.54 is a rehearsal/readiness release: product behaviour changed only to
-remove verified production blockers (section 6).
+V0.1.54 was the rehearsal/readiness release; V0.1.55 turned every remaining blocker into
+resolved-or-external (section 15), added the production preflight and the read-only cutover
+check, and rewrote the runbook (section 11). Deployment specifications (PostgreSQL, backend,
+frontend, alerts, smoke, monitoring, refund memo) are in `docs/PRODUCTION_DEPLOYMENT_SPEC.md`.
 
-Status words used throughout: **RESOLVED**, **READY BUT MANUAL**,
-**EXTERNAL DEPENDENCY**, **PRODUCT DECISION**, **PRODUCTION INFRA REQUIRED**
-(the matrix is section 15).
+Status words used throughout: **RESOLVED**, **CODE READY / MANUAL ACTION**,
+**EXTERNAL DEPENDENCY**, **PRODUCT DECISION**, **INFRASTRUCTURE REQUIRED**,
+**HARD BLOCKER** (the matrix is section 15, the go/no-go list section 16).
 
 ## 1. Final runtime architecture
 
@@ -40,6 +42,8 @@ Names only; values never belong in this repository.
 | `RATE_LIMIT_HASH_SECRET`, `RATE_LIMIT_TRUSTED_IP_HEADER`, `RATE_LIMIT_DISABLED` | run | no | no | `RATE_LIMIT_DISABLED` must be unset in production |
 | `DATABASE_URL` | **never** (blanked in compose) | run | owner URL, migrations only | backend uses the restricted login role |
 | `DB_POOL_MAX`, `DB_IDLE_TIMEOUT_MS`, `DB_CONNECTION_TIMEOUT_MS`, `BACKEND_PORT`, `BACKEND_HOST`, `LOG_LEVEL` | no | run | no | |
+| `DB_SSL_MODE` (`disable`\|`verify-full`), `DB_SSL_CA` (PEM, optional) | no | run | no | V0.1.55: TLS to PostgreSQL; `DATABASE_URL` cannot carry `?sslmode=` |
+| `CARTOONA_CUTOVER_*` | no | no | `cutover:check` | read-only precheck inputs; confirm value required |
 | `POSTGRES_*`, `CARTOONA_APP_DB_PASSWORD`, `BACKEND_DATABASE_URL`, `LOCAL_DATABASE_URL` | **never** | no | local compose only | compose blanks these for the frontend; a static test checks the list |
 | `DEV_PARENT_AUTH_*` | **unset** | no | no | development only; refused in production |
 | `CARTOONA_AMR_*`, `CARTOONA_STORAGE_CHECK_*` | no | no | operator scripts | disposable project / explicit read-only confirmation |
@@ -56,14 +60,14 @@ were deleted with their tests; `auth-boundary-static.test.ts` pins their
 absence. Kept: the pure session policy (`lib/identity/session-policy.ts`), the
 AMR evidence reader and the backend's 30-day / `sessions_not_before` enforcement.
 
-## 4. AMR (session start) - EXTERNAL DEPENDENCY
+## 4. AMR (session start) - HARD BLOCKER (external dependency)
 
 The 30-day session limit measures from `min(amr[].timestamp)` of the
 provider-verified access token. Whether a real Supabase project issues a stable,
 timestamped AMR for phone OTP and for password sign-in, and keeps the earliest
 timestamp across refresh, has **not been verified against a real token**: the
 disposable project named in `.env.local` does not resolve (DNS `ENOTFOUND`), and
-production was not used. Result: **BLOCKED**.
+production was not used. Result: **BLOCKED** (re-checked 2026-10-25: the project host resolves to a non-routable proxy address and HTTPS fails; nothing else was tried, production never).
 
 Operator procedure (disposable project only):
 
@@ -96,10 +100,13 @@ would extend sessions). Build the Cartoona-owned session-start record instead
   unchanged; rows older than the session lifetime + margin are deleted by a
   bounded daily job (`DELETE ... WHERE first_seen_at < now() - interval '31 days'`).
 
-## 5. Export rehearsal - EXTERNAL DEPENDENCY (real export), RESOLVED (tooling)
+## 5. Export rehearsal - HARD BLOCKER (real export), RESOLVED (tooling)
 
 No real `pg_dump` of the Supabase project is available, so the rehearsal on a
-real export is **BLOCKED** and was not faked. What was rehearsed, labelled
+real export is **BLOCKED** and was not faked. **The synthetic rehearsal below is not
+equivalent to it** (it cannot show production schema drift, legacy columns, anomalous
+rows or a real dump's restore errors), so launch stays blocked until step 0.2 of the
+runbook is done by the operator. What was rehearsed, labelled
 synthetic: `tests/unit/data-copy-perf-db.test.ts` with
 `CARTOONA_DATA_COPY_PERF_PARENTS=9990 CARTOONA_DATA_COPY_PERF_VIA_DUMP=1`
 builds a Supabase-shaped source (real migration chain, rows through the real
@@ -192,9 +199,10 @@ helper that is 404 unless dev auth is enabled. It is not `NEXT_PUBLIC_*`, not in
 the browser bundle, never sent to the backend, and never used for business data
 (static tests). Logs carry bucket and error category, never keys or URLs.
 
-Storage policy audit: 20 policies on `storage.objects` exist (18 call
+Storage policy audit: the migrations define 19 policies on `storage.objects` (17 call
 `is_admin()`, `is_parent()` or `is_parent_approved_final_deliverable()` against the
-Supabase copy of `users`/`orders`; 2 are public-read). Runtime depends on none of
+Supabase copy of `users`/`orders`; 2 are public-read; V0.1.54 said 20/18, a miscount
+corrected in section 18). Runtime depends on none of
 them after V0.1.54. They are dropped by `supabase-storage-lockdown.sql` after the
 irreversible boundary, because before it the old Supabase writer may still be the
 live system.
@@ -228,7 +236,7 @@ non-reversible fingerprints (never keys). Exit 0 all present, 4 problems.
   (refusals, restricted attributes, rerun re-passwords, passes the backend's own
   role and schema checks, an owner login fails them).
 
-Hosting requirements: PostgreSQL 17, extension `pgcrypto`, TLS to the backend, a
+Hosting requirements (full spec: `PRODUCTION_DEPLOYMENT_SPEC.md`): PostgreSQL 17, extension `pgcrypto`, TLS with `DB_SSL_MODE=verify-full` on the backend, a
 private network path from the backend only, `scram-sha-256`. `migrate-local.sh`
 also refuses remote hosts; on production apply each file with
 `psql --single-transaction -v ON_ERROR_STOP=1 -f <file>` followed by the
@@ -266,77 +274,168 @@ new backend starts (the gate enforces it); the data-copy tool pins the head
 (`EXPECTED_TARGET_MIGRATIONS`) and `tests/unit/startup-gate.test.ts` fails if a
 new migration is added without moving the pin and the readiness probe.
 
-## 11. Cutover runbook
+## 11. Cutover runbook (V0.1.55)
 
-Roles: operator (runs commands), approver (go/no-go). Nothing below is run by
-the repository's tests; all production contact is manual and deliberate.
+Roles: **operator** (runs commands), **approver** (owns GO/NO-GO, section 16).
+Nothing here is run by the repository's tests; all production contact is manual.
+Every step has the same four parts: **Do**, **Expect**, **STOP if**, **Recover**.
+"STOP" means do not continue and tell the approver; it never means "retry until it
+passes". Shell variables used below hold URLs that include credentials: set them
+in the operator's shell from the secret store, never in a file in this repository,
+never echoed (`set +o history` first).
 
-**A. Pre-cutover (days before)**
+| Variable | Meaning |
+|---|---|
+| `OWNER_DATABASE_URL` | owner login of the NEW production PostgreSQL (`postgresql://…/cartoona`) |
+| `APP_DATABASE_URL` | the `cartoona_app_<name>` login URL, as the backend will use it |
+| `STAGING_SOURCE_URL` | the restored staging copy of the Supabase dump (local or tunnelled loopback) |
+| `OLD_FRONTEND` / `NEW_FRONTEND` / `BACKEND_URL` | base URLs (backend URL is reachable only from the private network or a bastion) |
 
-1. Real export rehearsal (section 5) on a restored copy; reconcile; fix findings.
-2. AMR verification on a disposable project (section 4) recorded as stable, or
-   the session-start record built.
-3. Payment provider selected and sandbox-tested, or payments declared closed
-   for the launch (the app answers `PAYMENT_UNAVAILABLE`).
-4. Production PostgreSQL provisioned, migrated, login role created
-   (section 9), backups enabled and a restore tested (section 12).
-5. Backend and frontend images built from the release commit; secrets in the
-   secret store; staging boot shows the gates pass.
-6. Alerts and dashboards live (section 13). Refund policy confirmed (section 14).
+### Phase 0 - Preconditions (days before; each is a section 16 gate)
 
-**B. Freeze** (announce a window, e.g. 30 minutes)
+**0.1 Release.** *Do:* `git rev-parse HEAD`; build both images from that commit; record
+the digest. *Expect:* one commit, clean `git status`, `npm test`, `npm run lint`,
+`npx next build`, `npm run backend:typecheck`, `npm run backend:build` all green on it.
+*STOP if:* any is red or the tree is dirty. *Recover:* fix and rebuild; no production state touched yet.
 
-1. Set `CARTOONA_WRITE_FREEZE=1` on the **old** deployment and restart: every
-   browser business write answers 503 `write_freeze` with `Retry-After`, the
-   payment webhook answers 503 so the provider retries later, reads and sign-in
-   keep working.
-2. Pending payments: list `candy_purchases` / attempts in a non-final state. Let
-   in-flight provider sessions finish or expire (<= the provider's session
-   lifetime) before copying; any that confirm during the window are replayed by
-   the provider's webhook retry after cutover (de-duplicated by event id, credited
-   at most once). Reconcile the provider's settlement report against paid purchases.
-3. Wait for the Supabase side to quiesce (no writes for 5 minutes).
+**0.2 Real export rehearsal.** *Do:* section 5 procedure with a real `pg_dump` of the
+Supabase project (taken by the project owner from a read-only role), restored into a
+private staging database, copied with `npm run db:copy` into a fresh migrated database,
+then `npm run cutover:check -- --expect-target imported` with `CARTOONA_CUTOVER_SOURCE_DATABASE_URL`.
+*Expect:* copy exit 0; reconciliation with 0 mismatches; `counts_match_source` pass; anomaly
+list reviewed and each anomaly either explained in writing or fixed in the SOURCE data.
+*STOP if:* a schema/column drift refusal, any mismatch, any unexplained anomaly.
+*Recover:* nothing in production changed; discard the scratch databases.
 
-**C. Copy**
+**0.3 AMR.** *Do:* section 4 on a disposable Supabase project. *Expect:* `result: stable`
+for every sign-in method the product offers. *STOP if:* unstable/missing/not run: build the
+Cartoona-owned session-start record (section 4) and re-run 0.1-0.2 on that commit.
 
-1. `pg_dump -Fc` of the Supabase project; restore into a staging database.
-2. `npm run db:copy` staging -> production target (fresh, migrated). Exit 0 and a
-   clean reconciliation report (counts + checksums, no mismatches) are the gate.
-3. `node scripts/ops/storage-key-check.mjs` (section 8): zero missing keys.
-4. Backfill/verify identities: the copy tool backfills `user_identities`; check
-   the report line.
+**0.4 Payments decision.** *Do:* approver records one of: (a) payments CLOSED at launch
+(`CARTOONA_PAYMENT_PROVIDER` unset; buying answers `PAYMENT_UNAVAILABLE`); (b) a real
+provider adapter shipped, sandbox contract-tested, with its retry guarantees written into
+section 17. *STOP if:* paid purchases are required and (b) is not complete.
 
-**D. Deploy**
+**0.5 PostgreSQL provisioned** to `docs/PRODUCTION_DEPLOYMENT_SPEC.md` section 1.
+*Do:* from the bastion, `psql "$OWNER_DATABASE_URL" -X -At -c "select current_setting('server_version_num')::int/10000, (select ssl from pg_stat_ssl where pid=pg_backend_pid())"`.
+*Expect:* `17|t`. *STOP if:* not 17 or not TLS.
 
-1. Start the backend against the restricted login: it must pass its gates.
-2. Deploy the frontend (the new build) with the freeze still on; `/ready` 200.
+**0.6 Migrations applied to the target** (from a trusted host; same logic as `scripts/db/migrate-local.sh`, which refuses remote hosts):
 
-**E. Verify** (freeze still on, reads only)
+```
+psql "$OWNER_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 -c "SET client_min_messages = warning; CREATE TABLE IF NOT EXISTS public.schema_migrations (version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())"
+for f in $(ls database/migrations/*.sql | LC_ALL=C sort); do
+  v=$(basename "$f" .sql); sum=$(shasum -a 256 "$f" | cut -d' ' -f1)
+  { cat "$f"; printf "\nINSERT INTO public.schema_migrations (version, checksum) VALUES ('%s', '%s');\n" "$v" "$sum"; } \
+    | psql "$OWNER_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 --single-transaction -f - >/dev/null || { echo "STOP: $v failed"; break; }
+done
+```
 
-Sign in as a copied parent, an admin, and view orders, gallery, final media and
-the CMS; call `/ready`; confirm requests show Auth/Storage only to Supabase.
+*Expect:* no output. (This exact loop was run on a scratch database in V0.1.55 and
+`cutover:check` then reported 19/19 migrations with matching checksums.)
+*STOP if:* it prints `STOP:`. *Recover:* each file is its own transaction; drop the (still
+empty) database and recreate it; never edit an applied migration.
 
-**F. Enable**
+**0.7 App login role.** *Do:* `CARTOONA_APP_DB_PASSWORD="$(openssl rand -hex 32)" psql "$OWNER_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 -v role=cartoona_app_prod -f database/ops/create-app-login-role.sql`;
+store the password in the secret store as part of `APP_DATABASE_URL`. *Expect:* one line "ready". *STOP if:* a refusal line.
 
-1. Remove `CARTOONA_WRITE_FREEZE` and restart. Smoke: one request submission,
-   one admin status change, one coupon validation.
-2. **Irreversible boundary:** the first write that lands in PostgreSQL only.
-   From here the Supabase writer must never be re-enabled (it would diverge).
-3. Run `database/ops/supabase-storage-lockdown.sql` on Supabase. Remove the
-   Supabase database from the application's secret store and rotate any key
-   that was shared.
+**0.8 Backend gates.** *Do:* start the backend (staging or production network) with
+`APP_DATABASE_URL`; `curl -fsS $BACKEND_URL/ready`. *Expect:* `{"status":"ready"}`. The backend
+refuses to start on an owner/superuser login or a schema behind the build. *STOP if:* exit 1 on start or `/ready` 503.
 
-**G. Monitor** for 24 h: alerts in section 13; watch `READINESS_FAILED`,
-5xx rate, pool wait, payment webhook outcomes.
+**0.9 Preflight, both services** (run with each service's real environment, e.g. inside the container):
+`npm run production:preflight -- --service backend --expect-freeze off` and
+`npm run production:preflight -- --service frontend --expect-freeze off [--payments required]`.
+*Expect:* `OK`, 0 failed (warnings listed and accepted by the approver). *STOP if:* any FAIL.
 
-**Rollback**
+**0.10 Backup and restore drill** (`docs/PRODUCTION_DEPLOYMENT_SPEC.md` section 1.5):
+restore the latest backup into a scratch database, `cutover:check` it, start a backend on it,
+`/ready` 200. *STOP if:* not done once successfully.
 
-* Before F.2 (nothing written to PostgreSQL only): set the freeze, redeploy the
-  previous release (Supabase writer), unfreeze. The PostgreSQL copy is discarded.
-* After F.2: **there is no rollback to the Supabase writer.** Roll forward: fix
-  and redeploy the new stack; restore PostgreSQL from backup (point-in-time) if
-  data is damaged. A partial return would lose every order, credit and consent
-  written since F.2.
+**0.11 Alerts live** (spec section 5) and a test alert delivered to the on-call channel.
+
+**0.12 Smoke accounts.** One parent (consented), one admin; credentials in the secret store.
+
+### Phase 1 - Announce (T-60 min)
+
+**1.1** *Do:* publish the maintenance window. *Expect:* approver confirms. *STOP if:* no approver present.
+
+### Phase 2 - Freeze the OLD deployment (T-0)
+
+**2.1** *Do:* set `CARTOONA_WRITE_FREEZE=1` on the old frontend, restart. *Expect:*
+`CARTOONA_CUTOVER_CONFIRM=read-only-cutover-check CARTOONA_CUTOVER_TARGET_DATABASE_URL="$OWNER_DATABASE_URL" CARTOONA_CUTOVER_FRONTEND_URL=$OLD_FRONTEND CARTOONA_CUTOVER_APP_ORIGIN=$OLD_FRONTEND npm run cutover:check -- --expect-freeze on`
+reports `write_freeze` pass (an unauthenticated POST answered `503 write_freeze`).
+*STOP if:* `observed` is not `frozen`. *Recover:* unset the variable and restart; no data moved.
+
+**2.2** *Do:* in the Supabase SQL editor (read-only role) `select count(*) from auth.users; select max(updated_at) from public.orders;` twice, 5 minutes apart.
+*Expect:* identical results (no writer is active; auth sign-ins do not change `public.orders`).
+*STOP if:* the values move. *Recover:* find the unguarded writer (every route is enumerated by `tests/unit/write-freeze-coverage.test.ts`; anything else is a direct Supabase client); do not proceed.
+
+### Phase 3 - Pending payments (section 17)
+
+**3.1** With payments CLOSED (0.4a): *Do:* on the staging source after 4.1, `select count(*) from public.payment_attempts where completed_at is null; select count(*) from public.candy_purchases where payment_provider is not null and status = 'pending';`. *Expect:* `0` and `0` (no provider ever existed, so no provider payment can be outstanding). *STOP if:* either is > 0: payments were not closed; apply 3.2.
+**3.2** With a provider (0.4b): follow section 17 exactly; otherwise STOP.
+
+### Phase 4 - Export, copy, validate
+
+**4.1** *Do:* the project owner takes `pg_dump -Fc` (Supabase, read-only role); operator restores it into the private staging database with `pg_restore --no-owner --no-privileges`. *Expect:* `pg_restore` exits 0, or only errors on Supabase-managed schemas/roles/extensions (list them and compare with the rehearsal's list from 0.2). *STOP if:* an error on a `public` table.
+
+**4.2** *Do:* `CARTOONA_CUTOVER_CONFIRM=read-only-cutover-check CARTOONA_CUTOVER_TARGET_DATABASE_URL="$OWNER_DATABASE_URL" CARTOONA_CUTOVER_SOURCE_DATABASE_URL="$STAGING_SOURCE_URL" npm run cutover:check -- --expect-target empty`.
+*Expect:* `pass`: PostgreSQL 17, TLS, migrations 19/19 with checksums, `target_empty`, source and target fingerprints differ. *STOP if:* any failed check, particularly a non-empty target. *Recover:* an already-populated target is never overwritten: recreate the database from 0.5-0.7.
+
+**4.3** *Do:* the copy tool accepts only loopback targets. Open a tunnel from the operator host to the production primary (`ssh -N -L 127.0.0.1:55432:<primary-private-host>:5432 <bastion>`), then
+`CARTOONA_COPY_SOURCE_URL=<staging, loopback> CARTOONA_COPY_TARGET_URL=postgresql://<owner>@127.0.0.1:55432/cartoona npm run db:copy -- --check` and, if it prints the expected labels, the same command without `--check`.
+*Expect:* exit 0 and a reconciliation report with 0 mismatches. The tunnel is the only way the tool can reach a managed host; this exact path (loopback target forwarded to a managed host) has not been rehearsed against a real managed service, only against a loopback database.
+*STOP if:* exit 2/3/4. *Recover:* exit 2 or 3 wrote nothing. Exit 4 means validation failed after writing: the target is NOT usable; drop and recreate it (0.5-0.7) and investigate before retrying.
+
+**4.4** *Do:* `npm run cutover:check -- --expect-target imported` (same variables as 4.2). *Expect:* `counts_match_source` pass for all 12 data tables. *STOP if:* any difference.
+
+**4.5** *Do:* `CARTOONA_STORAGE_CHECK_DATABASE_URL="$OWNER_DATABASE_URL" CARTOONA_STORAGE_CHECK_SUPABASE_URL=https://<prod-ref>.supabase.co CARTOONA_STORAGE_CHECK_SECRET_KEY=<service key> CARTOONA_STORAGE_CHECK_CONFIRM=read-only-existence-check node scripts/ops/storage-key-check.mjs`.
+*Expect:* `all_present`, exit 0. *STOP if:* exit 4 (missing keys): report counts to the approver; do not repair silently.
+
+### Phase 5 - Deploy the NEW stack (still frozen)
+
+**5.1** *Do:* start the backend with `APP_DATABASE_URL`; `npm run cutover:check -- --expect-target imported` with `CARTOONA_CUTOVER_BACKEND_URL=$BACKEND_URL`. *Expect:* `backend_health` and `backend_ready` pass. *STOP if:* backend exits 1 or `/ready` is 503.
+
+**5.2** *Do:* deploy the new frontend with `CARTOONA_WRITE_FREEZE=1`, then `npm run production:preflight -- --service frontend --expect-freeze on`. *Expect:* OK. *STOP if:* FAIL.
+
+**5.3** *Do:* verify the freeze on the new frontend (as 2.1 against `$NEW_FRONTEND`). *Expect:* `frozen`.
+
+**5.4 Verify authorization is PostgreSQL-backed (read-only, still frozen).** *Do:* sign in as the smoke parent, the smoke admin; open orders, one order detail, gallery, admin queue, one request detail. *Expect:* all load; an admin-only URL as the parent answers the existing refusal. Confirm in the backend log that these requests produced `BACKEND_REQUEST_COMPLETED` and that none of the requests of this phase reached `/rest/v1` on the Supabase project (Supabase API logs: zero PostgREST requests from this deployment). *STOP if:* any page fails or any PostgREST request appears.
+
+**5.5 Verify Storage reads.** *Do:* open a gallery tile and a final deliverable preview. *Expect:* signed URLs load. *STOP if:* a missing object.
+
+### >>> IRREVERSIBLE BUSINESS-DATA BOUNDARY <<<
+
+**Immediately before step 6.1 the old Supabase deployment can still be restored.** Step 6.1
+permits the first PostgreSQL-only business write. **After it, the old Supabase database
+writers (the previous release, any script or dashboard that writes `public.*`) must NEVER be
+re-enabled:** they would not see, and would silently diverge from, every order, credit and
+consent written since. The approver says "cross the boundary" in writing before 6.1.
+
+### Phase 6 - Enable writes
+
+**6.1** *Do:* unset `CARTOONA_WRITE_FREEZE` on the new frontend, restart; point DNS/traffic to the new stack. *Expect:* `npm run production:preflight -- --service frontend --expect-freeze off` OK and `cutover:check -- --expect-freeze off` shows `not_frozen`. *STOP if:* the freeze remains.
+*Recover before the first real write:* re-set the freeze, redeploy the old release, unfreeze (section "Rollback").
+
+**6.2 Smoke (section 6 of the spec, minimal write set).** *Do:* as the smoke parent, one request submission (with a source image) and as the smoke admin one status change. *Expect:* both succeed; the order appears on both sides; no `REQUEST_FAILED`/`ADMIN_REQUEST_DB_FAILED`. *STOP if:* a failure. *Recover:* AFTER the boundary: roll forward only (fix, redeploy, or restore PostgreSQL from backup).
+
+### Second boundary - Storage policy lockdown
+
+**Run only after Phase 6 smoke has passed and the monitoring window has shown no Storage errors for at least 60 minutes.** Rolling the old release back is no longer possible after 6.1 anyway, and the lockdown is independently reversible only by re-applying the policies (section 18). It must never run before the new application is active and verified.
+
+### Phase 7 - Storage lockdown
+
+**7.1** *Do:* in the Supabase SQL editor run the pre-check in section 18.1. *Expect:* the 19 policies listed. **7.2** *Do:* run `database/ops/supabase-storage-lockdown.sql`. *Expect:* `COMMIT`. **7.3** *Do:* section 18.2 post-lockdown checklist, in full. *STOP if:* any item fails. *Recover:* re-apply the named migration policies (section 18.3) and investigate.
+
+### Phase 8 - Close out
+
+**8.1** Remove the Supabase database credentials from every secret store and rotate any key that was shared. **8.2** Start the monitoring window (spec section 6). **8.3** Keep the old Supabase database untouched and read-only (no writers) for the retention period decided by the approver; it is the only copy of pre-cutover state apart from backups.
+
+### Rollback
+
+* **Before step 6.1** (nothing written to PostgreSQL only): set the freeze on the new frontend, redeploy the previous release, unfreeze. Discard the PostgreSQL copy.
+* **After step 6.1: there is no rollback to the Supabase writer.** Roll forward: fix and redeploy the new stack; restore PostgreSQL from backup (point-in-time) if data is damaged. A partial return would lose every order, credit and consent written since 6.1.
 
 ## 12. Backup and restore
 
@@ -392,27 +491,34 @@ candies are not returned. Options for the owner:
 Recommendation: ship with A and say so in the terms; decide B/C/D with the chosen
 provider, because refunds are provider-specific.
 
-## 15. Blocker matrix
+## 15. Blocker matrix (V0.1.55)
 
-| Item | Status | Detail |
-|---|---|---|
-| Supabase database runtime dependencies | RESOLVED | zero (static guard + network proof); Storage policies lockdown script ready |
-| Storage RLS dependency on Supabase tables | RESOLVED (code) / READY BUT MANUAL (lockdown SQL) | section 6 |
-| Dead Auth legacy | RESOLVED | section 3 |
-| Payment stub in production | RESOLVED | override removed |
-| Backend startup/readiness/migration gates | RESOLVED | proven in the production image |
-| Write freeze, key check, role SQL, scale rehearsal tooling | RESOLVED | tested |
-| Scale (10k users / 100k orders), load (20/50 clients) | RESOLVED (synthetic) | section 5; load report below |
-| AMR real-token verification | EXTERNAL DEPENDENCY | disposable Supabase project unreachable; script ready |
-| Real `pg_dump` export rehearsal | EXTERNAL DEPENDENCY | no export supplied; not faked |
-| Real payment provider adapter | EXTERNAL DEPENDENCY + PRODUCT DECISION | provider not selected |
-| Refund policy | PRODUCT DECISION | section 14 |
-| Backend deployment | PRODUCTION INFRA REQUIRED | image builds; hosting not chosen |
-| PostgreSQL hosting | PRODUCTION INFRA REQUIRED | PG 17 + pgcrypto, private network, TLS |
-| Supabase Storage (production buckets, bytes) | READY BUT MANUAL | buckets exist; key check after copy |
-| Rate limiting (distributed) | PRODUCTION INFRA REQUIRED | single instance until then |
-| Backups / restore drill | PRODUCTION INFRA REQUIRED | section 12 |
-| Observability / alerting | PRODUCTION INFRA REQUIRED | alert table in section 13 |
+Classification: **RESOLVED**, **CODE READY / MANUAL ACTION**, **EXTERNAL DEPENDENCY**,
+**PRODUCT DECISION**, **INFRASTRUCTURE REQUIRED**, **HARD BLOCKER** (launch cannot happen
+while open). A HARD BLOCKER is also tagged with what clears it.
+
+| # | Item | Class | State and what clears it |
+|---|---|---|---|
+| A | Real Supabase AMR verification | **HARD BLOCKER** (EXTERNAL DEPENDENCY) | Not verified. The disposable project in `.env.local` does not answer (DNS resolves to a non-routable proxy address; HTTPS connect fails, checked 2026-10-25). Production not used. Cleared by `verify-amr.mjs` reporting `stable` on a reachable disposable project, or by building the session-start record (section 4). The model is **unverified, not known-bad**; no fallback is active. |
+| B | Real `pg_dump` / export rehearsal | **HARD BLOCKER** (EXTERNAL DEPENDENCY) | No real export exists anywhere on this machine. The synthetic rehearsal is NOT equivalent (section 5). Cleared by runbook step 0.2 with a real dump. |
+| C | Real payment provider and adapter | **EXTERNAL DEPENDENCY** + **PRODUCT DECISION**; **HARD BLOCKER only if paid purchases are required at launch** | `REAL PAYMENT PROVIDER NOT SELECTED`: no provider is named in code, config or docs other than examples. Production payments stay blocked (`PAYMENT_UNAVAILABLE`). Launch with payments closed is possible and supported. |
+| D | Production PostgreSQL hosting | **INFRASTRUCTURE REQUIRED** | Spec: `PRODUCTION_DEPLOYMENT_SPEC.md` s.1. TLS to the database is now configurable (`DB_SSL_MODE=verify-full`, V0.1.55); before this the backend could not connect to a TLS-only host. |
+| E | Backend hosting and private network | **INFRASTRUCTURE REQUIRED** | Spec: s.2. Image builds; host not chosen. |
+| F | Backup / PITR / restore drill | **INFRASTRUCTURE REQUIRED** | Spec s.1.5 and runbook 0.10; not performed (no production-like hosting). |
+| G | Alerting / observability | **INFRASTRUCTURE REQUIRED** (events are CODE READY) | Alert definitions and log queries: spec s.5. Log destination not chosen. |
+| H | Distributed rate limiting | **RESOLVED by decision** for one frontend instance; **HARD BLOCKER** for a second instance | Spec s.4. |
+| I | Refund policy | **PRODUCT DECISION** (not launch-blocking unless the owner says so) | Current behaviour (no refund) preserved. Options memo: spec s.7. |
+| J | Storage lockdown at the right stage | **CODE READY / MANUAL ACTION** | Runbook phase 7 and section 18; never before the boundary and a clean Phase 6 smoke. |
+| K | Copy tool reaches only loopback targets | **CODE READY / MANUAL ACTION** | Found in V0.1.55: `data-copy` refuses non-local hosts by design. Runbook 4.3 uses a loopback tunnel to the managed primary; not rehearsed against a real managed service. |
+| L | TLS to PostgreSQL | **RESOLVED (code)**, verification **INFRASTRUCTURE REQUIRED** | `DB_SSL_MODE`/`DB_SSL_CA` implemented and unit tested; no TLS-enabled PostgreSQL was available locally, so a real TLS handshake is **UNVERIFIED**. |
+| M | Pending provider payments across the freeze | **HARD BLOCKER if a provider launches**; N/A with payments closed | Section 17. |
+| N | Supabase DB runtime dependencies | **RESOLVED** | Zero; static guard re-run after V0.1.55. |
+| O | Storage RLS dependency on Supabase tables | **RESOLVED (code)** / **CODE READY / MANUAL ACTION** (SQL) | V0.1.54. |
+| P | Dead Auth legacy, payment stub in production, startup/readiness gates, write freeze + coverage test, config preflight, cutover precheck | **RESOLVED** | Tested. |
+
+**Hard blockers open today: A, B (always), M (if a provider launches), C (if paid
+purchases are required), H (if more than one frontend instance).** Actual production
+cutover is therefore **NO-GO** (section 16).
 
 ### Load rehearsal result (local Docker, copied 1,000-user database, restricted role)
 
@@ -426,3 +532,110 @@ Reads of `/v1/parent/orders` with signed assertions through the real Fastify app
 The default pool of 5 queues 50 clients without errors on this data; writes were
 not load tested. `/ready` stayed 200 after each run
 (`tests/unit/backend-load-db.test.ts`, opt-in `CARTOONA_LOAD_REHEARSAL=1`).
+
+## 16. GO / NO-GO checklist
+
+The approver signs each line. **Any unchecked line, or any HARD BLOCKER in section 15
+that applies to this launch, is NO-GO.** A warning in preflight is not a failure; a
+failure is.
+
+| # | Gate | Evidence | NO-GO if |
+|---|---|---|---|
+| 1 | Release is one clean commit, all suites green | step 0.1 | red or dirty |
+| 2 | AMR verified stable, or session-start record shipped and tested | `verify-amr` output / commit | **unverified** (today) |
+| 3 | Real export rehearsal complete with reconciliation 0 mismatches and anomalies explained | step 0.2 report | **not done** (today) |
+| 4 | Payments: closed by decision, or real adapter sandbox-tested and section 17 satisfied | step 0.4 | paid purchases required and no adapter (today) |
+| 5 | PostgreSQL 17 production instance, TLS, private network | step 0.5 | unavailable (today) |
+| 6 | Backend hosted privately, gates pass | step 0.8 | unavailable (today) |
+| 7 | Backups enabled and one restore drill passed | step 0.10 | no backup (today) |
+| 8 | Migration + copy reconciliation clean, counts equal | steps 4.3-4.4 | any mismatch |
+| 9 | Storage keys all present | step 4.5 | missing keys |
+| 10 | Storage authorization validated: every flow in section 18.2 passes on staging | staging run | not validated against a real Supabase Storage project (today) |
+| 11 | Preflight OK for both services; freeze verified on and off | steps 0.9, 2.1, 5.3, 6.1 | any FAIL |
+| 12 | Alerts live and a test alert received | step 0.11 | no alerting (today) |
+| 13 | Rate limiting: single frontend instance, or distributed limiter shipped | spec s.4 | second instance without limiter |
+| 14 | Approver and operator both present for the whole window | roster | absent |
+
+## 17. Pending-payment cutover plan
+
+**With payments closed (decision 0.4a):** no provider payment can exist. Step 3.1
+proves it with two counts of 0 on the restored source; nothing else is needed.
+
+**With a real provider (decision 0.4b) the following are all required, and today none is
+provable because no provider exists, so this is a HARD BLOCKER for a paid launch:**
+
+1. *Before the freeze:* stop new payment sessions early enough for sessions to settle. The code
+   has no switch that stops NEW sessions while still accepting webhooks: the freeze (2.1) blocks
+   both session creation and webhooks (webhooks answer `503` + `Retry-After`, so a conforming
+   provider retries). The adapter work must either add such a switch or the window must be
+   longer than the provider's session lifetime.
+2. *Settlement window:* sessions already issued either complete during the window (their webhook
+   is answered 503 and retried) or expire. The operator records the exact outstanding purchase ids
+   (`select id from public.candy_purchases where status = 'pending' and payment_provider is not null`)
+   before Phase 4, and re-queries after Phase 4 to detect any that changed.
+3. *Before the final export:* compare the provider's settlement report with `paid` purchases; every
+   provider success must be `paid` in the source, or be listed as outstanding (item 2).
+4. *At the boundary:* a provider success that arrives during the freeze is not lost only if the
+   provider retries beyond the window, **a guarantee that must be written from the chosen
+   provider's documentation into this section**, and only if, after step 6.1, the operator
+   runs a status lookup for every outstanding id (the server-side verification path exists and is
+   proven on the stub; a batch reconciler does not exist and must be built with the adapter).
+   Crediting stays at-most-once (event de-duplication and the one-transaction credit are proven).
+5. If the retry guarantee is unknown, **launch stays blocked.**
+
+## 18. Storage lockdown (`database/ops/supabase-storage-lockdown.sql`)
+
+Static inspection of the SQL (V0.1.55), verified against the Storage policies that
+`supabase/migrations` create (`tests/unit/storage-lockdown-static.test.ts`).
+
+**Not automatic.** It is not in `supabase/migrations` or `database/migrations`, no script or
+test runs it, and it is documented to run only in phase 7, after the irreversible boundary.
+
+### 18.1 What it removes (17 policies on `storage.objects`; run the pre-check first)
+
+Pre-check (expect these 19 names, 17 to be dropped and 2 to remain):
+`select policyname, cmd from pg_policies where schemaname = 'storage' and tablename = 'objects' order by 1;`
+If the project has any other policy on `storage.objects` (created in the dashboard), STOP and
+review it: the SQL does not touch it.
+
+| Bucket | Removed policies | Kept |
+|---|---|---|
+| `parent-uploads` | `parent_uploads_insert_own`, `_select_own`, `_delete_own`, `_select_admin` | none |
+| `generated-media` | `generated_media_insert_admin`, `_select_admin`, `_update_admin`, `_delete_admin`, `_select_parent` | none (no runtime use) |
+| `final-deliverables` | `final_deliverables_insert_admin`, `_select_admin`, `_update_admin`, `_delete_admin`, `_select_parent` | none |
+| `example-media` | `example_media_insert_admin`, `_update_admin`, `_delete_admin` | `example_media_select_public` |
+| `homepage-media` | none (it never had write policies) | `homepage_media_select_public` |
+
+(The V0.1.54 text said 20 policies, 18 dropped; the migrations define 19 and the SQL drops 17.)
+
+### 18.2 What stops working, and what must keep working (check each IMMEDIATELY after)
+
+Stops (by design): a browser or script using the public anon key plus any Supabase session to
+list, upload, download, copy, overwrite or delete objects in `parent-uploads`,
+`generated-media`, `final-deliverables`, or to write to `example-media`; admin writes through the
+Storage REST API with a user JWT. The application does none of these.
+
+Must keep working (service credential, server-side), each to be exercised and ticked:
+
+1. [ ] Parent submits a request with a new source image (upload to `parent-uploads/<subject>/<order>/<name>`).
+2. [ ] Parent submits a request reusing a gallery item (copy within the same subject folder).
+3. [ ] Parent order detail shows the source preview (signed URL).
+4. [ ] Parent gallery tiles load (batch signed URLs).
+5. [ ] Admin request detail shows the parent's source preview.
+6. [ ] Admin uploads a final deliverable (upload gate, then upload).
+7. [ ] Admin removes a final deliverable (rollback path).
+8. [ ] Parent downloads an approved, visible final deliverable (signed URL).
+9. [ ] A parent cannot fetch another parent's source or an unapproved final (expect refusal, no URL).
+10. [ ] Admin replaces a homepage media slot; public homepage image still loads from its public URL.
+11. [ ] Admin publishes example media; public examples still load.
+12. [ ] Anonymous user can still read public homepage and example objects.
+13. [ ] With the anon key and a parent session, `GET /storage/v1/object/list/parent-uploads` and an upload both answer 4xx (proves the lockdown took effect).
+14. [ ] `SUBMISSION_STORAGE_FAILED` and `STORAGE_SIGNED_URL_*` events stay at zero for 30 minutes.
+
+### 18.3 Reverting
+
+Re-apply the `CREATE POLICY` statements from the migrations named beside each group in the SQL
+(`20260717210000_private_media_storage.sql`, `20260801120000_request_fulfilment_workflow.sql`,
+`20260717090000_examples_cms.sql`). They call `public.is_admin()` / `is_parent()` against the
+Supabase copy of `users`, which is stale after the boundary, so reverting restores a browser path
+whose authorization is wrong; do it only to diagnose and remove it again.

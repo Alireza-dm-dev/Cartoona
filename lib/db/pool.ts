@@ -75,6 +75,29 @@ function intSetting(env: Env, name: keyof typeof LIMITS, fallback: number): numb
 }
 
 /**
+ * TLS to PostgreSQL (V0.1.55). DATABASE_URL may not carry query parameters, so
+ * `?sslmode=` is not available; TLS is its own setting:
+ *
+ *  DB_SSL_MODE (disable)   `disable` (private network / local compose) or
+ *                          `verify-full`: encrypted, certificate chain AND host
+ *                          name verified. No weaker mode exists on purpose
+ *                          (`require` without verification is not protection).
+ *  DB_SSL_CA               optional PEM text of the CA that signed the server
+ *                          certificate, for hosts whose CA is not in Node's store.
+ */
+function sslSetting(env: Env): { ssl?: { rejectUnauthorized: true; ca?: string } } {
+  const mode = env.DB_SSL_MODE?.trim() || "disable";
+  if (mode === "disable") {
+    if (env.DB_SSL_CA?.trim()) throw new DbConfigError("DB_SSL_CA is set but DB_SSL_MODE is not verify-full.");
+    return {};
+  }
+  if (mode !== "verify-full") throw new DbConfigError("DB_SSL_MODE must be disable or verify-full.");
+  const ca = env.DB_SSL_CA?.trim();
+  if (ca && !ca.includes("-----BEGIN CERTIFICATE-----")) throw new DbConfigError("DB_SSL_CA must be PEM certificate text.");
+  return { ssl: { rejectUnauthorized: true, ...(ca ? { ca: ca.replace(/\\n/g, "\n") } : {}) } };
+}
+
+/**
  * Build the pg pool configuration from the environment. Pure (no I/O) so it
  * can be tested on its own. Every error message is written here and never
  * echoes the connection string, so no password can leak through one.
@@ -110,6 +133,7 @@ export function readPoolConfig(env: Env = process.env): PoolConfig {
 
   return {
     connectionString,
+    ...sslSetting(env),
     max: intSetting(env, "DB_POOL_MAX", POOL_DEFAULTS.max),
     idleTimeoutMillis: intSetting(env, "DB_IDLE_TIMEOUT_MS", POOL_DEFAULTS.idleTimeoutMillis),
     connectionTimeoutMillis: intSetting(env, "DB_CONNECTION_TIMEOUT_MS", POOL_DEFAULTS.connectionTimeoutMillis),

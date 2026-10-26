@@ -118,6 +118,24 @@ describe("pool configuration", () => {
     expect(config).toMatchObject({ max: 10, idleTimeoutMillis: 10_000, connectionTimeoutMillis: 2_000 })
   })
 
+  it("has no TLS by default and verifies the full chain when asked", () => {
+    expect(readPoolConfig({ DATABASE_URL: LOCAL_URL })).not.toHaveProperty("ssl")
+    expect(readPoolConfig({ DATABASE_URL: LOCAL_URL, DB_SSL_MODE: "disable" })).not.toHaveProperty("ssl")
+    expect(readPoolConfig({ DATABASE_URL: LOCAL_URL, DB_SSL_MODE: "verify-full" }).ssl).toEqual({ rejectUnauthorized: true })
+    const pem = "-----BEGIN CERTIFICATE-----\\nAAAA\\n-----END CERTIFICATE-----"
+    const ca = readPoolConfig({ DATABASE_URL: LOCAL_URL, DB_SSL_MODE: "verify-full", DB_SSL_CA: pem }).ssl as { ca: string }
+    expect(ca.ca).toContain("\nAAAA\n")
+  })
+
+  it.each([
+    [{ DB_SSL_MODE: "require" }],
+    [{ DB_SSL_MODE: "no-verify" }],
+    [{ DB_SSL_MODE: "verify-full", DB_SSL_CA: "not a certificate" }],
+    [{ DB_SSL_CA: "-----BEGIN CERTIFICATE-----" }],
+  ])("rejects an unsafe or inconsistent TLS setting %j", (extra) => {
+    expect(() => readPoolConfig({ DATABASE_URL: LOCAL_URL, ...extra })).toThrow(/DB_SSL/)
+  })
+
   it.each([
     ["DB_POOL_MAX", "0"],
     ["DB_POOL_MAX", "500"],

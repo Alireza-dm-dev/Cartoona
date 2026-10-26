@@ -13,7 +13,9 @@
     "backend:build": "node backend/build.mjs",
     "backend:start": "node backend/dist/server.cjs",
     "backend:typecheck": "tsc --noEmit -p backend/tsconfig.json",
-    "db:copy": "node scripts/db/copy-supabase-to-plain.mjs"
+    "db:copy": "node scripts/db/copy-supabase-to-plain.mjs",
+    "production:preflight": "node scripts/ops/production-preflight.mjs",
+    "cutover:check": "node scripts/ops/cutover-check.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
