@@ -1,0 +1,276 @@
+# Cartoona CI (V0.1.56) — see docs/CI_CD.md.
+#
+# Pull requests: validation, the full test suite (with real PostgreSQL 17),
+#   image builds and a production-shaped smoke test. Nothing is published and
+#   nothing is deployed.
+# Pushes to the integration branches: the same, then the exact tested images
+#   are pushed to GHCR by commit SHA. Deployment is a separate, gated job (see
+#   the `deploy` job below and .github/workflows/deploy.yml).
+name: CI
+
+on:
+  pull_request:
+    branches: [main, opencode/parent-portal-navigation]
+  push:
+    branches: [main, opencode/parent-portal-navigation]
+
+# Default for every job: read the repository, nothing else.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  # Superseded PR runs are cancelled. Push runs never are: one may be deploying.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: "24"
+  FRONTEND_IMAGE: ghcr.io/alireza-dm-dev/cartoona-frontend
+  BACKEND_IMAGE: ghcr.io/alireza-dm-dev/cartoona-backend
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  checks:
+    name: Validate (types, lint, builds, safety)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Before npm ci, so node_modules is not part of the scanned tree.
+      - name: Secret scan (gitleaks, working tree)
+        run: |
+          docker run --rm --network none -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            dir /repo --config /repo/.gitleaks.toml --redact --no-banner --exit-code 1
+
+      - name: Repository safety (tracked secrets, migration immutability)
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: bash scripts/ci/check-repo-safety.sh "$BASE_SHA"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      # next-env.d.ts (asset/module types) is generated and gitignored.
+      - name: Generate Next.js types
+        run: npx next typegen
+
+      - name: TypeScript (frontend, shared lib, backend sources, scripts)
+        run: npx tsc --noEmit -p tsconfig.ci.json
+
+      # Test files carry pre-existing type errors (29 in 8 files at V0.1.55;
+      # Vitest does not typecheck, so the suite itself is unaffected). Reported
+      # as a warning, NOT silently skipped. Make it blocking once they are fixed.
+      - name: TypeScript (test files) — known pre-existing errors, non-blocking
+        continue-on-error: true
+        run: |
+          if ! npx tsc --noEmit -p tsconfig.json > "$RUNNER_TEMP/tsc-tests.txt" 2>&1; then
+            n="$(grep -c 'error TS' "$RUNNER_TEMP/tsc-tests.txt" || true)"
+            echo "::warning::test-file typecheck: $n error(s); see this step's log"
+            grep -E '^[^ ].*error TS' "$RUNNER_TEMP/tsc-tests.txt" | head -50
+            exit 1
+          fi
+
+      - name: TypeScript (backend)
+        run: npm run backend:typecheck
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Backend production build
+        run: npm run backend:build
+
+      - name: Zero-Supabase-database runtime guard
+        run: npx vitest run tests/unit/zero-supabase-db-static.test.ts
+
+  test:
+    name: Tests (Vitest + PostgreSQL 17)
+    runs-on: ubuntu-24.04
+    # ~5 min on a fast workstation; hosted runners for private repos have 2 vCPUs.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      # The opt-in real-SQL suites talk to the compose `postgres` service via
+      # `docker compose ps` / `docker exec`, exactly as on a developer machine,
+      # so CI runs that service (not a job `services:` container). Credentials
+      # are random, live only on this runner, and are masked.
+      - name: Start throwaway PostgreSQL 17 (compose service)
+        run: |
+          bash scripts/ci/throwaway-env.sh "$RUNNER_TEMP/ci.env"
+          docker compose --env-file "$RUNNER_TEMP/ci.env" up -d --wait --wait-timeout 120 postgres
+
+      - name: Vitest (full suite, real PostgreSQL suites enabled)
+        env:
+          CARTOONA_PLAIN_PG: docker
+        run: npx vitest run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/vitest.json"
+
+      - name: Test baseline (no silent skips)
+        if: always()
+        run: node scripts/ci/check-test-baseline.mjs "$RUNNER_TEMP/vitest.json"
+
+  images:
+    name: Images (build, inspect, smoke, publish)
+    needs: [checks, test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write # used only by the push-only publish step below
+    outputs:
+      frontend_ref: ${{ steps.publish.outputs.frontend_ref }}
+      backend_ref: ${{ steps.publish.outputs.backend_ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Build-time public configuration only (repository VARIABLES, not secrets:
+      # every NEXT_PUBLIC_* value ends up in the browser bundle anyway). The hash
+      # is stored as an image label so the server can refuse an image whose
+      # baked values differ from its runtime .env.docker.
+      - name: Public build configuration
+        id: public
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
+        run: |
+          hash="$(printf '%s\n%s\n%s' "$NEXT_PUBLIC_SUPABASE_URL" "$NEXT_PUBLIC_SUPABASE_ANON_KEY" "$NEXT_PUBLIC_SITE_URL" | sha256sum | cut -d' ' -f1)"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+          for v in NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_SUPABASE_ANON_KEY NEXT_PUBLIC_SITE_URL; do
+            if [ -z "${!v}" ]; then echo "::warning::repository variable $v is empty; the image will not match a production server"; fi
+          done
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build frontend image (linux/amd64)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          tags: |
+            cartoona-frontend:deployed
+            ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_SITE_URL=${{ vars.NEXT_PUBLIC_SITE_URL }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.cartoona.next-public.sha256=${{ steps.public.outputs.hash }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+
+      - name: Build backend image (linux/amd64)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: backend/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          tags: |
+            cartoona-backend:deployed
+            ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+      - name: Image hygiene (non-root, no env files, no secrets in history)
+        run: |
+          bash scripts/ci/check-image.sh cartoona-frontend:deployed
+          bash scripts/ci/check-image.sh cartoona-backend:deployed
+
+      - name: Production-shaped smoke test (migrations, health, freeze, loopback)
+        run: bash scripts/ci/smoke-stack.sh
+
+      # Push only on `push` events, only after every check above passed, and
+      # only the images that were just tested (no rebuild).
+      - name: Publish to GHCR (by commit SHA, deployed by digest)
+        id: publish
+        if: github.event_name == 'push'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          SHA: ${{ github.sha }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          for name in FRONTEND BACKEND; do
+            repo_var="${name}_IMAGE"; repo="${!repo_var}"
+            pushed="$(docker push "$repo:$SHA")"
+            digest="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$repo:$SHA" | grep "^$repo@sha256:" | head -n 1 || true)"
+            if [ -z "$digest" ]; then
+              digest="$repo@$(grep -oE 'digest: sha256:[0-9a-f]{64}' <<< "$pushed" | tail -n 1 | cut -d' ' -f2)"
+            fi
+            [[ "$digest" =~ ^$repo@sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest for $repo:$SHA"; exit 1; }
+            echo "${name,,}_ref=$digest" >> "$GITHUB_OUTPUT"
+            echo "- \`$digest\`" >> "$RUNNER_TEMP/digests.md"
+          done
+          docker logout ghcr.io
+
+      - name: Summary
+        if: always()
+        env:
+          EVENT: ${{ github.event_name }}
+          PUBLISH: ${{ steps.publish.outcome }}
+        run: |
+          {
+            echo "### Images"
+            echo ""
+            echo "Commit \`$GITHUB_SHA\` on \`$GITHUB_REF_NAME\` ($EVENT)"
+            echo ""
+            if [ "$PUBLISH" = success ]; then echo "Published:"; cat "$RUNNER_TEMP/digests.md"
+            else echo "Not published (publish step: ${PUBLISH:-skipped})."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Deployment is OFF unless an admin sets BOTH repository variables:
+  #   DEPLOY_BRANCH        = the one branch allowed to deploy
+  #   CARTOONA_DEPLOY_MODE = preflight (dry run) | deploy
+  # and, for `deploy`, root on the server has recorded a GO decision
+  # (/etc/cartoona/deploy-go). Each gate is independent; see docs/CI_CD.md.
+  deploy:
+    name: Deploy
+    needs: [images]
+    if: >-
+      github.event_name == 'push' &&
+      vars.DEPLOY_BRANCH != '' &&
+      github.ref_name == vars.DEPLOY_BRANCH &&
+      (vars.CARTOONA_DEPLOY_MODE == 'preflight' || vars.CARTOONA_DEPLOY_MODE == 'deploy')
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      mode: ${{ vars.CARTOONA_DEPLOY_MODE }}
+      frontend_ref: ${{ needs.images.outputs.frontend_ref }}
+      backend_ref: ${{ needs.images.outputs.backend_ref }}
+    secrets:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}

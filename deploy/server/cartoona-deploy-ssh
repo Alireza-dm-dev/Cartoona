@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Forced command for the CI deploy key (installed root-owned, 0755, at
+# /usr/local/sbin/cartoona-deploy-ssh). authorized_keys of `cartoona-deploy`:
+#
+#   restrict,command="/usr/local/sbin/cartoona-deploy-ssh" ssh-ed25519 AAAA... cartoona-github-actions
+#
+# Whatever the client asked to run arrives in SSH_ORIGINAL_COMMAND. It is split
+# on whitespace with globbing disabled and handed, as separate arguments, to the
+# one command sudo allows. No shell ever interprets it; cartoona-deploy
+# validates every argument itself.
+set -euf -o pipefail
+read -r -a args <<< "${SSH_ORIGINAL_COMMAND:-}"
+exec /usr/bin/sudo -n /usr/local/sbin/cartoona-deploy "${args[@]}"

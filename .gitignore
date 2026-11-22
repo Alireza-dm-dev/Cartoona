@@ -51,3 +51,6 @@ playwright-report/
 
 # Local OpenCode plugin backups
 .opencode/plugins.disabled/
+
+# Server audit reports (contain host details; never commit)
+cartoona-audit-*.txt

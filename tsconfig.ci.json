@@ -1,0 +1,8 @@
+{
+  "//": "CI typecheck of the shipped code (app, components, lib, backend, scripts, middleware). Test files are checked by a separate, currently non-blocking CI step because they carry pre-existing type errors; see docs/CI_CD.md.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false
+  },
+  "exclude": ["node_modules", "tests", "backend/dist", ".next", "scratchpad"]
+}

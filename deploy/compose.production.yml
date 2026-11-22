@@ -1,0 +1,34 @@
+# Cartoona — production overlay for compose.yml (CI/CD, V0.1.56)
+#
+# Installed on the server as /opt/cartoona/compose.production.yml (root-owned)
+# and ALWAYS used together with the base file:
+#
+#   docker compose --project-directory /opt/cartoona --env-file .env.docker \
+#     -f compose.yml -f compose.production.yml <command>
+#
+# What it changes, and nothing else:
+#   * frontend/backend run fixed LOCAL tags that the deploy script points at an
+#     exact, digest-pinned GHCR image (see deploy/server/cartoona-deploy). The
+#     server never builds and never pulls through compose (`pull_policy: never`).
+#   * the frontend is published on loopback only. Nginx proxies to
+#     127.0.0.1:3000; Docker-published ports bypass UFW, so "3000:3000" would
+#     expose the app on the public interface regardless of the firewall.
+#
+# The postgres service, its volume, every environment variable and every
+# healthcheck come unchanged from compose.yml. The deploy pipeline refuses to
+# run when this file (or compose.yml) on the server differs from the commit
+# being deployed, so a change here is always a reviewed, operator-installed
+# change.
+
+services:
+  frontend:
+    image: cartoona-frontend:deployed
+    build: !reset null
+    pull_policy: never
+    ports: !override
+      - "127.0.0.1:3000:3000"
+
+  backend:
+    image: cartoona-backend:deployed
+    build: !reset null
+    pull_policy: never

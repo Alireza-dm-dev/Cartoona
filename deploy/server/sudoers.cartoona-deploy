@@ -1,0 +1,7 @@
+# /etc/sudoers.d/cartoona-deploy  (root:root, mode 0440; validate with visudo -cf)
+#
+# The CI deploy user may run exactly one root-owned program, with any
+# arguments (it validates them itself), without a password and without a TTY.
+# Nothing else: no docker, no shell, no editor.
+Defaults:cartoona-deploy env_reset, !requiretty, secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+cartoona-deploy ALL=(root) NOPASSWD: /usr/local/sbin/cartoona-deploy

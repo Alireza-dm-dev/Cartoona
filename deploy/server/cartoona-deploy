@@ -1,0 +1,379 @@
+#!/usr/bin/env bash
+# ──────────────────────────────────────────────────────────────────────────────
+# cartoona-deploy — the ONLY privileged operation the CI deploy identity has.
+#
+# Installed root-owned at /usr/local/sbin/cartoona-deploy (mode 0755) and
+# reachable by the `cartoona-deploy` user exclusively through
+#   authorized_keys forced command -> /usr/local/sbin/cartoona-deploy-ssh
+#   -> sudo -n /usr/local/sbin/cartoona-deploy <subcommand> [--flags]
+# The installed copy is NEVER updated by CI: a change to this file is reviewed
+# and copied to the server by an operator (docs/CI_CD.md, "Updating the server
+# scripts").
+#
+# Subcommands
+#   status                 read-only report (key=value lines)
+#   preflight  <release>   every pre-deploy check + image pull; changes no container
+#   deploy     <release>   preflight + GO gate + swap frontend/backend images,
+#                          verify, and restore the previous images on failure
+#   rollback               restore the images recorded before the last deploy
+#
+# <release> flags (all required for preflight/deploy):
+#   --frontend ghcr.io/alireza-dm-dev/cartoona-frontend@sha256:<64 hex>
+#   --backend  ghcr.io/alireza-dm-dev/cartoona-backend@sha256:<64 hex>
+#   --sha <40 hex git commit>
+#   --compose-sha256 <hex> --overlay-sha256 <hex>   hashes of the commit's
+#                          compose.yml and deploy/compose.production.yml
+#   --migrations <NNNN_name,...>                    the commit's migration list
+#   --registry-user <github login>                  optional; a GHCR read token
+#                          is then read from stdin (never from argv)
+#
+# Exit codes: 0 ok | 2 refused, nothing changed | 3 deploy failed, previous
+# images restored and healthy | 4 deploy AND rollback failed (operator now).
+#
+# Hard rules (enforced here, not by convention):
+#   * never touches the postgres service, its volume or its data
+#     (`up --no-deps` on frontend/backend only; no down, no -v, no prune)
+#   * never runs migrations; refuses when the database and the commit disagree
+#   * never reads secrets into output; never writes .env.docker
+#   * refuses unless the write-freeze expectation recorded by root holds
+#   * `deploy` refuses unless root recorded a GO decision in /etc/cartoona/deploy-go
+# ──────────────────────────────────────────────────────────────────────────────
+set -Eeuo pipefail
+umask 077
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+unset DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES
+
+readonly APP_DIR=/opt/cartoona
+readonly ENV_FILE=$APP_DIR/.env.docker
+readonly COMPOSE_BASE=$APP_DIR/compose.yml
+readonly COMPOSE_PROD=$APP_DIR/compose.production.yml
+readonly STATE_DIR=/var/lib/cartoona-deploy
+readonly GO_FILE=/etc/cartoona/deploy-go
+readonly LOCK_FILE=/run/lock/cartoona-deploy.lock
+
+readonly FRONTEND_REPO=ghcr.io/alireza-dm-dev/cartoona-frontend
+readonly BACKEND_REPO=ghcr.io/alireza-dm-dev/cartoona-backend
+readonly FRONTEND_TAG=cartoona-frontend:deployed
+readonly BACKEND_TAG=cartoona-backend:deployed
+readonly FRONTEND_ROLLBACK_TAG=cartoona-frontend:rollback
+readonly BACKEND_ROLLBACK_TAG=cartoona-backend:rollback
+readonly NEXT_PUBLIC_LABEL=org.cartoona.next-public.sha256
+
+readonly FRONTEND_URL=http://127.0.0.1:3000
+readonly BACKEND_URL=http://127.0.0.1:4000
+readonly WAIT_TIMEOUT=180
+
+say() { printf '%s=%s\n' "$1" "$2"; }
+log() { printf 'cartoona-deploy: %s\n' "$*" >&2; }
+refuse() { say result refused; say reason "$*"; log "REFUSED - $*"; exit 2; }
+
+dc() {
+  docker compose --project-directory "$APP_DIR" --env-file "$ENV_FILE" \
+    -f "$COMPOSE_BASE" -f "$COMPOSE_PROD" "$@"
+}
+
+# ── argument parsing (strict) ────────────────────────────────────────────────
+CMD="${1:-}"
+[ "$#" -gt 0 ] && shift
+FRONTEND_REF="" BACKEND_REF="" SHA="" COMPOSE_SHA="" OVERLAY_SHA="" MIGRATIONS="" REG_USER=""
+while [ "$#" -gt 0 ]; do
+  [ "$#" -ge 2 ] || refuse "flag $1 needs a value"
+  case "$1" in
+    --frontend) FRONTEND_REF="$2" ;;
+    --backend) BACKEND_REF="$2" ;;
+    --sha) SHA="$2" ;;
+    --compose-sha256) COMPOSE_SHA="$2" ;;
+    --overlay-sha256) OVERLAY_SHA="$2" ;;
+    --migrations) MIGRATIONS="$2" ;;
+    --registry-user) REG_USER="$2" ;;
+    *) refuse "unknown flag" ;;
+  esac
+  shift 2
+done
+
+validate_release_args() {
+  [[ "$FRONTEND_REF" =~ ^ghcr\.io/alireza-dm-dev/cartoona-frontend@sha256:[0-9a-f]{64}$ ]] || refuse "--frontend must be $FRONTEND_REPO@sha256:<digest>"
+  [[ "$BACKEND_REF" =~ ^ghcr\.io/alireza-dm-dev/cartoona-backend@sha256:[0-9a-f]{64}$ ]] || refuse "--backend must be $BACKEND_REPO@sha256:<digest>"
+  [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || refuse "--sha must be a full 40-hex commit"
+  [[ "$COMPOSE_SHA" =~ ^[0-9a-f]{64}$ ]] || refuse "--compose-sha256 must be 64 hex"
+  [[ "$OVERLAY_SHA" =~ ^[0-9a-f]{64}$ ]] || refuse "--overlay-sha256 must be 64 hex"
+  [ "${#MIGRATIONS}" -le 8192 ] && [[ "$MIGRATIONS" =~ ^[0-9]{4}_[a-z0-9_]+(,[0-9]{4}_[a-z0-9_]+)*$ ]] || refuse "--migrations must be a comma list of NNNN_name"
+  [ -z "$REG_USER" ] || [[ "$REG_USER" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}(\[bot\])?$ ]] || refuse "--registry-user is not a GitHub login"
+}
+
+# ── environment-file helpers (values never printed) ──────────────────────────
+# Last assignment of KEY in .env.docker, surrounding quotes removed.
+env_value() {
+  local line
+  line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?$1[[:space:]]*=" "$ENV_FILE" | tail -n 1 || true)"
+  [ -n "$line" ] || { printf ''; return; }
+  line="${line#*=}"
+  line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
+  if [[ "$line" =~ ^\"(.*)\"$ || "$line" =~ ^\'(.*)\'$ ]]; then line="${BASH_REMATCH[1]}"; fi
+  printf '%s' "$line"
+}
+
+# ── GO record (root-owned; the independent approval gate) ────────────────────
+go_value() { grep -E "^$1=" "$GO_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2- || true; }
+go_file_trusted() {
+  [ -f "$GO_FILE" ] && [ ! -L "$GO_FILE" ] || return 1
+  [ "$(stat -c %u "$GO_FILE")" = 0 ] || return 1
+  # not writable by group or others
+  (( (8#$(stat -c %a "$GO_FILE") & 8#022) == 0 )) || return 1
+}
+go_recorded() {
+  go_file_trusted && [ "$(go_value decision)" = GO ] && [ -n "$(go_value approved_by)" ] \
+    && [ -n "$(go_value approved_at)" ] && [ -n "$(go_value reference)" ]
+}
+# Freeze expectation: "1" unless root has recorded otherwise in the GO file.
+expected_freeze() { local v; v="$(go_value expect_write_freeze)"; printf '%s' "${v:-1}"; }
+
+# ── checks ───────────────────────────────────────────────────────────────────
+check_layout() {
+  local f
+  for f in "$ENV_FILE" "$COMPOSE_BASE" "$COMPOSE_PROD"; do
+    [ -f "$f" ] && [ ! -L "$f" ] || refuse "$f is missing (or a symlink)"
+  done
+  for f in "$COMPOSE_BASE" "$COMPOSE_PROD"; do
+    (( (8#$(stat -c %a "$f") & 8#022) == 0 )) || refuse "$f is group/world-writable"
+  done
+  (( (8#$(stat -c %a "$ENV_FILE") & 8#007) == 0 )) || refuse "$ENV_FILE is readable by others (chmod 600 or 640)"
+}
+
+check_compose_hashes() {
+  local base overlay
+  base="$(sha256sum "$COMPOSE_BASE" | cut -d' ' -f1)"
+  overlay="$(sha256sum "$COMPOSE_PROD" | cut -d' ' -f1)"
+  [ "$base" = "$COMPOSE_SHA" ] || refuse "server compose.yml differs from the commit's compose.yml (operator must review and install it)"
+  [ "$overlay" = "$OVERLAY_SHA" ] || refuse "server compose.production.yml differs from the commit's deploy/compose.production.yml"
+}
+
+check_freeze_env() {
+  local want count have
+  want="$(expected_freeze)"
+  count="$(grep -cE '^[[:space:]]*(export[[:space:]]+)?CARTOONA_WRITE_FREEZE[[:space:]]*=' "$ENV_FILE" || true)"
+  have="$(env_value CARTOONA_WRITE_FREEZE)"
+  if [ "$want" = 1 ]; then
+    [ "$count" = 1 ] && [ "$have" = 1 ] || refuse "CARTOONA_WRITE_FREEZE must be set exactly once to 1 in .env.docker (expected ON)"
+  else
+    [ "$have" != 1 ] || refuse "write freeze is ON but the GO record expects it OFF"
+  fi
+}
+
+check_postgres_running() {
+  local id
+  id="$(dc ps -q postgres 2>/dev/null || true)"
+  [ -n "$id" ] || refuse "the postgres service of this compose project is not running (wrong project directory?)"
+  [ "$(docker inspect --format '{{.State.Health.Status}}' "$id")" = healthy ] || refuse "postgres is not healthy"
+}
+
+applied_migrations() {
+  # shellcheck disable=SC2016 # expanded by the shell INSIDE the postgres container
+  dc exec -T postgres sh -c 'psql -X -A -t -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT version FROM public.schema_migrations ORDER BY version"' \
+    | tr -d '\r' | paste -sd, -
+}
+
+check_migrations() {
+  local applied
+  applied="$(applied_migrations)" || refuse "could not read schema_migrations"
+  [ "$applied" = "$MIGRATIONS" ] || refuse "database migrations differ from the commit's database/migrations (no automatic migration; apply under the approved migration policy first)"
+}
+
+check_next_public() {
+  local ref="$1" label actual
+  label="$(docker image inspect --format "{{index .Config.Labels \"$NEXT_PUBLIC_LABEL\"}}" "$ref")"
+  [[ "$label" =~ ^[0-9a-f]{64}$ ]] || refuse "frontend image carries no $NEXT_PUBLIC_LABEL label"
+  actual="$(printf '%s\n%s\n%s' "$(env_value NEXT_PUBLIC_SUPABASE_URL)" "$(env_value NEXT_PUBLIC_SUPABASE_ANON_KEY)" "$(env_value NEXT_PUBLIC_SITE_URL)" | sha256sum | cut -d' ' -f1)"
+  [ "$label" = "$actual" ] || refuse "NEXT_PUBLIC_* baked into the image differ from .env.docker (fix the GitHub variables or the server env)"
+}
+
+http_ok() { curl -fsS -o /dev/null --max-time 10 "$1" 2>/dev/null; }
+http_body_has() { curl -fsS --max-time 10 "$1" 2>/dev/null | grep -q "$2"; }
+
+# Application health. Prints one line per probe; returns non-zero on any failure.
+smoke() {
+  local failed=0 deadline svc id state freeze
+  deadline=$((SECONDS + 90))
+  for svc in backend frontend; do
+    id="$(dc ps -q "$svc" 2>/dev/null || true)"
+    state="$( [ -n "$id" ] && docker inspect --format '{{.State.Health.Status}}' "$id" 2>/dev/null || echo missing)"
+    say "health.container_$svc" "$state"
+    [ "$state" = healthy ] || failed=1
+  done
+  until http_ok "$BACKEND_URL/ready" || [ "$SECONDS" -ge "$deadline" ]; do sleep 3; done
+  if http_body_has "$BACKEND_URL/health" '"ok"'; then say health.backend_health pass; else say health.backend_health fail; failed=1; fi
+  if http_body_has "$BACKEND_URL/ready" '"ready"'; then say health.backend_ready pass; else say health.backend_ready fail; failed=1; fi
+  if http_body_has "$FRONTEND_URL/api/health" '"ok"'; then say health.frontend_health pass; else say health.frontend_health fail; failed=1; fi
+  if http_body_has "$FRONTEND_URL/api/creation-pricing" '"prices"'; then say health.creation_pricing pass; else say health.creation_pricing fail; failed=1; fi
+  freeze="$(dc exec -T frontend printenv CARTOONA_WRITE_FREEZE 2>/dev/null | tr -d '\r' || true)"
+  if [ "$(expected_freeze)" = 1 ]; then
+    if [ "$freeze" = 1 ]; then say health.write_freeze on; else say health.write_freeze NOT_ON; failed=1; fi
+  else
+    say health.write_freeze "$([ "$freeze" = 1 ] && echo on || echo off)"
+  fi
+  return "$failed"
+}
+
+# ── registry ─────────────────────────────────────────────────────────────────
+# With --registry-user: the CI job's short-lived token (stdin) is used in a
+# throwaway Docker config that is deleted afterwards. Without it: root's own
+# Docker config (/root/.docker), i.e. public packages or a read-only credential
+# an operator stored there (docs/CI_CD.md, "GHCR").
+pull_images() {
+  local cfg="" rc=0
+  if [ -n "$REG_USER" ]; then
+    [ -n "$REG_TOKEN" ] || refuse "--registry-user given but no token on stdin"
+    cfg="$(mktemp -d "$STATE_DIR/docker-config.XXXXXX")"
+    printf '%s' "$REG_TOKEN" | DOCKER_CONFIG="$cfg" docker login ghcr.io -u "$REG_USER" --password-stdin >/dev/null 2>&1 \
+      || { rm -rf "$cfg"; REG_TOKEN=""; refuse "GHCR login failed"; }
+    REG_TOKEN=""
+  fi
+  pull() { if [ -n "$cfg" ]; then DOCKER_CONFIG="$cfg" docker pull --quiet --platform linux/amd64 "$1"; else docker pull --quiet --platform linux/amd64 "$1"; fi; }
+  pull "$FRONTEND_REF" >/dev/null 2>&1 || rc=1
+  [ "$rc" = 0 ] && { pull "$BACKEND_REF" >/dev/null 2>&1 || rc=1; }
+  if [ -n "$cfg" ]; then
+    DOCKER_CONFIG="$cfg" docker logout ghcr.io >/dev/null 2>&1 || true
+    rm -rf "$cfg"
+  fi
+  [ "$rc" = 0 ] || refuse "could not pull the release images from GHCR"
+  say pull.frontend ok
+  say pull.backend ok
+}
+
+# ── state ────────────────────────────────────────────────────────────────────
+running_image_id() { local id; id="$(dc ps -q "$1" 2>/dev/null || true)"; [ -n "$id" ] && docker inspect --format '{{.Image}}' "$id"; }
+
+write_state() { # file sha frontend backend
+  printf 'sha=%s\nfrontend=%s\nbackend=%s\nrecorded_at=%s\n' "$2" "$3" "$4" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$1.tmp"
+  mv "$1.tmp" "$1"
+}
+state_value() { grep -E "^$2=" "$1" 2>/dev/null | cut -d= -f2- || true; }
+record_history() { printf '%s %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${SHA:-none}" "${FRONTEND_REF:-none}" "${BACKEND_REF:-none}" >> "$STATE_DIR/history.log"; }
+
+# Swap the running services to whatever the :deployed tags point at.
+apply_tags() {
+  dc up -d --no-deps --no-build --pull never --wait --wait-timeout "$WAIT_TIMEOUT" backend >&2 || return 1
+  dc up -d --no-deps --no-build --pull never --wait --wait-timeout "$WAIT_TIMEOUT" frontend >&2 || return 1
+}
+
+restore_previous() {
+  docker image inspect "$FRONTEND_ROLLBACK_TAG" >/dev/null 2>&1 && docker image inspect "$BACKEND_ROLLBACK_TAG" >/dev/null 2>&1 || return 1
+  docker tag "$FRONTEND_ROLLBACK_TAG" "$FRONTEND_TAG" && docker tag "$BACKEND_ROLLBACK_TAG" "$BACKEND_TAG" || return 1
+  apply_tags || return 1
+  smoke
+}
+
+# ── subcommands ──────────────────────────────────────────────────────────────
+cmd_status() {
+  local svc
+  say go_recorded "$(go_recorded && echo yes || echo no)"
+  go_recorded && say go_approved_at "$(go_value approved_at | tr -cd 'A-Za-z0-9:.+-')"
+  say expected_write_freeze "$(expected_freeze)"
+  say env_write_freeze "$([ "$(env_value CARTOONA_WRITE_FREEZE)" = 1 ] && echo on || echo off)"
+  say compose_sha256 "$(sha256sum "$COMPOSE_BASE" 2>/dev/null | cut -d' ' -f1)"
+  say overlay_sha256 "$(sha256sum "$COMPOSE_PROD" 2>/dev/null | cut -d' ' -f1)"
+  for svc in frontend backend postgres; do say "image_id.$svc" "$(running_image_id "$svc" || echo none)"; done
+  say current.sha "$(state_value "$STATE_DIR/current.env" sha)"
+  say current.frontend "$(state_value "$STATE_DIR/current.env" frontend)"
+  say current.backend "$(state_value "$STATE_DIR/current.env" backend)"
+  say migrations "$(applied_migrations 2>/dev/null || echo unreadable)"
+  smoke || true
+}
+
+preflight_checks() {
+  validate_release_args
+  check_layout
+  check_compose_hashes
+  check_freeze_env
+  check_postgres_running
+  check_migrations
+  say check.layout pass; say check.compose pass; say check.write_freeze pass; say check.postgres pass; say check.migrations pass
+  # The running release must be healthy: it is what a failed deploy returns to.
+  smoke || refuse "the CURRENT deployment is not healthy; fix it manually before deploying"
+  pull_images
+  check_next_public "$FRONTEND_REF"
+  say check.next_public pass
+}
+
+cmd_preflight() {
+  preflight_checks
+  say go_recorded "$(go_recorded && echo yes || echo no)"
+  say result preflight_ok
+}
+
+cmd_deploy() {
+  local prev_front prev_back
+  preflight_checks
+  go_recorded || refuse "no GO decision recorded by root in $GO_FILE"
+
+  prev_front="$(running_image_id frontend)" || refuse "frontend is not running"
+  prev_back="$(running_image_id backend)" || refuse "backend is not running"
+  [ -n "$prev_front" ] && [ -n "$prev_back" ] || refuse "could not read the running image ids"
+
+  # Record what we return to BEFORE changing anything.
+  docker tag "$prev_front" "$FRONTEND_ROLLBACK_TAG"
+  docker tag "$prev_back" "$BACKEND_ROLLBACK_TAG"
+  if [ -f "$STATE_DIR/current.env" ]; then cp "$STATE_DIR/current.env" "$STATE_DIR/previous.env"
+  else write_state "$STATE_DIR/previous.env" unknown "$prev_front" "$prev_back"; fi
+  say previous.frontend_image_id "$prev_front"
+  say previous.backend_image_id "$prev_back"
+
+  docker tag "$FRONTEND_REF" "$FRONTEND_TAG"
+  docker tag "$BACKEND_REF" "$BACKEND_TAG"
+  if apply_tags && smoke; then
+    write_state "$STATE_DIR/current.env" "$SHA" "$FRONTEND_REF" "$BACKEND_REF"
+    record_history deployed
+    say result deployed
+    say rollback not_needed
+    return 0
+  fi
+
+  log "new release failed its checks; restoring the previous images"
+  say rollback started
+  if restore_previous; then
+    record_history failed_rolled_back
+    say rollback ok
+    say result failed_rolled_back
+    exit 3
+  fi
+  record_history failed_rollback_failed
+  say rollback FAILED
+  say result failed_rollback_failed
+  exit 4
+}
+
+cmd_rollback() {
+  [ -f "$STATE_DIR/previous.env" ] || refuse "no previous release recorded"
+  check_layout
+  say rollback started
+  if restore_previous; then
+    cp "$STATE_DIR/previous.env" "$STATE_DIR/current.env"
+    record_history manual_rollback_ok
+    say rollback ok; say result rolled_back; return 0
+  fi
+  record_history manual_rollback_failed
+  say rollback FAILED; say result rollback_failed; exit 4
+}
+
+main() {
+  [ "$(id -u)" = 0 ] || { log "must run as root (via sudo)"; exit 2; }
+  # The registry token (if any) is the ONLY thing read from stdin, and it is
+  # read first: every later `docker compose exec` would otherwise consume it
+  # (and hand it to a container process). Then stdin is detached.
+  REG_TOKEN=""
+  if [ -n "$REG_USER" ]; then REG_TOKEN="$(head -c 4096 || true)"; fi
+  exec 0</dev/null
+  install -d -m 0700 -o root -g root "$STATE_DIR"
+  exec 9>"$LOCK_FILE"
+  flock -w 600 9 || refuse "another deployment holds the lock"
+  case "$CMD" in
+    status) cmd_status ;;
+    preflight) cmd_preflight ;;
+    deploy) cmd_deploy ;;
+    rollback) cmd_rollback ;;
+    *) refuse "usage: cartoona-deploy status|preflight|deploy|rollback [flags]" ;;
+  esac
+}
+
+main

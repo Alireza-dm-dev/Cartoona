@@ -1,0 +1,258 @@
+# Cartoona production deployment (V0.1.56) — see docs/CI_CD.md.
+#
+# Normally CALLED by ci.yml after every check passed and the tested images were
+# pushed (workflow_call). Can also be run by hand (workflow_dispatch) for a
+# status report, a dry run, a manual rollback, or redeploying a known digest —
+# note GitHub only offers manual runs for workflows present on the DEFAULT
+# branch.
+#
+# This workflow can do exactly what the server-side entry point allows
+# (deploy/server/cartoona-deploy): swap the frontend/backend images to exact
+# GHCR digests, verify, and restore the previous images. It cannot run
+# migrations, touch PostgreSQL, edit .env.docker, change the write freeze, or
+# deploy without the GO record that only root on the server can write.
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: preflight | deploy
+        type: string
+        required: true
+      frontend_ref:
+        type: string
+        required: true
+      backend_ref:
+        type: string
+        required: true
+    secrets:
+      DEPLOY_HOST:
+        required: false
+      DEPLOY_USER:
+        required: false
+      DEPLOY_SSH_KEY:
+        required: false
+      DEPLOY_KNOWN_HOSTS:
+        required: false
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: What to do on the server
+        type: choice
+        options: [status, preflight, deploy, rollback]
+        default: status
+      frontend_ref:
+        description: "preflight/deploy: ghcr.io/alireza-dm-dev/cartoona-frontend@sha256:..."
+        type: string
+        required: false
+      backend_ref:
+        description: "preflight/deploy: ghcr.io/alireza-dm-dev/cartoona-backend@sha256:..."
+        type: string
+        required: false
+      release_sha:
+        description: "preflight/deploy: the 40-hex commit those images were built from"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Production (${{ inputs.mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Records the deployment in GitHub. Add required reviewers / a deployment
+    # branch rule here IF the plan offers them; the server-side GO record is the
+    # gate that does not depend on the plan.
+    environment:
+      name: production
+      url: https://cartoona.art
+    # One production change at a time; a running deployment is never cancelled.
+    concurrency:
+      group: cartoona-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read # the job token is handed to the server only to pull the release images
+    env:
+      MODE: ${{ inputs.mode }}
+      FRONTEND_REF: ${{ inputs.frontend_ref }}
+      BACKEND_REF: ${{ inputs.backend_ref }}
+      RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.sha }}
+      DEPLOY_BRANCH: ${{ vars.DEPLOY_BRANCH }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+      PUBLIC_HEALTH_URL: ${{ vars.PUBLIC_HEALTH_URL }}
+      GHCR_PULL_AUTH: ${{ vars.GHCR_PULL_AUTH || 'job-token' }}
+    steps:
+      - name: Gate (branch, mode, inputs)
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          [ -n "$DEPLOY_BRANCH" ] || fail "repository variable DEPLOY_BRANCH is not set: deployment is disabled"
+          [ "$GITHUB_REF_NAME" = "$DEPLOY_BRANCH" ] || fail "ref $GITHUB_REF_NAME is not the deployment branch"
+          case "$MODE" in status|preflight|deploy|rollback) ;; *) fail "unknown mode" ;; esac
+          if [ "$MODE" = preflight ] || [ "$MODE" = deploy ]; then
+            [[ "$FRONTEND_REF" =~ ^ghcr\.io/alireza-dm-dev/cartoona-frontend@sha256:[0-9a-f]{64}$ ]] || fail "frontend_ref must be a GHCR digest reference"
+            [[ "$BACKEND_REF" =~ ^ghcr\.io/alireza-dm-dev/cartoona-backend@sha256:[0-9a-f]{64}$ ]] || fail "backend_ref must be a GHCR digest reference"
+            [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "release sha must be 40 hex"
+          fi
+          [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]] || fail "DEPLOY_PORT must be numeric"
+          case "$GHCR_PULL_AUTH" in job-token|server) ;; *) fail "GHCR_PULL_AUTH must be job-token or server" ;; esac
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # What the server must agree with: its compose files byte-for-byte, and
+      # its applied migrations exactly (no automatic migration, ever).
+      - name: Release facts
+        id: facts
+        run: |
+          {
+            echo "compose=$(sha256sum compose.yml | cut -d' ' -f1)"
+            echo "overlay=$(sha256sum deploy/compose.production.yml | cut -d' ' -f1)"
+            echo "migrations=$(find database/migrations -maxdepth 1 -name '*.sql' -printf '%f\n' | LC_ALL=C sort | sed 's/\.sql$//' | paste -sd, -)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: SSH identity (strict host key checking)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          [ -n "$DEPLOY_HOST" ] && [ -n "$DEPLOY_USER" ] && [ -n "$DEPLOY_SSH_KEY" ] && [ -n "$DEPLOY_KNOWN_HOSTS" ] \
+            || fail "DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY and DEPLOY_KNOWN_HOSTS secrets are required"
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || fail "DEPLOY_USER is not a valid user name"
+          [ "$DEPLOY_USER" != root ] || fail "refusing to deploy as root"
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.:-]+$ ]] || fail "DEPLOY_HOST is not a plain host name or address"
+          d="$RUNNER_TEMP/ssh"; install -d -m 700 "$d"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$d/key"; chmod 600 "$d/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$d/known_hosts"; chmod 644 "$d/known_hosts"
+          ssh-keygen -F "$DEPLOY_HOST" -f "$d/known_hosts" >/dev/null \
+            || ssh-keygen -F "[$DEPLOY_HOST]:$DEPLOY_PORT" -f "$d/known_hosts" >/dev/null \
+            || fail "DEPLOY_KNOWN_HOSTS has no entry for the deploy host"
+          cat > "$d/config" <<EOF
+          Host cartoona-prod
+            HostName $DEPLOY_HOST
+            Port $DEPLOY_PORT
+            User $DEPLOY_USER
+            IdentityFile $d/key
+            IdentitiesOnly yes
+            UserKnownHostsFile $d/known_hosts
+            GlobalKnownHostsFile /dev/null
+            StrictHostKeyChecking yes
+            UpdateHostKeys no
+            BatchMode yes
+            PasswordAuthentication no
+            KbdInteractiveAuthentication no
+            ConnectTimeout 20
+            ServerAliveInterval 15
+            ServerAliveCountMax 4
+            LogLevel ERROR
+          EOF
+          echo "SSH_CONFIG=$d/config" >> "$GITHUB_ENV"
+
+      - name: Server status (before)
+        run: ssh -F "$SSH_CONFIG" -n cartoona-prod status | tee "$RUNNER_TEMP/before.txt"
+
+      - name: Run ${{ inputs.mode }}
+        id: run
+        if: inputs.mode != 'status'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          COMPOSE_SHA: ${{ steps.facts.outputs.compose }}
+          OVERLAY_SHA: ${{ steps.facts.outputs.overlay }}
+          MIGRATIONS: ${{ steps.facts.outputs.migrations }}
+        run: |
+          set +e
+          if [ "$MODE" = rollback ]; then
+            ssh -F "$SSH_CONFIG" -n cartoona-prod rollback > "$RUNNER_TEMP/run.txt"
+            rc=$?
+          else
+            release=(--frontend "$FRONTEND_REF" --backend "$BACKEND_REF" --sha "$RELEASE_SHA"
+                     --compose-sha256 "$COMPOSE_SHA" --overlay-sha256 "$OVERLAY_SHA" --migrations "$MIGRATIONS")
+            if [ "$GHCR_PULL_AUTH" = server ]; then
+              # The server pulls with its own root-held read credential.
+              ssh -F "$SSH_CONFIG" -n cartoona-prod "$MODE" "${release[@]}" > "$RUNNER_TEMP/run.txt"
+            else
+              # The short-lived job token (packages:read) travels on stdin, never argv.
+              printf '%s' "$REGISTRY_TOKEN" | ssh -F "$SSH_CONFIG" cartoona-prod "$MODE" "${release[@]}" \
+                --registry-user "$ACTOR" > "$RUNNER_TEMP/run.txt"
+            fi
+            rc=$?
+          fi
+          cat "$RUNNER_TEMP/run.txt"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          case "$rc" in
+            0) ;;
+            2) echo "::error::server REFUSED (nothing changed): $(grep '^reason=' "$RUNNER_TEMP/run.txt" | cut -d= -f2-)"; exit 1 ;;
+            3) echo "::error::new release FAILED its checks; previous images restored and healthy"; exit 1 ;;
+            4) echo "::error::deploy AND rollback FAILED - operator action required now"; exit 1 ;;
+            255) echo "::error::SSH connection failed (host key, key or network)"; exit 1 ;;
+            *) echo "::error::server exited $rc"; exit 1 ;;
+          esac
+
+      # Through Cloudflare and Nginx, from outside. A failure here restores the
+      # previous images too: a release users cannot reach is not deployed.
+      - name: Public HTTPS check
+        id: public
+        if: inputs.mode == 'deploy' && steps.run.outputs.rc == '0'
+        run: |
+          if [ -z "$PUBLIC_HEALTH_URL" ]; then
+            echo "PUBLIC_HEALTH_URL not set - public check skipped"; echo "result=skipped" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          for _ in 1 2 3 4 5 6; do
+            if curl -fsS --max-time 15 --proto '=https' "$PUBLIC_HEALTH_URL" | grep -q '"ok"'; then
+              echo "result=pass" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            sleep 10
+          done
+          echo "result=fail" >> "$GITHUB_OUTPUT"
+          echo "::error::public health check failed; restoring the previous images"
+          ssh -F "$SSH_CONFIG" -n cartoona-prod rollback | tee "$RUNNER_TEMP/public-rollback.txt"
+          exit 1
+
+      - name: Server status (after)
+        if: always() && env.SSH_CONFIG != ''
+        run: ssh -F "$SSH_CONFIG" -n cartoona-prod status > "$RUNNER_TEMP/after.txt" || true
+
+      - name: Deployment summary
+        if: always()
+        env:
+          RUN_OUTCOME: ${{ steps.run.outcome }}
+          RUN_RC: ${{ steps.run.outputs.rc }}
+          PUBLIC_RESULT: ${{ steps.public.outputs.result }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          kv() { grep -E "^$1=" "$2" 2>/dev/null | tail -n 1 | cut -d= -f2- ; }
+          table() {
+            [ -s "$1" ] || { echo "_no output_"; return; }
+            echo "| check | value |"; echo "|---|---|"
+            grep -E '^[a-z_.]+=' "$1" | sed -E "s/^([^=]+)=(.*)\$/| \\1 | \`\\2\` |/"
+          }
+          {
+            echo "## Production: $MODE"
+            echo ""
+            echo "| | |"; echo "|---|---|"
+            echo "| Commit | \`$RELEASE_SHA\` |"
+            echo "| Branch | \`$GITHUB_REF_NAME\` |"
+            echo "| Trigger | $EVENT (CI passed: $([ "$EVENT" = workflow_call ] || [ "$EVENT" = push ] && echo yes || echo 'n/a - manual')) |"
+            echo "| Frontend image | \`${FRONTEND_REF:-n/a}\` |"
+            echo "| Backend image | \`${BACKEND_REF:-n/a}\` |"
+            echo "| Finished (UTC) | $(date -u +%Y-%m-%dT%H:%M:%SZ) |"
+            echo "| Server result | \`$(kv result "$RUNNER_TEMP/run.txt" || true)\` (exit ${RUN_RC:-n/a}, step ${RUN_OUTCOME:-skipped}) |"
+            echo "| Rollback | \`$(kv rollback "$RUNNER_TEMP/run.txt" || echo none)\`$( [ -s "$RUNNER_TEMP/public-rollback.txt" ] && echo " / after public check: \`$(kv rollback "$RUNNER_TEMP/public-rollback.txt")\`" ) |"
+            echo "| Public HTTPS | ${PUBLIC_RESULT:-not run} |"
+            echo ""
+            echo "<details><summary>Release run</summary>"; echo ""; table "$RUNNER_TEMP/run.txt"; echo ""; echo "</details>"
+            echo "<details><summary>Server before</summary>"; echo ""; table "$RUNNER_TEMP/before.txt"; echo ""; echo "</details>"
+            echo "<details><summary>Server after</summary>"; echo ""; table "$RUNNER_TEMP/after.txt"; echo ""; echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove SSH material
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ssh"

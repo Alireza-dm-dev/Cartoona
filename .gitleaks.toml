@@ -1,0 +1,28 @@
+# gitleaks configuration for CI (V0.1.56). Default rules, plus a narrow
+# allowlist of reviewed false positives: each entry names the exact fixture
+# value AND the file it lives in, so a real secret added anywhere (including
+# those files) is still reported. Add entries only after reviewing the value.
+title = "cartoona"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Visibly fake fixtures in the preflight and db-pool unit tests"
+condition = "AND"
+paths = [
+  '''(^|/)tests/unit/production-preflight\.test\.ts$''',
+  '''(^|/)tests/unit/db-foundation\.test\.ts$''',
+]
+regexes = [
+  '''^a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90$''',
+  '''^9f8e7d6c5b4a39281706f5e4d3c2b1a0$''',
+  '''^0123456789abcdef0123456789abcdef0123$''',
+  '''^Unreachable-Secret-Pw-7731$''',
+]
+
+[[allowlists]]
+description = "localStorage key name, not a credential"
+condition = "AND"
+paths = ['''(^|/)lib/requests/submission-attempt\.ts$''']
+regexes = ['''^cartoona\.submission-attempt\.v1$''']
