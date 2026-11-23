@@ -61,7 +61,7 @@ variables there). Default token permission: `contents: read`.
 | Job | What runs |
 |---|---|
 | **checks** | gitleaks on the working tree · `scripts/ci/check-repo-safety.sh` (no tracked `.env`/key files, no private-key blocks, migration names `NNNN_*.sql` contiguous, **no existing migration modified/renamed/deleted** vs. the PR base or the previous push) · `npm ci` · `next typegen` · `tsc -p tsconfig.ci.json` · test-file typecheck (non-blocking, see below) · backend typecheck · ESLint · backend production build · Zero-Supabase-database runtime guard (`tests/unit/zero-supabase-db-static.test.ts`) |
-| **test** | Throwaway PostgreSQL 17 via the compose `postgres` service (random masked credentials) · full Vitest suite with `CARTOONA_PLAIN_PG=docker` · baseline gate: **≥ 3403 passed, 0 failed, ≤ 37 skipped** (`scripts/ci/check-test-baseline.mjs`) |
+| **test** | Throwaway PostgreSQL 17 via the compose `postgres` service (random masked credentials) · full Vitest suite with `CARTOONA_PLAIN_PG=docker` · baseline gate: **≥ 3403 passed, 0 failed, ≤ 37 skipped** locally; on a runner **3402 passed, 38 skipped**, because one approved test is skipped by design (`scripts/ci/check-test-baseline.mjs`, see below) |
 | **images** (needs both) | Build frontend + backend for `linux/amd64` (Buildx, GHA cache) · image hygiene (non-root user, no `.env`/key files, no secret names in env or history) · **production-shaped smoke test** (`scripts/ci/smoke-stack.sh`): fresh PG17, all migrations, second migration run must apply nothing, restricted app login, backend + frontend from the overlay, `/health`, `/ready`, `/api/health`, `/api/creation-pricing`, write freeze ON, both services published on loopback only, frontend holds no database credential · **push only:** publish the tested images |
 | **deploy** | Only on `push`, only for `vars.DEPLOY_BRANCH`, only when `vars.CARTOONA_DEPLOY_MODE` is `preflight` or `deploy` (section 4) |
 
@@ -83,6 +83,13 @@ then remove `continue-on-error` from that step.
 
 **Next.js production build.** It runs inside the frontend image build — the
 artifact that ships — rather than a second time on the host.
+
+**Approved CI-only skip.** `test-env-resolution.test.ts` > "this checkout's .env.local: …"
+validates the developer's own gitignored `.env.local`, so it is skipped on any
+machine without that file, including every runner. The gate allows exactly that
+test, by file and title, only when `CI=true`, and shifts the baseline by exactly
+one. Any other skipped or missing test still fails. Add entries to `CI_ONLY_SKIPS`
+only with explicit approval.
 
 **Raising the baseline.** When tests are added, raise `MIN_PASSED` in
 `scripts/ci/check-test-baseline.mjs` in the same PR. Never lower it to get green.
