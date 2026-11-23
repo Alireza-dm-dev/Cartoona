@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Forced command for the CI deploy key (installed root-owned, 0755, at
 # /usr/local/sbin/cartoona-deploy-ssh). authorized_keys of `cartoona-deploy`:
 #
@@ -9,5 +9,11 @@
 # one command sudo allows. No shell ever interprets it; cartoona-deploy
 # validates every argument itself.
 set -euf -o pipefail
-read -r -a args <<< "${SSH_ORIGINAL_COMMAND:-}"
+# One non-empty line only: an interactive login (no command) or a command with
+# a line break is refused outright instead of being partially parsed.
+if [ -z "${SSH_ORIGINAL_COMMAND:-}" ] || [[ "$SSH_ORIGINAL_COMMAND" == *$'\n'* ]]; then
+  echo "cartoona-deploy-ssh: refused" >&2
+  exit 2
+fi
+read -r -a args <<< "$SSH_ORIGINAL_COMMAND"
 exec /usr/bin/sudo -n /usr/local/sbin/cartoona-deploy "${args[@]}"

@@ -1,7 +1,16 @@
 # /etc/sudoers.d/cartoona-deploy  (root:root, mode 0440; validate with visudo -cf)
 #
-# The CI deploy user may run exactly one root-owned program, with any
-# arguments (it validates them itself), without a password and without a TTY.
-# Nothing else: no docker, no shell, no editor.
+# The CI deploy user may run exactly one root-owned program, and only these
+# subcommands, without a password and without a TTY. Arguments after the
+# subcommand are validated by the program itself (strict flags, regexes).
+# Nothing else: no docker, no shell, no editor, no bare `rollback`.
+#
+# Administrators do NOT use this file: they run `sudo cartoona-deploy rollback`
+# with their own sudo rights for an unrestricted emergency rollback. The program
+# tells the two apart by SUDO_USER / SUDO_UID, which sudo itself sets.
 Defaults:cartoona-deploy env_reset, !requiretty, secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-cartoona-deploy ALL=(root) NOPASSWD: /usr/local/sbin/cartoona-deploy
+cartoona-deploy ALL=(root) NOPASSWD: \
+    /usr/local/sbin/cartoona-deploy status, \
+    /usr/local/sbin/cartoona-deploy preflight *, \
+    /usr/local/sbin/cartoona-deploy deploy *, \
+    /usr/local/sbin/cartoona-deploy rollback --sha *

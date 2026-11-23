@@ -51,7 +51,7 @@ on:
         type: string
         required: false
       release_sha:
-        description: "preflight/deploy: the 40-hex commit those images were built from"
+        description: "preflight/deploy/rollback: the 40-hex commit those images were built from"
         type: string
         required: false
 
@@ -92,6 +92,9 @@ jobs:
           [ -n "$DEPLOY_BRANCH" ] || fail "repository variable DEPLOY_BRANCH is not set: deployment is disabled"
           [ "$GITHUB_REF_NAME" = "$DEPLOY_BRANCH" ] || fail "ref $GITHUB_REF_NAME is not the deployment branch"
           case "$MODE" in status|preflight|deploy|rollback) ;; *) fail "unknown mode" ;; esac
+          if [ "$MODE" = rollback ]; then
+            [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "rollback needs release_sha: CI may only undo the release it deployed most recently (an administrator can roll back on the server without it)"
+          fi
           if [ "$MODE" = preflight ] || [ "$MODE" = deploy ]; then
             [[ "$FRONTEND_REF" =~ ^ghcr\.io/alireza-dm-dev/cartoona-frontend@sha256:[0-9a-f]{64}$ ]] || fail "frontend_ref must be a GHCR digest reference"
             [[ "$BACKEND_REF" =~ ^ghcr\.io/alireza-dm-dev/cartoona-backend@sha256:[0-9a-f]{64}$ ]] || fail "backend_ref must be a GHCR digest reference"
@@ -170,7 +173,7 @@ jobs:
         run: |
           set +e
           if [ "$MODE" = rollback ]; then
-            ssh -F "$SSH_CONFIG" -n cartoona-prod rollback > "$RUNNER_TEMP/run.txt"
+            ssh -F "$SSH_CONFIG" -n cartoona-prod rollback --sha "$RELEASE_SHA" > "$RUNNER_TEMP/run.txt"
             rc=$?
           else
             release=(--frontend "$FRONTEND_REF" --backend "$BACKEND_REF" --sha "$RELEASE_SHA"
@@ -213,7 +216,7 @@ jobs:
           done
           echo "result=fail" >> "$GITHUB_OUTPUT"
           echo "::error::public health check failed; restoring the previous images"
-          ssh -F "$SSH_CONFIG" -n cartoona-prod rollback | tee "$RUNNER_TEMP/public-rollback.txt"
+          ssh -F "$SSH_CONFIG" -n cartoona-prod rollback --sha "$RELEASE_SHA" | tee "$RUNNER_TEMP/public-rollback.txt"
           exit 1
 
       - name: Server status (after)

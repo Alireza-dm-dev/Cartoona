@@ -110,7 +110,7 @@ describe("compose.yml — frontend (formerly app) is functionally unchanged", ()
   it("still builds, publishes and health-checks the web app as before", () => {
     expect(app).toMatch(/dockerfile: Dockerfile/)
     expect(app).toMatch(/image: cartoona-app:local/)
-    expect(portEntries(app)).toEqual(["3000:3000"])
+    expect(portEntries(app)).toEqual(["127.0.0.1:3000:3000"])
     expect(app).toMatch(/test: \["CMD", "node", "healthcheck\.mjs"\]/)
   })
 

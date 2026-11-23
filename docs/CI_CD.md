@@ -61,7 +61,7 @@ variables there). Default token permission: `contents: read`.
 | Job | What runs |
 |---|---|
 | **checks** | gitleaks on the working tree · `scripts/ci/check-repo-safety.sh` (no tracked `.env`/key files, no private-key blocks, migration names `NNNN_*.sql` contiguous, **no existing migration modified/renamed/deleted** vs. the PR base or the previous push) · `npm ci` · `next typegen` · `tsc -p tsconfig.ci.json` · test-file typecheck (non-blocking, see below) · backend typecheck · ESLint · backend production build · Zero-Supabase-database runtime guard (`tests/unit/zero-supabase-db-static.test.ts`) |
-| **test** | Throwaway PostgreSQL 17 via the compose `postgres` service (random masked credentials) · full Vitest suite with `CARTOONA_PLAIN_PG=docker` · baseline gate: **≥ 3420 passed, 0 failed, ≤ 37 skipped** locally; on a runner **3419 passed, 38 skipped**, because one approved test is skipped by design (`scripts/ci/check-test-baseline.mjs`, see below) |
+| **test** | Throwaway PostgreSQL 17 via the compose `postgres` service (random masked credentials) · full Vitest suite with `CARTOONA_PLAIN_PG=docker` · baseline gate: **≥ 3442 passed, 0 failed, ≤ 37 skipped** locally; on a runner **3441 passed, 38 skipped**, because one approved test is skipped by design (`scripts/ci/check-test-baseline.mjs`, see below) |
 | **images** (needs both) | Build frontend + backend for `linux/amd64` (Buildx, GHA cache) · image hygiene (non-root user, no `.env`/key files, no secret names in env or history) · **production-shaped smoke test** (`scripts/ci/smoke-stack.sh`): fresh PG17, all migrations, second migration run must apply nothing, restricted app login, backend + frontend from the overlay, `/health`, `/ready`, `/api/health`, `/api/creation-pricing`, write freeze ON, both services published on loopback only, frontend holds no database credential · **push only:** publish the tested images |
 | **deploy** | Only on `push`, only for `vars.DEPLOY_BRANCH`, only when `vars.CARTOONA_DEPLOY_MODE` is `preflight` or `deploy` (section 4) |
 
@@ -127,31 +127,43 @@ only with explicit approval.
 | 2 | Event is a `push` to `vars.DEPLOY_BRANCH` | repo admin | no deploy job |
 | 3 | `vars.CARTOONA_DEPLOY_MODE` = `preflight` or `deploy` | repo admin | no deploy job |
 | 4 | GitHub Environment `production` rules (reviewers / branch policy) **if the plan offers them** | repo admin | (not relied on) |
-| 5 | Server: `/etc/cartoona/deploy-go` with `decision=GO`, root-owned, not group/world-writable | **root on the server** | `deploy` refused (exit 2); `preflight` still works |
-| 6 | Server: compose files identical to the commit; applied migrations identical to the commit; write freeze as expected; current deployment healthy; `NEXT_PUBLIC_*` match | the script | refused (exit 2), nothing changed |
+| 5 | Server: `/etc/cartoona/deploy-go` is a **single-use approval for this exact release**: commit SHA + both image digests match, not expired (at most 72 h from `approved_at`), not already used; file root-owned and protected | **root on the server** | `deploy` refused (exit 2); `preflight` still works and reports why (`go.valid_for_release=no`, `go.reason=…`) |
+| 6 | Server: compose files identical to the commit; effective Compose config **and** running containers publish only on loopback; applied migrations identical to the commit; write freeze ON (always); current deployment healthy; `NEXT_PUBLIC_*` match; configuration files root-owned and not writable by others | the script | refused (exit 2), nothing changed |
 
 Gate 5 is the authoritative GO record and does not depend on the GitHub plan:
 naming an environment `production` is **not** an approval gate by itself.
-Deleting that file is an immediate kill switch.
+An approval authorizes one deployment of one release and then it is spent, so an
+old approval can never authorize a later release or a replay. Deleting the file
+is an immediate kill switch.
 
 ### What a deploy does (`cartoona-deploy deploy`)
 
 1. Lock (`flock`): one change at a time, also against a manual run. GitHub-side,
    `concurrency: cartoona-production` (never cancels a running deployment).
-2. Validate every argument (only `ghcr.io/alireza-dm-dev/cartoona-{frontend,backend}@sha256:<64 hex>`).
-3. Checks (gate 6), current health (backend `/health` + `/ready`, frontend
-   `/api/health` + `/api/creation-pricing`, write freeze in the running frontend).
-4. Pull both digests (job token on stdin, throwaway Docker config, logout, delete).
-5. Verify the `NEXT_PUBLIC_*` label. Require the GO record.
-6. Record the running image IDs as `cartoona-{frontend,backend}:rollback` and the
+2. Validate every argument (only `ghcr.io/alireza-dm-dev/cartoona-{frontend,backend}@sha256:<64 hex>`;
+   unknown, repeated or misplaced flags are refused).
+3. **Check the GO approval first** (commit + both digests, expiry, unused), so an
+   unapproved release is refused before anything is pulled.
+4. Checks (gate 6), including the effective Compose ports and the running
+   containers' real bindings, then current health (backend `/health` + `/ready`,
+   frontend `/api/health` + `/api/creation-pricing`, write freeze in the running
+   frontend). Database inspection runs with `default_transaction_read_only=on`.
+5. Pull both digests (job token on stdin, throwaway Docker config, logout, delete).
+   Verify the `NEXT_PUBLIC_*` label.
+6. Re-check the approval (the pull can be slow), then **consume it atomically**
+   (`mkdir` of `/var/lib/cartoona-deploy/consumed/<approval_id>`). From here on it
+   is spent even if the deploy fails and is rolled back. Nothing running or
+   tagged has been touched yet.
+7. Record the running image IDs as `cartoona-{frontend,backend}:rollback` and the
    previous state file.
-7. Point `cartoona-{frontend,backend}:deployed` at the new digests;
+8. Point `cartoona-{frontend,backend}:deployed` at the new digests;
    `docker compose … up -d --no-deps --no-build --pull never --wait` **backend**,
    then **frontend**. PostgreSQL is never recreated, stopped or migrated.
-8. Verify all probes again, including `CARTOONA_WRITE_FREEZE=1` inside the new
-   frontend.
-9. Success: write `/var/lib/cartoona-deploy/current.env` (commit SHA + digests) and
-   append to `history.log`. Failure: section 5.
+9. Verify all probes again, including `CARTOONA_WRITE_FREEZE=1` inside the new
+   frontend and loopback-only bindings of every container.
+10. Success: write `/var/lib/cartoona-deploy/current.env` (commit SHA, digests,
+   `approval_id`, `deployed_by=ci|admin`, time) and append to `history.log`.
+   Failure: section 5.
 
 The workflow then checks `vars.PUBLIC_HEALTH_URL` (through Cloudflare/Nginx) and
 restores the previous images if it fails, and writes the job summary: commit,
@@ -179,9 +191,16 @@ backend and frontend, re-runs every probe, and exits **3** (rolled back, healthy
 or **4** (rollback failed too — operator now). A failed public HTTPS check after
 a successful server-side deploy triggers the same rollback from the workflow.
 
-**Manual:** `Actions → Deploy → rollback`, or on the server
-`sudo /usr/local/sbin/cartoona-deploy rollback`. It restores the images that were
-running before the most recent deploy attempt.
+**Who may roll back (the script tells the callers apart by `SUDO_USER` / `SUDO_UID`, which sudo itself sets):**
+
+| Caller | Allowed |
+|---|---|
+| **Administrator** (root, or any sudoer other than the CI user) running `sudo /usr/local/sbin/cartoona-deploy rollback` on the server | Always: the unrestricted emergency rollback. No GO, no `--sha`, no time limit. |
+| **CI identity** (`cartoona-deploy` over SSH; `Actions → Deploy → rollback` and the automatic rollback after a failed public check) | Only `rollback --sha <40 hex>` for the release **CI itself deployed most recently**, under a GO approval (`deployed_by=ci` and an `approval_id` in the state file), **within 60 minutes**, and **once** (a second CI rollback is refused). Anything else is refused with "ask an administrator". |
+
+sudoers backs this up: the CI user may run `status`, `preflight *`, `deploy *` and
+`rollback --sha *`, and nothing else, so a bare `rollback` cannot even reach the
+script. After a rollback the state file is marked `rolled_back=1`.
 
 **Never rolled back:** PostgreSQL data, schema, volume or credentials;
 `.env.docker`; Nginx/Cloudflare. An image rollback **cannot** undo a database
@@ -323,7 +342,8 @@ sudo -l -U cartoona-deploy   # exactly: (root) NOPASSWD: /usr/local/sbin/cartoon
 ```
 
 **What is granted, and why:** `cartoona-deploy` may run one root-owned program
-with sudo. That program is root-equivalent *only for what it does*: pull images
+with sudo, and only these subcommands: `status`, `preflight *`, `deploy *` and
+`rollback --sha *` (`/etc/sudoers.d/cartoona-deploy`). That program is root-equivalent *only for what it does*: pull images
 from the two named GHCR repositories by digest and recreate the frontend/backend
 services from root-owned compose files. The user is **not** in the `docker` group
 (that would be unrestricted root). It cannot pass compose files, environment,
@@ -391,8 +411,7 @@ docker inspect --format '{{.Name}} {{.Image}}' $(dc0 ps -q)
 
 # 2. compose.yml must be byte-identical to the commit you will deploy.
 sha256sum compose.yml        # compare with: git show <commit>:compose.yml | sha256sum
-#    If it differs: diff it against the commit, review every difference, and keep
-#    intentional server-side changes ONLY by committing them to the repository.
+#    If it differs, see 7.10 (read-only comparison first; never git reset/pull).
 
 # 3. The running images become the first 'deployed' baseline (and rollback target).
 docker tag "$(docker inspect --format '{{.Image}}' "$(dc0 ps -q frontend)")" cartoona-frontend:deployed
@@ -416,23 +435,78 @@ From now on, manual compose commands on the server **must** include both files
 (`dcp`). Plain `docker compose --env-file .env.docker up` would bring back the
 old local image tag and publish port 3000 on all interfaces.
 
-### 7.9 GO record (only after the GO decision exists in writing)
+### 7.9 GO record (one approval = one exact release, once)
+
+Only after the GO decision exists in writing, and only for a release whose
+**dry run (`preflight`) you have reviewed**: the job summary shows the commit SHA
+and both image digests. The approval names exactly those three values.
 
 ```bash
 install -d -m 0755 -o root -g root /etc/cartoona
 cat > /etc/cartoona/deploy-go <<'EOF'
 decision=GO
+approval_id=<unique, 8-64 characters of A-Za-z0-9._- , e.g. go-20261201-1>
 approved_by=<approver name>
-approved_at=<UTC time, e.g. 2026-12-01T09:00:00Z>
+approved_at=<UTC now, e.g. 2026-12-01T09:00:00Z>
+expires_at=<UTC, at most 72 h after approved_at, e.g. 2026-12-01T21:00:00Z>
 reference=<link to the written GO decision>
-expect_write_freeze=1
+release_sha=<40-hex commit from the preflight summary>
+frontend_digest=sha256:<64 hex from the preflight summary>
+backend_digest=sha256:<64 hex from the preflight summary>
 EOF
 chown root:root /etc/cartoona/deploy-go && chmod 0644 /etc/cartoona/deploy-go
 ```
 
-`expect_write_freeze=1` makes every deployment verify the freeze is ON. Change it
-to `0` only as part of cutover Phase 6.1, by an operator, never through CI.
-**Revoke instantly:** `rm /etc/cartoona/deploy-go`.
+Rules enforced by the script (not by convention):
+* Every field appears exactly once; the commit **and both digests** must equal
+  the release being deployed; it must be unexpired and at most 72 h long.
+* **Single use:** the approval is spent when the deploy passes its checks and
+  starts, before any container or tag changes, and stays spent if the deploy
+  fails and is rolled back. Re-running needs a **new** approval (new
+  `approval_id`). Two simultaneous deploys with one approval: exactly one wins.
+* The write freeze is not configurable here. `expect_write_freeze` is obsolete
+  and makes the record invalid: CI never deploys with `CARTOONA_WRITE_FREEZE`
+  off. Lifting the freeze (cutover Phase 6.1) is an operator action.
+
+Consequence: with `CARTOONA_DEPLOY_MODE=deploy`, a new push is refused until you
+have approved *that* release: push → CI + dry-run summary → you write the GO →
+re-run the deploy job (`Re-run jobs`, or `Actions → Deploy` with the digests).
+
+**Revoke instantly:** `rm /etc/cartoona/deploy-go`. **Check state:**
+`sudo /usr/local/sbin/cartoona-deploy status` (`go.present`, `go.expires_at`,
+`go.consumed`).
+
+### 7.10 Reconciling the server's locally modified `compose.yml` (later, by an operator)
+
+The server's `/opt/cartoona/compose.yml` was edited by hand to bind the frontend
+to `127.0.0.1`. The repository's `compose.yml` now binds **every** published port
+to loopback itself (and the overlay still forces it), so the edit is expected to
+be redundant. The pipeline refuses to deploy while the server file differs from
+the commit's (gate 6), which is intended. Reconcile **once**, deliberately; the
+pipeline never does this and never runs `git` on the server (no reset, no pull,
+no checkout, no overwrite):
+
+```bash
+cd /opt/cartoona
+# 1. Read-only: what is different?
+git -c safe.directory=/opt/cartoona status --short compose.yml
+git -c safe.directory=/opt/cartoona diff -- compose.yml        # local edit vs. the checked-out commit
+# 2. Compare with the commit you intend to deploy (fetch it ELSEWHERE, e.g. your workstation):
+sha256sum compose.yml                                          # server
+git show <commit>:compose.yml | sha256sum                      # workstation
+# 3a. Identical hashes: nothing to do.
+# 3b. Different: review every changed line. Anything that is not already in the
+#     repository must be committed there first, through review.
+# 4. Only then install the reviewed file, keeping the old one:
+cp -p compose.yml "/root/compose.yml.local-edit-$(date -u +%Y%m%dT%H%M%SZ)"
+install -o root -g root -m 0644 /root/reviewed/compose.yml /opt/cartoona/compose.yml
+sha256sum compose.yml                                          # must equal the commit's
+```
+
+Until step 4 the dry run reports `server compose.yml differs from the commit's
+compose.yml`. After it, and after 7.8, the dry run's `check.ports_config=pass`
+confirms the effective configuration is loopback-only, and `health.ports_loopback=pass`
+confirms the running containers are.
 
 ## 8. GitHub setup (admin)
 
@@ -478,17 +552,23 @@ production. Protect it: require a pull request, require the `CI` checks
 **G. Safe dry run.** Set `DEPLOY_BRANCH` and `CARTOONA_DEPLOY_MODE=preflight`.
 Push a commit to that branch. Expect: CI green, images published, the deploy job
 showing `result=preflight_ok`, every `check.*` and `health.*` = pass,
-`go_recorded=no`. Nothing on the server changed (verify the container start times:
+`go.valid_for_release=no`. Nothing on the server changed (verify the container start times:
 `docker ps --format '{{.Names}} {{.Status}}'`). Any `refused` names what to fix.
 
 **H. First authorized deployment.** Only after the GO decision is recorded in
-writing: 7.9 on the server, then `CARTOONA_DEPLOY_MODE=deploy`, then push (or
-re-run the last CI run). Watch the job summary. Verify the site manually.
+writing, and after reconciling the server's compose file (7.10) and adopting the
+running stack (7.8): take the commit SHA and both digests from the dry run's
+summary, write the single-use GO for exactly those (7.9), set
+`CARTOONA_DEPLOY_MODE=deploy`, and re-run the deploy job. Watch the job summary
+(`go.consumed=yes`, probes, `health.ports_loopback=pass`). Verify the site manually.
+A second run with the same approval is refused by design.
 
-**I. Rollback verification.** Right after H, run `Actions → Deploy → rollback`
-(or `sudo /usr/local/sbin/cartoona-deploy rollback` on the server). Expect
-`result=rolled_back` and all probes pass on the previous images. Then re-run the
-CI run of H's commit to roll forward. Record both results.
+**I. Rollback verification.** Right after H, within 60 minutes, run
+`Actions → Deploy → rollback` with the same `release_sha` (CI may undo only the
+release it just deployed), or `sudo /usr/local/sbin/cartoona-deploy rollback` as
+an administrator (always allowed). Expect `result=rolled_back` and all probes
+pass on the previous images. Rolling forward again needs a **new** approval.
+Record both results.
 
 To pause everything: `CARTOONA_DEPLOY_MODE=off` (GitHub) and/or
 `rm /etc/cartoona/deploy-go` (server).
@@ -555,11 +635,14 @@ found items here that must be confirmed fixed; details are kept out of the repos
 | `SSH connection failed` (255) | Host key mismatch (re-verify 7.5; **do not** disable checking), wrong key, firewall. |
 | `refused … compose.yml differs` | The server's compose files are not the commit's. Review and install (7.8 step 2), or commit the server's intended change. |
 | `refused … database migrations differ` | The commit adds or lacks a migration relative to the database. No automatic migration: section 5, "Schema changes". |
-| `refused … CARTOONA_WRITE_FREEZE` | The freeze is not exactly `1` once in `.env.docker` (or the GO record expects otherwise). Fix on the server; CI never changes it. |
+| `refused … CARTOONA_WRITE_FREEZE` | The freeze is not exactly `1` once in `.env.docker`. CI never deploys with it off and never changes it. Fix on the server. |
+| `refused … Compose would publish beyond loopback: <svc>:<port>` / `health.ports_exposed` | A published port is not loopback-only in the effective config, or a running container is bound to a public address (typically before 7.8). Fix the compose files or recreate the container; never open ports 3000, 4000 or 5433. |
+| `refused … not owned by root` / `group/world-writable` / `…protected` | A deployment file or directory (`/opt/cartoona`, compose files, `.env.docker`, `/etc/cartoona`, the GO record) has the wrong owner or mode. |
 | `refused … NEXT_PUBLIC_*` | The repository variables differ from the server's `.env.docker`. Fix the variables, push again (new images). |
 | `refused … CURRENT deployment is not healthy` | The release to fall back to is broken. Fix manually first (`status` shows which probe fails). |
 | `refused … could not pull` | GHCR access (8.3), or `GHCR_PULL_AUTH`. |
-| `refused … no GO decision` | Expected until 7.9. |
+| `refused … no GO record` / `…different commit` / `…different … digest` / `…expired` / `…already used` | The GO approval is missing, belongs to another release, has expired (max 72 h) or was spent. Write a new one for this exact release (7.9). `preflight` shows the reason (`go.reason`). |
+| `refused … ask an administrator` (rollback) | CI may only undo the release it deployed most recently, once, within 60 minutes. Roll back on the server as an administrator. |
 | exit 3 `failed_rolled_back` | New release unhealthy; previous images restored and verified. See `docker compose … logs backend frontend`. |
 | exit 4 `failed_rollback_failed` | Both failed. Operator now: `status`, logs; restore manually with `dcp` and the `:rollback` tags. |
 | test baseline failed with many skips | The PostgreSQL service did not start or `CARTOONA_PLAIN_PG` was lost. Never "fix" by lowering the baseline. |
@@ -574,11 +657,20 @@ or `docker compose down -v`.
 * **No secret leaves the server.** CI has no database, Supabase or application
   secrets. Its four deploy secrets let it do exactly what `cartoona-deploy` allows.
 * **Server-side enforcement.** A modified workflow on the deploy branch cannot
-  skip the hard rules: freeze, migrations, compose identity, image origin, the GO
-  record and rollback all live in the root-owned script, which CI cannot change.
-* **Least privilege.** Not in the `docker` group, one sudo entry, a forced SSH
-  command, `restrict`, no TTY, root-owned `authorized_keys`, `GITHUB_TOKEN`
-  scoped per job, third-party actions pinned to commit SHAs.
+  skip the hard rules: freeze (always ON), migrations, compose identity,
+  loopback-only ports, image origin, the single-use GO approval bound to the exact
+  commit and image digests, and rollback authorization all live in the root-owned
+  script, which CI cannot change. The workflow cannot even claim a different commit
+  for the approved digests, because the digests themselves are in the approval.
+* **Least privilege.** Not in the `docker` group; one sudo entry limited to four
+  subcommands (`status`, `preflight`, `deploy`, `rollback --sha`); a forced SSH
+  command that refuses empty and multi-line input and never evaluates it;
+  `restrict`; no TTY; root-owned `authorized_keys`; the script's state, lock and
+  approval-consumption markers in a root-only directory; ownership and permission
+  checks on every deployment file; `GITHUB_TOKEN` scoped per job; third-party
+  actions pinned to commit SHAs. The script never runs `git`.
+* **Emergency path.** Administrators keep an unrestricted rollback through their
+  own `sudo`; the CI key cannot use it.
 * **Strict host keys.** Verified out-of-band; `StrictHostKeyChecking yes`;
   `UpdateHostKeys no`; never `StrictHostKeyChecking=no`.
 * **Residual risks.** (1) Anyone who can merge to `DEPLOY_BRANCH` can run code in
@@ -595,7 +687,11 @@ or `docker compose down -v`.
   Verified locally: the workflows (actionlint), scripts (shellcheck), the full
   test suite, both image builds, image hygiene, the smoke stack, and the server
   script in a Linux rehearsal with a stand-in registry (deploy, every refusal,
-  automatic and manual rollback).
+  automatic and manual rollback). The approval and rollback-authorization rules,
+  ownership checks, port-exposure detection, read-only inspection, the sudoers
+  file (`visudo` and `sudo -l` matching) and the forced-command parsing were
+  rehearsed the same way; the rehearsal harness is not part of the repository,
+  while `tests/unit/deploy-hardening-static.test.ts` pins the same rules.
 * Manual `workflow_dispatch` runs appear only once `deploy.yml` is on `main`.
 * Test files have pre-existing type errors (section 2).
 * Zero-downtime is not a goal: frontend and backend restart in turn (seconds) on

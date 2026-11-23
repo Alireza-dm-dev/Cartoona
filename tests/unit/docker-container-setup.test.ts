@@ -153,8 +153,8 @@ describe("compose.yml — frontend service (named app before V0.1.40)", () => {
     expect(app).toMatch(/image: cartoona-app:local/)
   })
 
-  it("publishes port 3000 and binds the container to all interfaces", () => {
-    expect(app).toMatch(/-\s*"3000:3000"/)
+  it("publishes port 3000 on loopback only and binds the container to all interfaces", () => {
+    expect(app).toMatch(/-\s*"127\.0\.0\.1:3000:3000"/)
     expect(app).toMatch(/HOSTNAME: 0\.0\.0\.0/)
   })
 

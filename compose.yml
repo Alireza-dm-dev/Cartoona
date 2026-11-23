@@ -71,8 +71,12 @@ services:
       LOCAL_DATABASE_URL: ""
       CARTOONA_APP_DB_PASSWORD: ""
       BACKEND_DATABASE_URL: ""
+    # Loopback only, like the backend and PostgreSQL: Docker-published ports
+    # bypass UFW, so a bare "3000:3000" would expose the app on every interface.
+    # Production puts Nginx in front (it proxies to 127.0.0.1:3000); locally the
+    # browser still reaches http://localhost:3000.
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     # PID 1 reaper, so stray children cannot keep the container alive after
     # SIGTERM. Next itself receives the signal directly (`node server.js`).
     init: true

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # ──────────────────────────────────────────────────────────────────────────────
 # cartoona-deploy — the ONLY privileged operation the CI deploy identity has.
 #
@@ -6,16 +6,21 @@
 # reachable by the `cartoona-deploy` user exclusively through
 #   authorized_keys forced command -> /usr/local/sbin/cartoona-deploy-ssh
 #   -> sudo -n /usr/local/sbin/cartoona-deploy <subcommand> [--flags]
-# The installed copy is NEVER updated by CI: a change to this file is reviewed
-# and copied to the server by an operator (docs/CI_CD.md, "Updating the server
-# scripts").
+# (sudoers lists exactly the subcommands below). The installed copy is NEVER
+# updated by CI: a change to this file is reviewed and copied to the server by
+# an operator (docs/CI_CD.md, "Updating the server scripts").
 #
-# Subcommands
+# Subcommands (any other argument is refused; no flag may repeat)
 #   status                 read-only report (key=value lines)
 #   preflight  <release>   every pre-deploy check + image pull; changes no container
 #   deploy     <release>   preflight + GO gate + swap frontend/backend images,
 #                          verify, and restore the previous images on failure
-#   rollback               restore the images recorded before the last deploy
+#   rollback [--sha <40hex>]
+#                          restore the images recorded before the last deploy.
+#                          Administrator (root, or any sudoer other than the CI
+#                          user): unrestricted emergency rollback.
+#                          CI identity: ONLY the release it deployed most
+#                          recently, within ROLLBACK_WINDOW_SECONDS, once.
 #
 # <release> flags (all required for preflight/deploy):
 #   --frontend ghcr.io/alireza-dm-dev/cartoona-frontend@sha256:<64 hex>
@@ -27,16 +32,32 @@
 #   --registry-user <github login>                  optional; a GHCR read token
 #                          is then read from stdin (never from argv)
 #
+# GO record /etc/cartoona/deploy-go (root-owned, not group/world-writable, in a
+# root-owned directory). key=value lines, each exactly once:
+#   decision=GO  approval_id=<8-64 of A-Za-z0-9._->  approved_by=<text>
+#   approved_at=<UTC YYYY-MM-DDTHH:MM:SSZ>  expires_at=<UTC, <= approved_at + 72h>
+#   reference=<text>  release_sha=<40 hex>
+#   frontend_digest=sha256:<64 hex>  backend_digest=sha256:<64 hex>
+# It authorizes ONE deployment of exactly that commit and those two image
+# digests, once, until it expires. The approval is consumed (atomic mkdir under
+# $STATE_DIR/consumed) after every check passes and BEFORE any running
+# container or tag is touched; a failed or rolled-back deploy does not restore
+# it. The write freeze is not configurable here: CI always requires it ON.
+#
 # Exit codes: 0 ok | 2 refused, nothing changed | 3 deploy failed, previous
 # images restored and healthy | 4 deploy AND rollback failed (operator now).
 #
 # Hard rules (enforced here, not by convention):
 #   * never touches the postgres service, its volume or its data
-#     (`up --no-deps` on frontend/backend only; no down, no -v, no prune)
+#     (`up --no-deps` on frontend/backend only; no down, no -v, no prune);
+#     database inspection runs with default_transaction_read_only=on
 #   * never runs migrations; refuses when the database and the commit disagree
-#   * never reads secrets into output; never writes .env.docker
-#   * refuses unless the write-freeze expectation recorded by root holds
-#   * `deploy` refuses unless root recorded a GO decision in /etc/cartoona/deploy-go
+#   * never runs git and never edits /opt/cartoona or .env.docker
+#   * never reads secrets into output
+#   * refuses unless every published port is loopback-only (effective Compose
+#     configuration AND the actual container bindings)
+#   * `deploy` refuses unless root recorded an unexpired, unused GO for this
+#     exact release in /etc/cartoona/deploy-go
 # ──────────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 umask 077
@@ -50,7 +71,13 @@ readonly COMPOSE_BASE=$APP_DIR/compose.yml
 readonly COMPOSE_PROD=$APP_DIR/compose.production.yml
 readonly STATE_DIR=/var/lib/cartoona-deploy
 readonly GO_FILE=/etc/cartoona/deploy-go
-readonly LOCK_FILE=/run/lock/cartoona-deploy.lock
+readonly GO_DIR=/etc/cartoona
+readonly LOCK_FILE=$STATE_DIR/lock
+readonly CONSUMED_DIR=$STATE_DIR/consumed
+readonly DEPLOY_USER=cartoona-deploy
+readonly GO_MAX_SECONDS=259200          # a GO may be valid for at most 72 h
+readonly GO_CLOCK_SKEW_SECONDS=300
+readonly ROLLBACK_WINDOW_SECONDS=3600   # CI may undo only a deploy this recent
 
 readonly FRONTEND_REPO=ghcr.io/alireza-dm-dev/cartoona-frontend
 readonly BACKEND_REPO=ghcr.io/alireza-dm-dev/cartoona-backend
@@ -76,9 +103,18 @@ dc() {
 # ── argument parsing (strict) ────────────────────────────────────────────────
 CMD="${1:-}"
 [ "$#" -gt 0 ] && shift
-FRONTEND_REF="" BACKEND_REF="" SHA="" COMPOSE_SHA="" OVERLAY_SHA="" MIGRATIONS="" REG_USER=""
+case "$CMD" in
+  status) ALLOWED_FLAGS=" " ;;
+  rollback) ALLOWED_FLAGS=" --sha " ;;
+  preflight|deploy) ALLOWED_FLAGS=" --frontend --backend --sha --compose-sha256 --overlay-sha256 --migrations --registry-user " ;;
+  *) refuse "usage: cartoona-deploy status|preflight|deploy|rollback [flags]" ;;
+esac
+FRONTEND_REF="" BACKEND_REF="" SHA="" COMPOSE_SHA="" OVERLAY_SHA="" MIGRATIONS="" REG_USER="" SEEN=" "
 while [ "$#" -gt 0 ]; do
-  [ "$#" -ge 2 ] || refuse "flag $1 needs a value"
+  [[ "$ALLOWED_FLAGS" == *" $1 "* ]] || refuse "unexpected argument for this subcommand"
+  [[ "$SEEN" != *" $1 "* ]] || refuse "a flag was given twice"
+  [ "$#" -ge 2 ] || refuse "a flag is missing its value"
+  SEEN+="$1 "
   case "$1" in
     --frontend) FRONTEND_REF="$2" ;;
     --backend) BACKEND_REF="$2" ;;
@@ -87,7 +123,6 @@ while [ "$#" -gt 0 ]; do
     --overlay-sha256) OVERLAY_SHA="$2" ;;
     --migrations) MIGRATIONS="$2" ;;
     --registry-user) REG_USER="$2" ;;
-    *) refuse "unknown flag" ;;
   esac
   shift 2
 done
@@ -114,31 +149,73 @@ env_value() {
   printf '%s' "$line"
 }
 
-# ── GO record (root-owned; the independent approval gate) ────────────────────
+# ── GO record (root-owned; the independent, single-use approval gate) ────────
+epoch_of() { date -u -d "$1" +%s 2>/dev/null; }
+mode_of() { stat -c %a "$1"; }
 go_value() { grep -E "^$1=" "$GO_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2- || true; }
 go_file_trusted() {
+  [ -d "$GO_DIR" ] && [ ! -L "$GO_DIR" ] && [ "$(stat -c %u "$GO_DIR")" = 0 ] || return 1
+  (( (8#$(mode_of "$GO_DIR") & 8#022) == 0 )) || return 1
   [ -f "$GO_FILE" ] && [ ! -L "$GO_FILE" ] || return 1
   [ "$(stat -c %u "$GO_FILE")" = 0 ] || return 1
-  # not writable by group or others
-  (( (8#$(stat -c %a "$GO_FILE") & 8#022) == 0 )) || return 1
+  (( (8#$(mode_of "$GO_FILE") & 8#022) == 0 )) || return 1
 }
-go_recorded() {
-  go_file_trusted && [ "$(go_value decision)" = GO ] && [ -n "$(go_value approved_by)" ] \
-    && [ -n "$(go_value approved_at)" ] && [ -n "$(go_value reference)" ]
+GO_REASON=""
+# Validate the GO record against the release in SHA / FRONTEND_REF / BACKEND_REF.
+# Sets GO_REASON to a fixed sentence (never a value) and returns 1 on any problem.
+go_check() {
+  local k now appr exp id
+  go_file_trusted || { GO_REASON="no GO record, or it (or its directory) is not root-owned and protected"; return 1; }
+  for k in decision approval_id approved_by approved_at expires_at reference release_sha frontend_digest backend_digest; do
+    [ "$(grep -cE "^$k=" "$GO_FILE")" = 1 ] || { GO_REASON="GO record: every required field must appear exactly once"; return 1; }
+  done
+  ! grep -qE '^expect_write_freeze=' "$GO_FILE" || { GO_REASON="GO record: expect_write_freeze is obsolete (CI always requires the freeze ON)"; return 1; }
+  [ "$(go_value decision)" = GO ] || { GO_REASON="GO record: decision is not GO"; return 1; }
+  id="$(go_value approval_id)"
+  [[ "$id" =~ ^[A-Za-z0-9._-]{8,64}$ && "$id" != . && "$id" != .. ]] || { GO_REASON="GO record: approval_id must be 8-64 of A-Za-z0-9._-"; return 1; }
+  [ -n "$(go_value approved_by)" ] && [ -n "$(go_value reference)" ] || { GO_REASON="GO record: approved_by and reference must not be empty"; return 1; }
+  [[ "$(go_value release_sha)" =~ ^[0-9a-f]{40}$ ]] || { GO_REASON="GO record: release_sha must be 40 hex"; return 1; }
+  [[ "$(go_value frontend_digest)" =~ ^sha256:[0-9a-f]{64}$ && "$(go_value backend_digest)" =~ ^sha256:[0-9a-f]{64}$ ]] || { GO_REASON="GO record: image digests must be sha256:<64 hex>"; return 1; }
+  [[ "$(go_value approved_at)" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ && "$(go_value expires_at)" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || { GO_REASON="GO record: times must be UTC YYYY-MM-DDTHH:MM:SSZ"; return 1; }
+  appr="$(epoch_of "$(go_value approved_at)" || true)"; exp="$(epoch_of "$(go_value expires_at)" || true)"
+  [[ "$appr" =~ ^[0-9]+$ && "$exp" =~ ^[0-9]+$ ]] || { GO_REASON="GO record: a time is not a valid date"; return 1; }
+  now="$(date -u +%s)"
+  [ "$appr" -le $((now + GO_CLOCK_SKEW_SECONDS)) ] || { GO_REASON="GO record: approved_at is in the future"; return 1; }
+  [ "$exp" -gt "$now" ] || { GO_REASON="GO record: the approval has expired"; return 1; }
+  [ "$exp" -gt "$appr" ] && [ $((exp - appr)) -le "$GO_MAX_SECONDS" ] || { GO_REASON="GO record: validity must be positive and at most 72 hours"; return 1; }
+  [ "$(go_value release_sha)" = "$SHA" ] || { GO_REASON="GO record approves a different commit"; return 1; }
+  [ "$(go_value frontend_digest)" = "${FRONTEND_REF#*@}" ] || { GO_REASON="GO record approves a different frontend image digest"; return 1; }
+  [ "$(go_value backend_digest)" = "${BACKEND_REF#*@}" ] || { GO_REASON="GO record approves a different backend image digest"; return 1; }
+  [ ! -e "$CONSUMED_DIR/$id" ] || { GO_REASON="this GO approval was already used; a new approval is required"; return 1; }
+  return 0
 }
-# Freeze expectation: "1" unless root has recorded otherwise in the GO file.
-expected_freeze() { local v; v="$(go_value expect_write_freeze)"; printf '%s' "${v:-1}"; }
+# Atomic single use: mkdir either creates the marker or fails because another
+# process (or an earlier deploy) already did. Called only after every check has
+# passed and before any running container or tag is touched.
+go_consume() {
+  local id; id="$(go_value approval_id)"
+  mkdir -m 0700 "$CONSUMED_DIR/$id" 2>/dev/null || return 1
+  printf 'release_sha=%s\nconsumed_at=%s\n' "$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$CONSUMED_DIR/$id/record"
+}
+caller_is_ci() {
+  [ "${SUDO_USER:-}" = "$DEPLOY_USER" ] && return 0
+  local uid; uid="$(id -u "$DEPLOY_USER" 2>/dev/null || true)"
+  [ -n "$uid" ] && [ "${SUDO_UID:-}" = "$uid" ]
+}
 
 # ── checks ───────────────────────────────────────────────────────────────────
 check_layout() {
   local f
   for f in "$ENV_FILE" "$COMPOSE_BASE" "$COMPOSE_PROD"; do
     [ -f "$f" ] && [ ! -L "$f" ] || refuse "$f is missing (or a symlink)"
+    [ "$(stat -c %u "$f")" = 0 ] || refuse "$f is not owned by root"
   done
+  [ -d "$APP_DIR" ] && [ ! -L "$APP_DIR" ] && [ "$(stat -c %u "$APP_DIR")" = 0 ] || refuse "$APP_DIR is not a root-owned directory"
+  (( (8#$(mode_of "$APP_DIR") & 8#022) == 0 )) || refuse "$APP_DIR is group/world-writable"
   for f in "$COMPOSE_BASE" "$COMPOSE_PROD"; do
-    (( (8#$(stat -c %a "$f") & 8#022) == 0 )) || refuse "$f is group/world-writable"
+    (( (8#$(mode_of "$f") & 8#022) == 0 )) || refuse "$f is group/world-writable"
   done
-  (( (8#$(stat -c %a "$ENV_FILE") & 8#007) == 0 )) || refuse "$ENV_FILE is readable by others (chmod 600 or 640)"
+  (( (8#$(mode_of "$ENV_FILE") & 8#027) == 0 )) || refuse "$ENV_FILE must not be group-writable or readable by others (chmod 600 or 640)"
 }
 
 check_compose_hashes() {
@@ -150,15 +227,48 @@ check_compose_hashes() {
 }
 
 check_freeze_env() {
-  local want count have
-  want="$(expected_freeze)"
+  local count
   count="$(grep -cE '^[[:space:]]*(export[[:space:]]+)?CARTOONA_WRITE_FREEZE[[:space:]]*=' "$ENV_FILE" || true)"
-  have="$(env_value CARTOONA_WRITE_FREEZE)"
-  if [ "$want" = 1 ]; then
-    [ "$count" = 1 ] && [ "$have" = 1 ] || refuse "CARTOONA_WRITE_FREEZE must be set exactly once to 1 in .env.docker (expected ON)"
-  else
-    [ "$have" != 1 ] || refuse "write freeze is ON but the GO record expects it OFF"
-  fi
+  [ "$count" = 1 ] && [ "$(env_value CARTOONA_WRITE_FREEZE)" = 1 ] || refuse "CARTOONA_WRITE_FREEZE must be set exactly once to 1 in .env.docker (CI never deploys with the freeze off)"
+}
+
+# Effective Compose configuration: every published port of every service must be
+# bound to a loopback address. (`docker compose config` renders short-form ports
+# in long form with host_ip; an entry without host_ip means all interfaces.)
+config_port_violations() {
+  printf '%s\n' "$1" | awk '
+    function kv(s,   k, v) { gsub(/^ +/, "", s); k = s; sub(/:.*/, "", k); v = s; sub(/^[^:]*: */, "", v); gsub(/"/, "", v)
+      if (k == "published") pub = v; else if (k == "host_ip") hip = v }
+    function flush() { if (inport && pub != "" && hip != "127.0.0.1" && hip != "::1") print svc ":" pub; pub = ""; hip = "" }
+    /^services:/ { ins = 1; next }
+    /^[A-Za-z]/ { flush(); ins = 0 }
+    ins && /^  [A-Za-z0-9_.-]+:$/ { flush(); inport = 0; svc = $1; sub(/:$/, "", svc); next }
+    ins && /^    ports:/ { inport = 1; next }
+    ins && /^    [A-Za-z_]+:/ { flush(); inport = 0; next }
+    inport && /^      - / { flush(); l = $0; sub(/^      - /, "", l); kv(l); next }
+    inport && /^        [a-z_]+:/ { kv($0); next }
+    END { flush() }'
+}
+check_ports_config() {
+  local rendered bad
+  rendered="$(dc config 2>/dev/null)" || refuse "docker compose config failed for the production files"
+  grep -qE '^    network_mode: *host' <<< "$rendered" && refuse "a service uses host networking"
+  bad="$(config_port_violations "$rendered" | paste -sd, -)"
+  [ -z "$bad" ] || refuse "Compose would publish beyond loopback: $bad"
+}
+# Actual bindings of every running container of this Compose project - the
+# configured services AND any stray container carrying the project label - must
+# be loopback only (HostIp 127.0.0.1 / ::1).
+runtime_port_violations() {
+  local proj id
+  proj="$(dc config 2>/dev/null | sed -n 's/^name: //p' | head -n 1)"
+  {
+    dc ps -q 2>/dev/null
+    if [ -n "$proj" ]; then docker ps -q --no-trunc --filter "label=com.docker.compose.project=$proj" 2>/dev/null; fi
+  } | sort -u | while read -r id; do
+    docker inspect --format '{{.Name}}{{range $p,$c := .NetworkSettings.Ports}}{{range $c}} {{.HostIp}}|{{$p}}{{end}}{{end}}' "$id" 2>/dev/null
+  done | awk '{ for (i = 2; i <= NF; i++) { split($i, a, "|"); if (a[1] != "127.0.0.1" && a[1] != "::1") print substr($1, 2) "(" a[2] ")" } }' | sort -u
+  return 0
 }
 
 check_postgres_running() {
@@ -170,7 +280,7 @@ check_postgres_running() {
 
 applied_migrations() {
   # shellcheck disable=SC2016 # expanded by the shell INSIDE the postgres container
-  dc exec -T postgres sh -c 'psql -X -A -t -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT version FROM public.schema_migrations ORDER BY version"' \
+  dc exec -T -e PGOPTIONS='-c default_transaction_read_only=on' postgres sh -c 'psql -X -A -t -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT version FROM public.schema_migrations ORDER BY version"' \
     | tr -d '\r' | paste -sd, -
 }
 
@@ -193,7 +303,7 @@ http_body_has() { curl -fsS --max-time 10 "$1" 2>/dev/null | grep -q "$2"; }
 
 # Application health. Prints one line per probe; returns non-zero on any failure.
 smoke() {
-  local failed=0 deadline svc id state freeze
+  local failed=0 deadline svc id state freeze ports
   deadline=$((SECONDS + 90))
   for svc in backend frontend; do
     id="$(dc ps -q "$svc" 2>/dev/null || true)"
@@ -207,11 +317,9 @@ smoke() {
   if http_body_has "$FRONTEND_URL/api/health" '"ok"'; then say health.frontend_health pass; else say health.frontend_health fail; failed=1; fi
   if http_body_has "$FRONTEND_URL/api/creation-pricing" '"prices"'; then say health.creation_pricing pass; else say health.creation_pricing fail; failed=1; fi
   freeze="$(dc exec -T frontend printenv CARTOONA_WRITE_FREEZE 2>/dev/null | tr -d '\r' || true)"
-  if [ "$(expected_freeze)" = 1 ]; then
-    if [ "$freeze" = 1 ]; then say health.write_freeze on; else say health.write_freeze NOT_ON; failed=1; fi
-  else
-    say health.write_freeze "$([ "$freeze" = 1 ] && echo on || echo off)"
-  fi
+  if [ "$freeze" = 1 ]; then say health.write_freeze on; else say health.write_freeze NOT_ON; failed=1; fi
+  ports="$(runtime_port_violations | paste -sd, -)"
+  if [ -z "$ports" ]; then say health.ports_loopback pass; else say health.ports_loopback fail; say health.ports_exposed "$ports"; failed=1; fi
   return "$failed"
 }
 
@@ -244,12 +352,16 @@ pull_images() {
 # ── state ────────────────────────────────────────────────────────────────────
 running_image_id() { local id; id="$(dc ps -q "$1" 2>/dev/null || true)"; [ -n "$id" ] && docker inspect --format '{{.Image}}' "$id"; }
 
-write_state() { # file sha frontend backend
-  printf 'sha=%s\nfrontend=%s\nbackend=%s\nrecorded_at=%s\n' "$2" "$3" "$4" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$1.tmp"
+write_state() { # file sha frontend backend [approval_id deployed_by]
+  {
+    printf 'sha=%s\nfrontend=%s\nbackend=%s\n' "$2" "$3" "$4"
+    printf 'approval_id=%s\ndeployed_by=%s\n' "${5:-}" "${6:-}"
+    printf 'recorded_at=%s\nrecorded_epoch=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%s)"
+  } > "$1.tmp"
   mv "$1.tmp" "$1"
 }
-state_value() { grep -E "^$2=" "$1" 2>/dev/null | cut -d= -f2- || true; }
-record_history() { printf '%s %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${SHA:-none}" "${FRONTEND_REF:-none}" "${BACKEND_REF:-none}" >> "$STATE_DIR/history.log"; }
+state_value() { grep -E "^$2=" "$1" 2>/dev/null | tail -n 1 | cut -d= -f2- || true; }
+record_history() { printf '%s %s %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${SHA:-none}" "${FRONTEND_REF:-none}" "${BACKEND_REF:-none}" "${CALLER_KIND:-unknown}" >> "$STATE_DIR/history.log"; }
 
 # Swap the running services to whatever the :deployed tags point at.
 apply_tags() {
@@ -266,10 +378,16 @@ restore_previous() {
 
 # ── subcommands ──────────────────────────────────────────────────────────────
 cmd_status() {
-  local svc
-  say go_recorded "$(go_recorded && echo yes || echo no)"
-  go_recorded && say go_approved_at "$(go_value approved_at | tr -cd 'A-Za-z0-9:.+-')"
-  say expected_write_freeze "$(expected_freeze)"
+  local svc id
+  if go_file_trusted && [ "$(go_value decision)" = GO ]; then
+    id="$(go_value approval_id)"
+    say go.present yes
+    say go.release_sha "$(go_value release_sha | tr -cd '0-9a-f')"
+    say go.expires_at "$(go_value expires_at | tr -cd 'A-Za-z0-9:.+-')"
+    say go.consumed "$([ -n "$id" ] && [ -e "$CONSUMED_DIR/$id" ] && echo yes || echo no)"
+  else
+    say go.present no
+  fi
   say env_write_freeze "$([ "$(env_value CARTOONA_WRITE_FREEZE)" = 1 ] && echo on || echo off)"
   say compose_sha256 "$(sha256sum "$COMPOSE_BASE" 2>/dev/null | cut -d' ' -f1)"
   say overlay_sha256 "$(sha256sum "$COMPOSE_PROD" 2>/dev/null | cut -d' ' -f1)"
@@ -277,6 +395,7 @@ cmd_status() {
   say current.sha "$(state_value "$STATE_DIR/current.env" sha)"
   say current.frontend "$(state_value "$STATE_DIR/current.env" frontend)"
   say current.backend "$(state_value "$STATE_DIR/current.env" backend)"
+  say current.deployed_by "$(state_value "$STATE_DIR/current.env" deployed_by)"
   say migrations "$(applied_migrations 2>/dev/null || echo unreadable)"
   smoke || true
 }
@@ -285,12 +404,14 @@ preflight_checks() {
   validate_release_args
   check_layout
   check_compose_hashes
+  check_ports_config
   check_freeze_env
   check_postgres_running
   check_migrations
-  say check.layout pass; say check.compose pass; say check.write_freeze pass; say check.postgres pass; say check.migrations pass
-  # The running release must be healthy: it is what a failed deploy returns to.
-  smoke || refuse "the CURRENT deployment is not healthy; fix it manually before deploying"
+  say check.layout pass; say check.compose pass; say check.ports_config pass; say check.write_freeze pass; say check.postgres pass; say check.migrations pass
+  # The running release must be healthy (including loopback-only ports): it is
+  # what a failed deploy returns to.
+  smoke || refuse "the CURRENT deployment is not healthy or exposes a port beyond loopback; fix it manually before deploying"
   pull_images
   check_next_public "$FRONTEND_REF"
   say check.next_public pass
@@ -298,18 +419,29 @@ preflight_checks() {
 
 cmd_preflight() {
   preflight_checks
-  say go_recorded "$(go_recorded && echo yes || echo no)"
+  if go_check; then say go.valid_for_release yes; else say go.valid_for_release no; say go.reason "$GO_REASON"; fi
   say result preflight_ok
 }
 
 cmd_deploy() {
   local prev_front prev_back
+  validate_release_args
+  # Cheap authorization first, so an unapproved release is refused before any
+  # image is pulled.
+  go_check || refuse "$GO_REASON"
   preflight_checks
-  go_recorded || refuse "no GO decision recorded by root in $GO_FILE"
 
   prev_front="$(running_image_id frontend)" || refuse "frontend is not running"
   prev_back="$(running_image_id backend)" || refuse "backend is not running"
   [ -n "$prev_front" ] && [ -n "$prev_back" ] || refuse "could not read the running image ids"
+
+  # The pull above can be slow: re-validate, then consume the approval. From
+  # here on the approval is spent, whatever happens. Nothing running or tagged
+  # has been touched yet.
+  go_check || refuse "$GO_REASON"
+  go_consume || refuse "this GO approval was already used; a new approval is required"
+  say go.consumed yes
+  GO_ID="$(go_value approval_id)"
 
   # Record what we return to BEFORE changing anything.
   docker tag "$prev_front" "$FRONTEND_ROLLBACK_TAG"
@@ -322,7 +454,7 @@ cmd_deploy() {
   docker tag "$FRONTEND_REF" "$FRONTEND_TAG"
   docker tag "$BACKEND_REF" "$BACKEND_TAG"
   if apply_tags && smoke; then
-    write_state "$STATE_DIR/current.env" "$SHA" "$FRONTEND_REF" "$BACKEND_REF"
+    write_state "$STATE_DIR/current.env" "$SHA" "$FRONTEND_REF" "$BACKEND_REF" "$GO_ID" "$CALLER_KIND"
     record_history deployed
     say result deployed
     say rollback not_needed
@@ -343,16 +475,36 @@ cmd_deploy() {
   exit 4
 }
 
+ROLLBACK_REASON=""
+# CI may undo only the release it deployed most recently, once, within the window.
+ci_rollback_allowed() {
+  local cur="$STATE_DIR/current.env" epoch age
+  [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { ROLLBACK_REASON="CI rollback needs --sha <40 hex>; an administrator can roll back directly on the server"; return 1; }
+  [ -f "$cur" ] && [ "$(state_value "$cur" sha)" = "$SHA" ] || { ROLLBACK_REASON="CI may only roll back the release it deployed most recently; ask an administrator"; return 1; }
+  [ "$(state_value "$cur" deployed_by)" = ci ] && [ -n "$(state_value "$cur" approval_id)" ] || { ROLLBACK_REASON="the current release was not deployed by CI under a GO approval; ask an administrator"; return 1; }
+  [ -z "$(state_value "$cur" rolled_back)" ] || { ROLLBACK_REASON="this release was already rolled back; ask an administrator"; return 1; }
+  epoch="$(state_value "$cur" recorded_epoch)"
+  [[ "$epoch" =~ ^[0-9]+$ ]] || { ROLLBACK_REASON="no deployment time recorded; ask an administrator"; return 1; }
+  age=$(( $(date -u +%s) - epoch ))
+  [ "$age" -ge 0 ] && [ "$age" -le "$ROLLBACK_WINDOW_SECONDS" ] || { ROLLBACK_REASON="the CI rollback window has passed; ask an administrator"; return 1; }
+}
+
 cmd_rollback() {
-  [ -f "$STATE_DIR/previous.env" ] || refuse "no previous release recorded"
   check_layout
+  [ -z "$SHA" ] || [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || refuse "--sha must be a full 40-hex commit"
+  [ -f "$STATE_DIR/previous.env" ] || refuse "no previous release recorded"
+  if caller_is_ci; then
+    ci_rollback_allowed || refuse "$ROLLBACK_REASON"
+  fi
+  say rollback.caller "$CALLER_KIND"
   say rollback started
   if restore_previous; then
     cp "$STATE_DIR/previous.env" "$STATE_DIR/current.env"
-    record_history manual_rollback_ok
+    printf 'rolled_back=1\n' >> "$STATE_DIR/current.env"
+    record_history rollback_ok
     say rollback ok; say result rolled_back; return 0
   fi
-  record_history manual_rollback_failed
+  record_history rollback_failed
   say rollback FAILED; say result rollback_failed; exit 4
 }
 
@@ -364,7 +516,12 @@ main() {
   REG_TOKEN=""
   if [ -n "$REG_USER" ]; then REG_TOKEN="$(head -c 4096 || true)"; fi
   exec 0</dev/null
-  install -d -m 0700 -o root -g root "$STATE_DIR"
+  CALLER_KIND="admin"
+  if caller_is_ci; then CALLER_KIND="ci"; fi
+  install -d -m 0700 -o root -g root "$STATE_DIR" "$CONSUMED_DIR"
+  if [ -L "$STATE_DIR" ] || [ "$(stat -c %u "$STATE_DIR")" != 0 ] || (( (8#$(mode_of "$STATE_DIR") & 8#077) != 0 )); then
+    refuse "$STATE_DIR must be a root-owned directory with mode 0700"
+  fi
   exec 9>"$LOCK_FILE"
   flock -w 600 9 || refuse "another deployment holds the lock"
   case "$CMD" in
@@ -372,7 +529,6 @@ main() {
     preflight) cmd_preflight ;;
     deploy) cmd_deploy ;;
     rollback) cmd_rollback ;;
-    *) refuse "usage: cartoona-deploy status|preflight|deploy|rollback [flags]" ;;
   esac
 }
 

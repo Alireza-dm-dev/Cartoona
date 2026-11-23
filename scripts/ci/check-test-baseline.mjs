@@ -9,7 +9,7 @@
 // MIN_PASSED when tests are added; never lower it to make CI pass.
 import fs from "node:fs"
 
-const MIN_PASSED = Number(process.env.CARTOONA_MIN_PASSED_TESTS ?? 3420)
+const MIN_PASSED = Number(process.env.CARTOONA_MIN_PASSED_TESTS ?? 3442)
 const MAX_SKIPPED = Number(process.env.CARTOONA_MAX_SKIPPED_TESTS ?? 37)
 
 // Tests that legitimately cannot run on a CI runner, approved by name. Each one

@@ -10,9 +10,12 @@
 #   * frontend/backend run fixed LOCAL tags that the deploy script points at an
 #     exact, digest-pinned GHCR image (see deploy/server/cartoona-deploy). The
 #     server never builds and never pulls through compose (`pull_policy: never`).
-#   * the frontend is published on loopback only. Nginx proxies to
-#     127.0.0.1:3000; Docker-published ports bypass UFW, so "3000:3000" would
-#     expose the app on the public interface regardless of the firewall.
+#   * the frontend is published on loopback only, forced here with `!override`
+#     even though compose.yml also binds 127.0.0.1 now (defense in depth).
+#     Nginx proxies to 127.0.0.1:3000; Docker-published ports bypass UFW, so a
+#     bare "3000:3000" would expose the app regardless of the firewall.
+#     cartoona-deploy additionally refuses when the effective configuration or
+#     the running containers publish any port beyond loopback.
 #
 # The postgres service, its volume, every environment variable and every
 # healthcheck come unchanged from compose.yml. The deploy pipeline refuses to
