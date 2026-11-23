@@ -207,22 +207,22 @@ describe("media slot resolution", () => {
 
     expect(resolved.media).toEqual(LOCAL_MEDIA_FALLBACK);
     expect(resolved.media[HOMEPAGE_MEDIA_SLOTS.HERO_BACKGROUND]).toBe(
-      "/images/homepage/sections-bg.png",
+      "/media/homepage/sections-bg.eca947d36f.webp",
     );
     expect(resolved.media[HOMEPAGE_MEDIA_SLOTS.HERO_TV_VIDEO]).toBe(
-      "/videos/homepage/hero-tv.mp4",
+      "/media/homepage/hero-tv.b04d023f4a.mp4",
     );
     expect(resolved.media[HOMEPAGE_MEDIA_SLOTS.BUILD_OPTIONS_CARD_IMAGE]).toBe(
-      "/images/homepage/card-image.jpg",
+      "/media/homepage/card-image.51648e3ce9.webp",
     );
     expect(resolved.media[HOMEPAGE_MEDIA_SLOTS.BUILD_OPTIONS_CARD_VIDEO]).toBe(
-      "/videos/homepage/build-video.mp4",
+      "/media/homepage/build-video.1ef98943b8.mp4",
     );
     expect(resolved.media[HOMEPAGE_MEDIA_SLOTS.BUILD_OPTIONS_CARD_ANIMATION]).toBe(
-      "/videos/homepage/build-animate.mp4",
+      "/media/homepage/build-animate.f05b03cdbd.mp4",
     );
     expect(resolved.media[HOMEPAGE_MEDIA_SLOTS.SAFETY_IMAGE]).toBe(
-      "/images/homepage/family-tablet.jpg",
+      "/media/homepage/family-tablet.9122fad07c.webp",
     );
   });
 
@@ -254,7 +254,7 @@ describe("media slot resolution", () => {
       "https://cdn.example.test/storage/hero/bg.png",
     );
     expect(resolved.media[HOMEPAGE_MEDIA_SLOTS.SECTIONS_BACKGROUND]).toBe(
-      "/images/homepage/sections-bg.png",
+      "/media/homepage/sections-bg.eca947d36f.webp",
     );
   });
 
@@ -270,15 +270,15 @@ describe("media slot resolution", () => {
     const resolved = resolveHomepageFromData(client, PUBLIC_URL);
 
     expect(resolved.media[HOMEPAGE_MEDIA_SLOTS.SAFETY_IMAGE]).toBe(
-      "/images/homepage/family-tablet.jpg",
+      "/media/homepage/family-tablet.9122fad07c.webp",
     );
     expect(resolved.media[HOMEPAGE_MEDIA_SLOTS.HERO_BACKGROUND]).toBe(
-      "/images/homepage/sections-bg.png",
+      "/media/homepage/sections-bg.eca947d36f.webp",
     );
   });
 
   it("only accepts rooted local paths and https URLs", () => {
-    expect(isSafeMediaUrl("/images/homepage/sections-bg.png")).toBe(true);
+    expect(isSafeMediaUrl("/media/homepage/sections-bg.eca947d36f.webp")).toBe(true);
     expect(isSafeMediaUrl("https://cdn.example.test/a.png")).toBe(true);
 
     expect(isSafeMediaUrl("data:image/png;base64,AAAA")).toBe(false);

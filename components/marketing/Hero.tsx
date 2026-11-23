@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState, type RefObject } from "react";
+import { preload } from "react-dom";
 import Link from "next/link";
+import { defaultPosterFor } from "@/lib/homepage/media-slots";
+import { LazyVideo } from "./LazyVideo";
 import { Button } from "@/components/ui/button";
 import { ParentAccountDrawer } from "@/components/layout/parent-account-drawer";
 import type { ParentAccountSummary } from "@/lib/auth/parent-account";
@@ -156,6 +159,10 @@ export function Hero({ content, navigation, media, layout, account = null }: Her
   const [menuOpen, setMenuOpen] = useState(false);
   const frameRef = useRef<HTMLDivElement>(null);
   const geometry = useHeroGeometry(frameRef, layout.rect);
+  // The artwork <img> only mounts once the client has measured the frame, so
+  // without this hint the largest image would not start downloading until
+  // after hydration. Emitted as <link rel="preload"> in the server HTML.
+  preload(media.background, { as: "image", fetchPriority: "high" });
 
   return (
     <section className="font-ui relative">
@@ -182,6 +189,7 @@ export function Hero({ content, navigation, media, layout, account = null }: Her
                 <img
                   src={media.background}
                   alt=""
+                  fetchPriority="high"
                   className="absolute max-w-none"
                   style={{
                     left: geometry.imageLeft,
@@ -201,13 +209,10 @@ export function Hero({ content, navigation, media, layout, account = null }: Her
                     borderRadius: Math.max(4, geometry.tv.width * 0.045),
                   }}
                 >
-                  <video
+                  <LazyVideo
                     src={media.tv_video}
-                    autoPlay
-                    muted
-                    loop
-                    playsInline
-                    preload="auto"
+                    poster={defaultPosterFor(media.tv_video)}
+                    afterLoad
                     className="h-full w-full object-cover"
                   />
                 </div>

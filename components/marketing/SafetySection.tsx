@@ -38,6 +38,8 @@ export function SafetySection({ content, imageSrc }: SafetySectionProps) {
           <img
             src={imageSrc}
             alt={content.imageAlt}
+            loading="lazy"
+            decoding="async"
             className="h-full w-full object-cover"
           />
         </div>

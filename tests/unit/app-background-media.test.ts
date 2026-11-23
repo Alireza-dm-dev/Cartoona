@@ -124,15 +124,21 @@ describe("asset hygiene", () => {
 })
 
 describe("homepage is untouched", () => {
-  it("homepage artwork files and CMS slot paths are unchanged", () => {
+  it("homepage artwork files are kept and CMS slots point at their optimized, content-addressed copies", () => {
+    // Originals stay in the repository until the optimized copies are verified in production.
     for (const f of ["sections-bg.png", "card-image.jpg", "family-tablet.jpg"]) {
       expect(fs.existsSync(path.join(root, "public/images/homepage", f)), f).toBe(true)
     }
-    const slots = read("lib/homepage/media-slots.ts")
-    expect(slots).toContain('"/images/homepage/sections-bg.png"')
-    expect(slots).toContain('"/images/homepage/card-image.jpg"')
-    expect(slots).toContain('"/images/homepage/family-tablet.jpg"')
     expect(fs.statSync(path.join(root, "public/images/homepage/sections-bg.png")).size).toBe(3455477)
+    const slots = read("lib/homepage/media-slots.ts")
+    for (const p of [
+      "/media/homepage/sections-bg.eca947d36f.webp",
+      "/media/homepage/card-image.51648e3ce9.webp",
+      "/media/homepage/family-tablet.9122fad07c.webp",
+    ]) {
+      expect(slots).toContain(`"${p}"`)
+      expect(fs.existsSync(path.join(root, "public", p)), p).toBe(true)
+    }
   })
 
   it("the homepage does not render AppBackground", () => {

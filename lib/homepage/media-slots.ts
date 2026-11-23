@@ -53,7 +53,7 @@ export const HOMEPAGE_MEDIA_SLOT_SPECS: Record<
     slot: HOMEPAGE_MEDIA_SLOTS.HERO_BACKGROUND,
     mediaType: "image",
     label: "تصویر پس‌زمینه هیرو",
-    currentPublicPath: "/images/homepage/sections-bg.png",
+    currentPublicPath: "/media/homepage/sections-bg.eca947d36f.webp",
     geometryCoupled: true,
     notes:
       "The hero frames this artwork on the television drawn inside it. TV_SCREEN_RECT in Hero.tsx is measured from this exact file; a replacement must keep the TV at the same fractional position or the overlay will not line up.",
@@ -62,7 +62,7 @@ export const HOMEPAGE_MEDIA_SLOT_SPECS: Record<
     slot: HOMEPAGE_MEDIA_SLOTS.HERO_TV_VIDEO,
     mediaType: "video",
     label: "ویدیوی صفحه تلویزیون",
-    currentPublicPath: "/videos/homepage/hero-tv.mp4",
+    currentPublicPath: "/media/homepage/hero-tv.b04d023f4a.mp4",
     geometryCoupled: false,
     notes: "Plays muted, looped and inline inside the TV screen. Aspect close to 1.27 crops least.",
   },
@@ -70,7 +70,7 @@ export const HOMEPAGE_MEDIA_SLOT_SPECS: Record<
     slot: HOMEPAGE_MEDIA_SLOTS.SECTIONS_BACKGROUND,
     mediaType: "image",
     label: "تصویر پس‌زمینه بخش‌ها",
-    currentPublicPath: "/images/homepage/sections-bg.png",
+    currentPublicPath: "/media/homepage/sections-bg.eca947d36f.webp",
     geometryCoupled: true,
     notes:
       "Currently the same file as the hero background. The sections layer crops to the bottom ~63% to keep the television out of view, so a replacement must keep its focal content below that line.",
@@ -79,28 +79,28 @@ export const HOMEPAGE_MEDIA_SLOT_SPECS: Record<
     slot: HOMEPAGE_MEDIA_SLOTS.BUILD_OPTIONS_CARD_IMAGE,
     mediaType: "image",
     label: "تصویر کارت ساخت تصویر",
-    currentPublicPath: "/images/homepage/card-image.jpg",
+    currentPublicPath: "/media/homepage/card-image.51648e3ce9.webp",
     geometryCoupled: false,
   },
   [HOMEPAGE_MEDIA_SLOTS.BUILD_OPTIONS_CARD_VIDEO]: {
     slot: HOMEPAGE_MEDIA_SLOTS.BUILD_OPTIONS_CARD_VIDEO,
     mediaType: "video",
     label: "ویدیوی کارت ساخت ویدیو",
-    currentPublicPath: "/videos/homepage/build-video.mp4",
+    currentPublicPath: "/media/homepage/build-video.1ef98943b8.mp4",
     geometryCoupled: false,
   },
   [HOMEPAGE_MEDIA_SLOTS.BUILD_OPTIONS_CARD_ANIMATION]: {
     slot: HOMEPAGE_MEDIA_SLOTS.BUILD_OPTIONS_CARD_ANIMATION,
     mediaType: "video",
     label: "ویدیوی کارت متحرک‌سازی نقاشی",
-    currentPublicPath: "/videos/homepage/build-animate.mp4",
+    currentPublicPath: "/media/homepage/build-animate.f05b03cdbd.mp4",
     geometryCoupled: false,
   },
   [HOMEPAGE_MEDIA_SLOTS.SAFETY_IMAGE]: {
     slot: HOMEPAGE_MEDIA_SLOTS.SAFETY_IMAGE,
     mediaType: "image",
     label: "تصویر بخش ایمنی",
-    currentPublicPath: "/images/homepage/family-tablet.jpg",
+    currentPublicPath: "/media/homepage/family-tablet.9122fad07c.webp",
     geometryCoupled: false,
   },
 };
@@ -132,3 +132,22 @@ export const HOMEPAGE_MEDIA_MIME_ALLOWLIST: Record<HomepageMediaType, readonly s
   image: ["image/png", "image/jpeg", "image/webp"],
   video: ["video/mp4", "video/webm"],
 };
+
+/**
+ * Poster frames for the SHIPPED default videos only (first frame of each file).
+ * Keyed by the default path, so an admin-uploaded replacement never shows a
+ * poster that belongs to a different video.
+ *
+ * Everything under /media/homepage is content-addressed (the hash in the name
+ * is the first 10 hex of the file's SHA-256) and served `immutable` (see
+ * next.config.ts). Never overwrite a file there: new content gets a new name.
+ */
+export const HOMEPAGE_DEFAULT_VIDEO_POSTERS: Readonly<Record<string, string>> = {
+  "/media/homepage/hero-tv.b04d023f4a.mp4": "/media/homepage/hero-tv-poster.e2c5120a64.webp",
+  "/media/homepage/build-video.1ef98943b8.mp4": "/media/homepage/build-video-poster.44eddae08f.webp",
+  "/media/homepage/build-animate.f05b03cdbd.mp4": "/media/homepage/build-animate-poster.a3193fe834.webp",
+};
+
+export function defaultPosterFor(videoSrc: string): string | undefined {
+  return HOMEPAGE_DEFAULT_VIDEO_POSTERS[videoSrc];
+}
